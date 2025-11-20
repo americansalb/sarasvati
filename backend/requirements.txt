@@ -23,9 +23,9 @@ scipy>=1.11.0  # For DTW algorithms
 asyncio>=3.4.3
 aioredis>=2.0.0
 
-# Optional: Sentence Transformers (for production embeddings)
-# sentence-transformers>=2.2.0
-# torch>=2.0.0
+# Sentence Transformers (REQUIRED for real embeddings)
+sentence-transformers>=2.2.0
+torch>=2.0.0
 
 # Type Checking & Development
 typing-extensions>=4.8.0

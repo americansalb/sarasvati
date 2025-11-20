@@ -16,6 +16,13 @@ from datetime import datetime, timedelta
 import asyncio
 from dataclasses import dataclass
 
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    SentenceTransformer = None
+
 from .state import (
     TranscriptSegment,
     AlignmentMatch,
@@ -44,9 +51,31 @@ class AlignmentEngine:
     Interpreter utterances despite the 5-20 second delay.
     """
 
-    def __init__(self, config: DTWConfig):
+    def __init__(self, config: DTWConfig, use_real_embeddings: bool = True):
         self.config = config
         self._embedding_cache: dict = {}
+        self.use_real_embeddings = use_real_embeddings
+        self._model = None
+
+        # Load real embedding model if available and requested
+        if use_real_embeddings and SENTENCE_TRANSFORMERS_AVAILABLE:
+            print("🔄 Loading sentence embedding model (all-MiniLM-L6-v2)...")
+            try:
+                # This model is small (~80MB), fast (~10-20ms/sentence on CPU),
+                # and produces 384-dim embeddings
+                self._model = SentenceTransformer('all-MiniLM-L6-v2')
+                print("✅ Embedding model loaded successfully")
+            except Exception as e:
+                print(f"⚠️  Failed to load embedding model: {e}")
+                print("   Falling back to mock embeddings")
+                self._model = None
+        elif use_real_embeddings and not SENTENCE_TRANSFORMERS_AVAILABLE:
+            print("⚠️  sentence-transformers not installed")
+            print("   Install with: pip install sentence-transformers")
+            print("   Falling back to mock embeddings (NOT suitable for production)")
+            self._model = None
+        else:
+            print("ℹ️  Using mock embeddings (for testing/development only)")
 
     async def align_segments(
         self,
@@ -176,8 +205,7 @@ class AlignmentEngine:
         """
         Get sentence embedding for semantic similarity.
 
-        In production, this would call a sentence transformer model.
-        For MVP, we simulate with a mock embedding based on text features.
+        Uses sentence-transformers if available, otherwise falls back to mock.
 
         Args:
             text: Input text to embed
@@ -190,14 +218,14 @@ class AlignmentEngine:
         if cache_key in self._embedding_cache:
             return self._embedding_cache[cache_key]
 
-        # MOCK IMPLEMENTATION: In production, replace with actual model
-        # Example: Use sentence-transformers/all-MiniLM-L6-v2
-        # from sentence_transformers import SentenceTransformer
-        # model = SentenceTransformer('all-MiniLM-L6-v2')
-        # embedding = model.encode(text)
-
-        # For MVP: Create deterministic mock embedding
-        embedding = self._mock_embedding(text)
+        # Use real model if available
+        if self._model is not None:
+            # Real inference using sentence-transformers
+            # This runs on CPU and takes ~10-20ms per sentence
+            embedding = self._model.encode(text, convert_to_numpy=True)
+        else:
+            # Fallback to mock (not suitable for production!)
+            embedding = self._mock_embedding(text)
 
         # Cache the result
         self._embedding_cache[cache_key] = embedding
