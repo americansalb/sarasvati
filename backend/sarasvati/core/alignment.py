@@ -15,6 +15,7 @@ from typing import List, Optional, Tuple
 from datetime import datetime, timedelta
 import asyncio
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -57,6 +58,14 @@ class AlignmentEngine:
         self.use_real_embeddings = use_real_embeddings
         self._model = None
 
+        # CRITICAL: ThreadPoolExecutor for CPU-bound work (embedding + DTW)
+        # This prevents blocking the event loop during matrix multiplication
+        # Per Sthiti's command: offload heavy math to worker threads
+        self._executor = ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="sarasvati_align"
+        )
+
         # Load real embedding model if available and requested
         if use_real_embeddings and SENTENCE_TRANSFORMERS_AVAILABLE:
             print("🔄 Loading sentence embedding model (all-MiniLM-L6-v2)...")
@@ -65,6 +74,7 @@ class AlignmentEngine:
                 # and produces 384-dim embeddings
                 self._model = SentenceTransformer('all-MiniLM-L6-v2')
                 print("✅ Embedding model loaded successfully")
+                print("✅ ThreadPoolExecutor initialized (4 workers)")
             except Exception as e:
                 print(f"⚠️  Failed to load embedding model: {e}")
                 print("   Falling back to mock embeddings")
@@ -77,6 +87,11 @@ class AlignmentEngine:
         else:
             print("ℹ️  Using mock embeddings (for testing/development only)")
 
+    def __del__(self):
+        """Cleanup: Shutdown executor on deletion."""
+        if hasattr(self, '_executor'):
+            self._executor.shutdown(wait=False)
+
     async def align_segments(
         self,
         provider_segment: TranscriptSegment,
@@ -84,7 +99,45 @@ class AlignmentEngine:
         state: SarasvatiState,
     ) -> Optional[AlignmentMatch]:
         """
-        Find the matching interpreter segment for a provider segment.
+        Non-blocking async wrapper for alignment.
+
+        CRITICAL: This method offloads CPU-bound work (embedding + DTW) to a
+        ThreadPoolExecutor, preventing event loop blocking during matrix math.
+
+        Per Sthiti's preservation: The Sudarshana Chakra (Event Loop) must keep
+        spinning while heavy computation runs in worker threads.
+
+        Args:
+            provider_segment: The source segment from provider
+            interpreter_buffer: FIFO buffer of interpreter segments
+            state: Current graph state
+
+        Returns:
+            AlignmentMatch if found, None if no match in window
+        """
+        # Get the running event loop
+        loop = asyncio.get_running_loop()
+
+        # Offload the CPU-bound work to thread pool
+        # This allows the event loop to continue processing ingestion
+        # while the alignment math runs in a worker thread
+        return await loop.run_in_executor(
+            self._executor,
+            self._align_segments_sync,
+            provider_segment,
+            interpreter_buffer,
+        )
+
+    def _align_segments_sync(
+        self,
+        provider_segment: TranscriptSegment,
+        interpreter_buffer: List[BufferEntry],
+    ) -> Optional[AlignmentMatch]:
+        """
+        Synchronous implementation of alignment logic.
+
+        ALL CPU-bound work happens here (embeddings, DTW, scoring).
+        This runs in a worker thread, NOT the main event loop.
 
         This is the core method that implements the Trisul alignment logic:
         1. Define a search window based on expected delay
@@ -96,7 +149,6 @@ class AlignmentEngine:
         Args:
             provider_segment: The source segment from provider
             interpreter_buffer: FIFO buffer of interpreter segments
-            state: Current graph state
 
         Returns:
             AlignmentMatch if found, None if no match in window
@@ -115,8 +167,8 @@ class AlignmentEngine:
         if not candidate_segments:
             return None
 
-        # Step 3: Get embedding for provider segment
-        provider_embedding = await self._get_embedding(provider_segment["text"])
+        # Step 3: Get embedding for provider segment (SYNC - no await!)
+        provider_embedding = self._get_embedding(provider_segment["text"])
 
         # Step 4: Compute similarities for all candidates
         # Track: (candidate, raw_similarity, time_delta, combined_score, dtw_distance)
@@ -124,7 +176,7 @@ class AlignmentEngine:
         best_combined_score = -1.0
 
         for candidate in candidate_segments:
-            interpreter_embedding = await self._get_embedding(candidate["text"])
+            interpreter_embedding = self._get_embedding(candidate["text"])
 
             # Cosine similarity
             similarity = self._cosine_similarity(
@@ -204,11 +256,14 @@ class AlignmentEngine:
 
         return candidates
 
-    async def _get_embedding(self, text: str) -> np.ndarray:
+    def _get_embedding(self, text: str) -> np.ndarray:
         """
-        Get sentence embedding for semantic similarity.
+        Get sentence embedding for semantic similarity (SYNCHRONOUS).
 
         Uses sentence-transformers if available, otherwise falls back to mock.
+
+        CRITICAL: This is CPU-bound (matrix multiplication). It runs in a worker
+        thread via ThreadPoolExecutor, NOT in the main event loop.
 
         Args:
             text: Input text to embed
