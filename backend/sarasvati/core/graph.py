@@ -188,17 +188,24 @@ class SarasvatiGraph:
         Node 3: Verify interpretation quality (Combined Extract+Monitor+Arbiter).
 
         Runs the three-agent debate system on aligned segments.
+
+        CRITICAL FIX: Only process NEW alignments (not already verified).
+        Update last_verified_count after processing to prevent infinite loops.
         """
-        # Get most recent unprocessed alignments
-        new_alignments = [
+        # Get only matched pairs
+        matched_pairs = [
             match for match in state["matched_pairs"]
             if match["is_matched"]
         ]
 
+        # Get only NEW unverified alignments (since last verification)
+        last_verified = state["last_verified_count"]
+        new_alignments = matched_pairs[last_verified:]
+
         if not new_alignments:
             return state
 
-        # Run debate for each alignment
+        # Run debate for each NEW alignment
         for alignment in new_alignments:
             debate_result = await self.debate_orchestrator.run_debate(alignment)
 
@@ -213,6 +220,9 @@ class SarasvatiGraph:
                 # Update error flags
                 for error in debate_result["detected_errors"]:
                     state["error_flags"][error["error_id"]] = True
+
+        # Update last_verified_count to current matched count
+        state["last_verified_count"] = len(matched_pairs)
 
         # Update stats
         state["processing_stats"]["errors_detected"] = len(state["detected_errors"])
@@ -273,12 +283,19 @@ class SarasvatiGraph:
         Decide whether to proceed to verification or wait for more data.
 
         We verify if:
-        - We have at least one new matched alignment
+        - We have NEW unverified matched alignments (not historical ones!)
         - Buffer is near capacity (force processing)
+
+        CRITICAL FIX: Only check for NEW matches, not ALL historical matches.
+        Otherwise we loop forever once we get a single match.
         """
-        has_new_matches = any(
-            match["is_matched"] for match in state["matched_pairs"]
+        # Count matched (not unmatched) pairs
+        current_match_count = sum(
+            1 for match in state["matched_pairs"] if match["is_matched"]
         )
+
+        # Check if we have NEW matches since last verification
+        has_new_matches = current_match_count > state["last_verified_count"]
 
         buffer_near_capacity = (
             len(state["provider_buffer"]) >= state["buffer_size_limit"] * 0.8
@@ -368,8 +385,10 @@ class SarasvatiEngine:
             self.state["patient_buffer"].append(buffer_entry)
 
         # Trigger processing if buffer is large enough
+        # CRITICAL FIX: Use asyncio.create_task to prevent ingestion starvation
+        # This allows ingest to return immediately while processing runs in background
         if len(self.state["provider_buffer"]) >= 3:
-            await self._process_cycle()
+            asyncio.create_task(self._process_cycle())
 
     async def _process_cycle(self) -> None:
         """

@@ -119,8 +119,9 @@ class AlignmentEngine:
         provider_embedding = await self._get_embedding(provider_segment["text"])
 
         # Step 4: Compute similarities for all candidates
-        best_match: Optional[Tuple[TranscriptSegment, float, float]] = None
-        best_similarity = -1.0
+        # Track: (candidate, raw_similarity, time_delta, combined_score, dtw_distance)
+        best_match: Optional[Tuple[TranscriptSegment, float, float, float, float]] = None
+        best_combined_score = -1.0
 
         for candidate in candidate_segments:
             interpreter_embedding = await self._get_embedding(candidate["text"])
@@ -138,16 +139,18 @@ class AlignmentEngine:
             )
 
             # Combined score (weighted: 0.7 semantic, 0.3 temporal)
+            # This is the TRUTH VECTOR per the architectural bible
             combined_score = (0.7 * similarity) + (0.3 * (1.0 - dtw_dist))
 
-            if combined_score > best_similarity:
-                best_similarity = combined_score
+            if combined_score > best_combined_score:
+                best_combined_score = combined_score
                 time_delta = candidate["timestamp"] - provider_segment["timestamp"]
-                best_match = (candidate, similarity, time_delta)
+                best_match = (candidate, similarity, time_delta, combined_score, dtw_dist)
 
         # Step 5: Validate match against threshold
-        if best_match and best_match[1] >= self.config.min_similarity_threshold:
-            interpreter_seg, similarity, time_delta = best_match
+        # CRITICAL FIX: Threshold on combined_score, not raw similarity
+        if best_match and best_match[3] >= self.config.min_similarity_threshold:
+            interpreter_seg, raw_similarity, time_delta, combined_score, dtw_dist = best_match
 
             # Check for negation mismatches (critical!)
             has_negation_mismatch = self._check_negation_mismatch(
@@ -155,20 +158,19 @@ class AlignmentEngine:
                 interpreter_seg["text"],
             )
 
-            # If negation mismatch detected, reduce similarity score
+            # If negation mismatch detected, apply severe penalty to COMBINED score
             if has_negation_mismatch:
-                similarity *= 0.3  # Severe penalty for negation errors
+                combined_score *= 0.3  # Severe penalty for negation errors
+                raw_similarity *= 0.3  # Also penalize raw for consistency
 
             return AlignmentMatch(
                 provider_segment=provider_segment,
                 interpreter_segment=interpreter_seg,
-                similarity_score=similarity,
+                similarity_score=raw_similarity,      # Raw cosine similarity (for debugging)
+                combined_score=combined_score,        # Truth vector (for decision-making)
                 time_delta=time_delta,
                 is_matched=True,
-                dtw_distance=self._compute_dtw_distance(
-                    provider_segment,
-                    interpreter_seg,
-                ),
+                dtw_distance=dtw_dist,
             )
 
         # No match found in window
@@ -176,6 +178,7 @@ class AlignmentEngine:
             provider_segment=provider_segment,
             interpreter_segment=None,
             similarity_score=0.0,
+            combined_score=0.0,
             time_delta=0.0,
             is_matched=False,
             dtw_distance=float("inf"),

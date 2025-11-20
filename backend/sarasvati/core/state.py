@@ -53,7 +53,8 @@ class AlignmentMatch(TypedDict):
     """Result of DTW/semantic alignment between provider and interpreter."""
     provider_segment: TranscriptSegment
     interpreter_segment: Optional[TranscriptSegment]
-    similarity_score: float    # Semantic similarity [0.0-1.0]
+    similarity_score: float    # Raw semantic similarity [0.0-1.0] (cosine distance)
+    combined_score: float      # Truth Vector: 0.7*similarity + 0.3*(1-dtw) [0.0-1.0]
     time_delta: float          # Actual delay (interpreter_time - provider_time)
     is_matched: bool           # Whether a match was found in the search window
     dtw_distance: float        # DTW distance metric
@@ -135,6 +136,7 @@ class SarasvatiState(TypedDict):
     should_emit_report: bool                   # Flag to trigger report emission
     buffer_size_limit: int                     # Max buffer size before forced processing
     alignment_window_seconds: float            # Time window for semantic search (default: 30s)
+    last_verified_count: int                   # Count of matched_pairs last verified (for cycle control)
 
     # ===== Redis Keys =====
     redis_buffer_key: str                      # Key for Redis FIFO buffer
@@ -206,6 +208,7 @@ def create_initial_state(session_id: str, config: GraphConfig) -> SarasvatiState
         should_emit_report=False,
         buffer_size_limit=config["max_buffer_size"],
         alignment_window_seconds=config["alignment_window_seconds"],
+        last_verified_count=0,
 
         # Redis keys
         redis_buffer_key=f"sarasvati:session:{session_id}:buffer",
