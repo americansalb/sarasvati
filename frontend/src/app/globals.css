@@ -1,0 +1,184 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* Critical Alert Flash Effect */
+body.critical-alert {
+  animation: critical-flash 1s ease-in-out;
+}
+
+@keyframes critical-flash {
+  0%,
+  100% {
+    box-shadow: none;
+  }
+  50% {
+    box-shadow: inset 0 0 0 4px rgba(239, 68, 68, 0.5);
+  }
+}
+
+body.critical-flash {
+  animation: flash 1s ease-in-out;
+}
+
+@keyframes flash {
+  0%,
+  100% {
+    background: var(--background);
+  }
+  50% {
+    background: rgba(239, 68, 68, 0.2);
+  }
+}
+
+/* Custom Scrollbar */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: #1f2937;
+  border-radius: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+/* Waveform Container Styling */
+.waveform-container {
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.waveform-container canvas {
+  width: 100% !important;
+}
+
+/* Transcript Entry Animations */
+.transcript-entry {
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Error Card Animations */
+.error-card {
+  animation: slideIn 0.3s ease-out;
+}
+
+/* Loading States */
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.loading-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 1000px 100%;
+  animation: shimmer 2s infinite;
+}
+
+/* Audio Level Meter */
+@keyframes audioLevel {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.audio-level-bar {
+  animation: audioLevel 1s ease-in-out infinite;
+}
+
+/* Gradient Text */
+.gradient-text {
+  background: linear-gradient(135deg, #3b82f6 0%, #a855f7 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Medical Dashboard Aesthetic */
+.medical-card {
+  @apply bg-gray-900/50 backdrop-blur border border-gray-800 rounded-xl;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3),
+    0 2px 4px -1px rgba(0, 0, 0, 0.2);
+}
+
+.medical-card:hover {
+  @apply border-gray-700;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3),
+    0 4px 6px -2px rgba(0, 0, 0, 0.2);
+}
+
+/* Status Indicators */
+.status-dot {
+  @apply w-2 h-2 rounded-full;
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.status-dot.active {
+  @apply bg-green-500;
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.5);
+}
+
+.status-dot.inactive {
+  @apply bg-gray-500;
+}
+
+.status-dot.error {
+  @apply bg-red-500;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+}
