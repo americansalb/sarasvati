@@ -1,0 +1,42 @@
+# SARASVATI MVP Backend Dependencies
+# ====================================
+
+# Core Framework
+langgraph>=0.1.0
+langchain>=0.1.0
+
+# LLM Inference
+groq>=0.4.0
+
+# Audio/ASR (for LiveKit integration)
+livekit>=0.10.0
+# Note: Deepgram SDK would be added for production
+
+# Redis Stack for Hot Buffer
+redis[hiredis]>=5.0.0
+
+# Scientific Computing
+numpy>=1.24.0
+scipy>=1.11.0  # For DTW algorithms
+
+# Async Support
+asyncio>=3.4.3
+aioredis>=2.0.0
+
+# Optional: Sentence Transformers (for production embeddings)
+# sentence-transformers>=2.2.0
+# torch>=2.0.0
+
+# Type Checking & Development
+typing-extensions>=4.8.0
+
+# Utilities
+python-dotenv>=1.0.0  # For environment variables
+pydantic>=2.0.0       # For data validation
+
+# Testing (for future)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# Monitoring & Logging
+structlog>=23.1.0

@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sarasvati"
+version = "0.1.0"
+description = "The Trisul Protocol: Real-time medical interpreter monitoring using adversarial AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "SARASVATI Team"}
+]
+keywords = ["medical", "interpreter", "monitoring", "ai", "real-time", "langgraph"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Healthcare Industry",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "langgraph>=0.1.0",
+    "langchain>=0.1.0",
+    "groq>=0.4.0",
+    "redis[hiredis]>=5.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "typing-extensions>=4.8.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "mypy>=1.5.0",
+    "ruff>=0.1.0",
+]
+livekit = [
+    "livekit>=0.10.0",
+]
+embeddings = [
+    "sentence-transformers>=2.2.0",
+    "torch>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/americansalb/sarasvati"
+Repository = "https://github.com/americansalb/sarasvati.git"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sarasvati*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false  # Set to true for stricter checking
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
