@@ -38,7 +38,7 @@ from .state import (
 class DTWConfig:
     """Configuration for Dynamic Time Warping alignment."""
     window_size_seconds: float = 30.0      # Search window for finding matches
-    min_similarity_threshold: float = 0.35  # Lower threshold for cross-lingual matching
+    min_similarity_threshold: float = 0.15  # Very low for cross-lingual MVP (will tune later)
     max_time_delta: float = 45.0           # Maximum allowed delay (seconds)
     embedding_dim: int = 384               # Dimension of sentence embeddings
     use_semantic_vad: bool = True          # Use semantic boundaries, not silence
