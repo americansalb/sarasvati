@@ -184,6 +184,8 @@ class SarasvatiGraph:
         state["processing_stats"]["alignments_found"] += matched_count
         state["processing_stats"]["alignments_missed"] += missed_count
 
+        print(f"   🔗 Alignment: found {len(alignments)} alignments ({matched_count} matched, {missed_count} missed)")
+
         return state
 
     async def verify_node(self, state: SarasvatiState) -> SarasvatiState:
@@ -206,6 +208,7 @@ class SarasvatiGraph:
         new_alignments = matched_pairs[last_verified:]
 
         if not new_alignments:
+            print(f"   📭 No new alignments to verify (matched_pairs={len(matched_pairs)}, last_verified={last_verified})")
             return state
 
         # Get most recent patient text for triadic validation (Trisul Protocol)
@@ -214,21 +217,28 @@ class SarasvatiGraph:
             # Get most recent patient segment
             patient_text = state["patient_buffer"][-1]["segment"]["text"]
 
+        print(f"   ⚖️  Running tribunal on {len(new_alignments)} new alignments. Patient context: {patient_text[:50] if patient_text else 'NONE'}...")
+
         # Run debate for each NEW alignment
         for alignment in new_alignments:
+            print(f"      🔍 Debating: P='{alignment['provider_segment']['text'][:40]}...' vs I='{alignment['interpreter_segment']['text'][:40] if alignment['interpreter_segment'] else 'NONE'}...'")
             debate_result = await self.debate_orchestrator.run_debate(alignment, patient_text)
 
             # Store result
             state["last_debate_result"] = debate_result
+            print(f"      📋 Verdict: {debate_result['arbiter_decision'][:100]}...")
 
             # Add any detected errors
             if debate_result["detected_errors"]:
                 state["detected_errors"].extend(debate_result["detected_errors"])
                 state["should_emit_report"] = True
+                print(f"      🚨 ERRORS FOUND: {len(debate_result['detected_errors'])}")
 
                 # Update error flags
                 for error in debate_result["detected_errors"]:
                     state["error_flags"][error["error_id"]] = True
+            else:
+                print(f"      ✅ No errors detected")
 
         # Update last_verified_count to current matched count
         state["last_verified_count"] = len(matched_pairs)
@@ -416,6 +426,8 @@ class SarasvatiEngine:
             return
 
         try:
+            print(f"🔄 Processing cycle started. Buffers: P={len(self.state['provider_buffer'])}, I={len(self.state['interpreter_buffer'])}, Pt={len(self.state['patient_buffer'])}")
+
             # Run graph with current state
             result = await self.compiled.ainvoke(
                 self.state,
@@ -425,9 +437,12 @@ class SarasvatiEngine:
             # Update state with result
             if result:
                 self.state = result
+                print(f"✅ Cycle done. Matched: {len(self.state['matched_pairs'])}, Errors: {len(self.state['detected_errors'])}")
 
         except Exception as e:
             print(f"⚠️  Processing error: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def stop_session(self) -> Dict[str, Any]:
         """
