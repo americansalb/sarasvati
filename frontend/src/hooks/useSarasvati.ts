@@ -116,7 +116,7 @@ export function useSarasvati(
     socket.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        handleBackendEvent({ type: msg.type, data: msg.data, timestamp: msg.timestamp });
+        handleBackendEvent({ type: msg.type, data: msg.data });
       } catch (e) {
         console.error("Failed to parse WebSocket message:", e);
       }
