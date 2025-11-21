@@ -19,9 +19,10 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Set, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import httpx
 
 from ..core.state import (
     SarasvatiState,
@@ -457,6 +458,77 @@ async def stop_session() -> SessionStopResponse:
         errors_detected=errors_detected,
         critical_errors=critical_errors,
     )
+
+
+# ===== Transcription Endpoint (Groq Whisper) =====
+
+class TranscriptionResponse(BaseModel):
+    text: str
+    role: str
+    duration: float
+
+@app.post("/transcribe", response_model=TranscriptionResponse)
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    role: str = Form(default="provider"),
+) -> TranscriptionResponse:
+    """
+    Transcribe audio using Groq Whisper API.
+    Accepts audio file and role (provider/interpreter/patient).
+    Returns transcription and broadcasts to WebSocket clients.
+    """
+    global engine, session_active
+
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if not groq_api_key:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+
+    # Read audio file
+    audio_data = await audio.read()
+
+    # Call Groq Whisper API
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {groq_api_key}"},
+            files={"file": (audio.filename or "audio.webm", audio_data, audio.content_type or "audio/webm")},
+            data={"model": "whisper-large-v3", "response_format": "json"},
+            timeout=30.0,
+        )
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=f"Groq API error: {response.text}")
+
+    result = response.json()
+    text = result.get("text", "").strip()
+    duration = result.get("duration", 0.0)
+
+    # Create transcript segment
+    segment = TranscriptSegment(
+        role=role,  # type: ignore
+        text=text,
+        timestamp=datetime.utcnow().timestamp(),
+        duration=duration,
+        confidence=1.0,
+        is_final=True,
+    )
+
+    # Feed to engine if session active
+    if session_active and engine:
+        await engine.ingest_transcript(segment)
+
+    # Broadcast transcript to all clients
+    message = build_ws_message("transcript", {
+        "role": role,
+        "text": text,
+        "timestamp": segment["timestamp"],
+        "duration": duration,
+        "confidence": 1.0,
+        "is_final": True,
+    })
+    await manager.broadcast(message)
+
+    return TranscriptionResponse(text=text, role=role, duration=duration)
 
 
 # ===== WebSocket Endpoint =====

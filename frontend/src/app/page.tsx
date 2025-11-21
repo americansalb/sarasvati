@@ -1,325 +1,248 @@
 /**
  * SARASVATI Dashboard - Main Page
  * ================================
- * The "Drishya" (Vision) Interface for the Trisul Protocol
+ * Simple interface: Browser audio + Groq Whisper + Backend tribunal
+ * No LiveKit dependency.
  */
 
 "use client";
 
-import { useState, useEffect } from "react";
-import { useSarasvati } from "@/hooks/useSarasvati";
-import { AudioWaveform } from "@/components/AudioWaveform";
-import { TranscriptStream } from "@/components/TranscriptStream";
-import { ArbiterLog } from "@/components/ArbiterLog";
-import {
-  Wifi,
-  WifiOff,
-  Play,
-  Square,
-  Settings,
-  AlertCircle,
-} from "lucide-react";
-import { clsx } from "clsx";
+import { useState } from "react";
+import { useSarasvatiSimple } from "@/hooks/useSarasvatiSimple";
+import { Wifi, WifiOff, Mic, MicOff, Send, AlertTriangle } from "lucide-react";
+import { StreamRole } from "@/types/sarasvati";
 
-const LIVEKIT_URL = process.env.NEXT_PUBLIC_LIVEKIT_URL || "ws://localhost:7880";
-const BACKEND_WS_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-const ROOM_NAME = process.env.NEXT_PUBLIC_ROOM_NAME || "sarasvati-session";
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
 export default function DashboardPage() {
-  const [simulationMode, setSimulationMode] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-
   const {
     connectionState,
     sessionState,
     connect,
     disconnect,
-    startSimulation,
-    clearErrors,
-    room,
-  } = useSarasvati({
-    livekitUrl: LIVEKIT_URL,
-    backendWsUrl: BACKEND_WS_URL,
-    roomName: ROOM_NAME,
-    autoConnect: false,
-  });
+    startRecording,
+    stopRecording,
+    sendTranscript,
+  } = useSarasvatiSimple({ backendUrl: BACKEND_URL });
 
-  // Handle critical error flash
-  useEffect(() => {
-    const criticalErrors = sessionState.errors.filter(
-      (e) => e.severity === "critical"
-    );
+  const [selectedRole, setSelectedRole] = useState<StreamRole>("provider");
+  const [manualText, setManualText] = useState("");
 
-    if (criticalErrors.length > 0) {
-      // Trigger flash effect
-      document.body.classList.add("critical-flash");
-      setTimeout(() => {
-        document.body.classList.remove("critical-flash");
-      }, 1000);
-    }
-  }, [sessionState.errors]);
-
-  const handleConnect = async () => {
-    try {
-      await connect();
-    } catch (error) {
-      console.error("Connection failed:", error);
+  const handleSendManual = () => {
+    if (manualText.trim()) {
+      sendTranscript(selectedRole, manualText.trim());
+      setManualText("");
     }
   };
 
-  const handleDisconnect = async () => {
-    try {
-      await disconnect();
-      setSimulationMode(false);
-    } catch (error) {
-      console.error("Disconnect failed:", error);
+  const handleToggleRecording = () => {
+    if (connectionState.isRecording) {
+      stopRecording();
+    } else {
+      startRecording(selectedRole);
     }
   };
-
-  const handleStartSimulation = async () => {
-    try {
-      await startSimulation({
-        enabled: true,
-        providerAudioUrl: "/audio/provider.mp3",
-        interpreterAudioUrl: "/audio/interpreter.mp3",
-        patientAudioUrl: "/audio/patient.mp3",
-        autoPlay: true,
-      });
-      setSimulationMode(true);
-    } catch (error) {
-      console.error("Simulation failed:", error);
-    }
-  };
-
-  const isConnected =
-    connectionState.livekitConnected && connectionState.websocketConnected;
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-gray-100">
+    <main className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-gray-100 p-6">
       {/* Header */}
-      <header className="border-b border-gray-800 bg-gray-900/50 backdrop-blur">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            {/* Logo */}
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-                <span className="text-2xl font-bold">🔱</span>
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                  SARASVATI
-                </h1>
-                <p className="text-xs text-gray-400">
-                  Trisul Protocol • Real-time Medical Monitoring
-                </p>
-              </div>
-            </div>
-
-            {/* Connection Status */}
-            <div className="flex items-center gap-4">
-              {/* Status Indicators */}
-              <div className="flex items-center gap-3">
-                <div
-                  className={clsx(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-full text-sm",
-                    connectionState.livekitConnected
-                      ? "bg-green-500/20 text-green-400"
-                      : "bg-gray-800 text-gray-500"
-                  )}
-                >
-                  {connectionState.livekitConnected ? (
-                    <Wifi className="w-4 h-4" />
-                  ) : (
-                    <WifiOff className="w-4 h-4" />
-                  )}
-                  LiveKit
-                </div>
-
-                <div
-                  className={clsx(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-full text-sm",
-                    connectionState.websocketConnected
-                      ? "bg-green-500/20 text-green-400"
-                      : "bg-gray-800 text-gray-500"
-                  )}
-                >
-                  {connectionState.websocketConnected ? (
-                    <Wifi className="w-4 h-4" />
-                  ) : (
-                    <WifiOff className="w-4 h-4" />
-                  )}
-                  Backend
-                </div>
-              </div>
-
-              {/* Control Buttons */}
-              <div className="flex items-center gap-2">
-                {!isConnected ? (
-                  <button
-                    onClick={handleConnect}
-                    className="px-4 py-2 rounded-lg bg-blue-500 hover:bg-blue-600 text-white font-medium flex items-center gap-2 transition"
-                  >
-                    <Play className="w-4 h-4" />
-                    Connect
-                  </button>
-                ) : (
-                  <>
-                    {!simulationMode && (
-                      <button
-                        onClick={handleStartSimulation}
-                        className="px-4 py-2 rounded-lg bg-purple-500 hover:bg-purple-600 text-white font-medium flex items-center gap-2 transition"
-                      >
-                        <Play className="w-4 h-4" />
-                        Start Simulation
-                      </button>
-                    )}
-
-                    <button
-                      onClick={handleDisconnect}
-                      className="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white font-medium flex items-center gap-2 transition"
-                    >
-                      <Square className="w-4 h-4" />
-                      Disconnect
-                    </button>
-                  </>
-                )}
-
-                <button
-                  onClick={() => setShowSettings(!showSettings)}
-                  className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 transition"
-                >
-                  <Settings className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Session Info */}
-          {sessionState.isActive && (
-            <div className="mt-4 flex items-center gap-4 text-sm text-gray-400">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                Session Active
-              </div>
-              {sessionState.sessionId && (
-                <div>ID: {sessionState.sessionId}</div>
-              )}
-              {sessionState.startTime && (
-                <div>
-                  Started{" "}
-                  {new Date(sessionState.startTime).toLocaleTimeString()}
-                </div>
-              )}
-              <div>Errors: {sessionState.errors.length}</div>
-              <div>Transcripts: {sessionState.transcripts.length}</div>
-            </div>
-          )}
-
-          {/* Error Banner */}
-          {connectionState.error && (
-            <div className="mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 text-red-400" />
-              <p className="text-sm text-red-400">{connectionState.error}</p>
-            </div>
-          )}
-        </div>
+      <header className="mb-8">
+        <h1 className="text-3xl font-bold text-white mb-2">SARASVATI</h1>
+        <p className="text-gray-400">Medical Interpreter Monitoring System</p>
       </header>
 
-      {/* Main Content */}
-      <div className="container mx-auto px-6 py-6 space-y-6">
-        {/* Top Row: 3 Waveforms */}
-        <section className="grid grid-cols-3 gap-6">
-          <AudioWaveform role="provider" />
-          <AudioWaveform role="interpreter" />
-          <AudioWaveform role="patient" />
-        </section>
+      {/* Connection Status */}
+      <div className="mb-6 flex items-center gap-4">
+        <div className="flex items-center gap-2">
+          {connectionState.websocketConnected ? (
+            <Wifi className="text-green-500" size={20} />
+          ) : (
+            <WifiOff className="text-red-500" size={20} />
+          )}
+          <span className={connectionState.websocketConnected ? "text-green-400" : "text-red-400"}>
+            {connectionState.websocketConnected ? "Connected" : "Disconnected"}
+          </span>
+        </div>
 
-        {/* Middle Row: Live Transcript */}
-        <section className="bg-gray-900/50 rounded-xl p-6 border border-gray-800">
-          <TranscriptStream
-            transcripts={sessionState.transcripts}
-            maxHeight={400}
-          />
-        </section>
+        {!connectionState.websocketConnected ? (
+          <button
+            onClick={connect}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium"
+          >
+            Connect
+          </button>
+        ) : (
+          <button
+            onClick={disconnect}
+            className="px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg font-medium"
+          >
+            Disconnect
+          </button>
+        )}
 
-        {/* Bottom Row: Arbiter's Log */}
-        <section className="bg-gray-900/50 rounded-xl p-6 border border-gray-800">
-          <ArbiterLog
-            errors={sessionState.errors}
-            onClearErrors={clearErrors}
-          />
-        </section>
-
-        {/* Debug Panel (optional) */}
-        {process.env.NODE_ENV === "development" && sessionState.debugInfo && (
-          <section className="bg-gray-900/50 rounded-xl p-6 border border-gray-800">
-            <h3 className="text-lg font-bold mb-3">🔧 Debug Info</h3>
-            <pre className="text-xs bg-gray-950 p-4 rounded overflow-x-auto">
-              {JSON.stringify(sessionState.debugInfo, null, 2)}
-            </pre>
-          </section>
+        {sessionState.sessionId && (
+          <span className="text-gray-500 text-sm">Session: {sessionState.sessionId}</span>
         )}
       </div>
 
-      {/* Settings Modal */}
-      {showSettings && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          onClick={() => setShowSettings(false)}
-        >
-          <div
-            className="bg-gray-900 rounded-xl p-6 max-w-md w-full border border-gray-800"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-xl font-bold mb-4">⚙️ Settings</h3>
-
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm text-gray-400 mb-1 block">
-                  LiveKit URL
-                </label>
-                <input
-                  type="text"
-                  value={LIVEKIT_URL}
-                  readOnly
-                  className="w-full px-3 py-2 bg-gray-800 rounded border border-gray-700 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm text-gray-400 mb-1 block">
-                  Backend WebSocket URL
-                </label>
-                <input
-                  type="text"
-                  value={BACKEND_WS_URL}
-                  readOnly
-                  className="w-full px-3 py-2 bg-gray-800 rounded border border-gray-700 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm text-gray-400 mb-1 block">
-                  Room Name
-                </label>
-                <input
-                  type="text"
-                  value={ROOM_NAME}
-                  readOnly
-                  className="w-full px-3 py-2 bg-gray-800 rounded border border-gray-700 text-sm"
-                />
-              </div>
-            </div>
-
-            <button
-              onClick={() => setShowSettings(false)}
-              className="mt-6 w-full px-4 py-2 rounded-lg bg-blue-500 hover:bg-blue-600 transition"
-            >
-              Close
-            </button>
-          </div>
+      {connectionState.error && (
+        <div className="mb-6 p-4 bg-red-900/50 border border-red-700 rounded-lg">
+          <p className="text-red-300">{connectionState.error}</p>
         </div>
       )}
+
+      {/* Main Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Input Panel */}
+        <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
+          <h2 className="text-xl font-semibold mb-4">Input</h2>
+
+          {/* Role Selector */}
+          <div className="mb-4">
+            <label className="block text-sm text-gray-400 mb-2">Speaker Role</label>
+            <div className="flex gap-2">
+              {(["provider", "interpreter", "patient"] as StreamRole[]).map((role) => (
+                <button
+                  key={role}
+                  onClick={() => setSelectedRole(role)}
+                  className={`px-4 py-2 rounded-lg capitalize ${
+                    selectedRole === role
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                  }`}
+                >
+                  {role}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Microphone Recording */}
+          <div className="mb-6">
+            <label className="block text-sm text-gray-400 mb-2">Voice Input (Groq Whisper)</label>
+            <button
+              onClick={handleToggleRecording}
+              disabled={!connectionState.websocketConnected}
+              className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium ${
+                connectionState.isRecording
+                  ? "bg-red-600 hover:bg-red-700 animate-pulse"
+                  : "bg-green-600 hover:bg-green-700"
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
+            >
+              {connectionState.isRecording ? (
+                <>
+                  <MicOff size={20} />
+                  Stop Recording
+                </>
+              ) : (
+                <>
+                  <Mic size={20} />
+                  Start Recording ({selectedRole})
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Manual Text Input */}
+          <div>
+            <label className="block text-sm text-gray-400 mb-2">Manual Text Input (for testing)</label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={manualText}
+                onChange={(e) => setManualText(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSendManual()}
+                placeholder={`Type what the ${selectedRole} says...`}
+                className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:border-blue-500"
+                disabled={!connectionState.websocketConnected}
+              />
+              <button
+                onClick={handleSendManual}
+                disabled={!connectionState.websocketConnected || !manualText.trim()}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
+              >
+                <Send size={20} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Errors Panel */}
+        <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+            <AlertTriangle className="text-yellow-500" size={20} />
+            Detected Errors ({sessionState.errors.length})
+          </h2>
+
+          <div className="space-y-3 max-h-96 overflow-y-auto">
+            {sessionState.errors.length === 0 ? (
+              <p className="text-gray-500 italic">No errors detected yet</p>
+            ) : (
+              sessionState.errors.map((error, idx) => (
+                <div
+                  key={idx}
+                  className={`p-4 rounded-lg border ${
+                    error.severity === "critical"
+                      ? "bg-red-900/50 border-red-700"
+                      : error.severity === "high"
+                      ? "bg-orange-900/50 border-orange-700"
+                      : "bg-yellow-900/50 border-yellow-700"
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="font-semibold text-white">{error.error_type}</span>
+                    <span
+                      className={`text-xs px-2 py-1 rounded ${
+                        error.severity === "critical"
+                          ? "bg-red-700"
+                          : error.severity === "high"
+                          ? "bg-orange-700"
+                          : "bg-yellow-700"
+                      }`}
+                    >
+                      {error.severity}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-300">{error.description}</p>
+                  {error.original_text && (
+                    <p className="text-xs text-gray-500 mt-2">Original: "{error.original_text}"</p>
+                  )}
+                  {error.translated_text && (
+                    <p className="text-xs text-gray-500">Translated: "{error.translated_text}"</p>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Transcripts */}
+      <div className="mt-6 bg-gray-800/50 rounded-xl p-6 border border-gray-700">
+        <h2 className="text-xl font-semibold mb-4">Transcripts</h2>
+        <div className="space-y-2 max-h-64 overflow-y-auto">
+          {sessionState.transcripts.length === 0 ? (
+            <p className="text-gray-500 italic">No transcripts yet. Connect and start speaking or typing.</p>
+          ) : (
+            sessionState.transcripts.map((t, idx) => (
+              <div key={idx} className="flex gap-3">
+                <span
+                  className={`text-xs px-2 py-1 rounded capitalize ${
+                    t.role === "provider"
+                      ? "bg-blue-700"
+                      : t.role === "interpreter"
+                      ? "bg-purple-700"
+                      : "bg-green-700"
+                  }`}
+                >
+                  {t.role}
+                </span>
+                <span className="text-gray-300">{t.text}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     </main>
   );
 }
