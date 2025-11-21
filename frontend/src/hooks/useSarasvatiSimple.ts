@@ -31,7 +31,7 @@ interface UseSarasvatiReturn {
   sessionState: SessionState;
   connect: () => Promise<void>;
   disconnect: () => void;
-  startRecording: (role: StreamRole) => Promise<void>;
+  startRecording: (role: StreamRole, language?: string) => Promise<void>;
   stopRecording: () => void;
   sendTranscript: (role: StreamRole, text: string) => void;
 }
