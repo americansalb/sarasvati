@@ -392,23 +392,20 @@ export function useSarasvati(
         playAudio(interpreterBuffer, interpreterDestination, 5000); // 5s delay
         playAudio(patientBuffer, patientDestination, 10000); // 10s delay
 
-        // Publish tracks to LiveKit
+        // Publish tracks to LiveKit (name set via publishTrack options)
         const providerTrack = new LocalAudioTrack(
-          providerDestination.stream.getAudioTracks()[0],
-          { name: "provider" }
+          providerDestination.stream.getAudioTracks()[0]
         );
         const interpreterTrack = new LocalAudioTrack(
-          interpreterDestination.stream.getAudioTracks()[0],
-          { name: "interpreter" }
+          interpreterDestination.stream.getAudioTracks()[0]
         );
         const patientTrack = new LocalAudioTrack(
-          patientDestination.stream.getAudioTracks()[0],
-          { name: "patient" }
+          patientDestination.stream.getAudioTracks()[0]
         );
 
-        await roomRef.current.localParticipant.publishTrack(providerTrack);
-        await roomRef.current.localParticipant.publishTrack(interpreterTrack);
-        await roomRef.current.localParticipant.publishTrack(patientTrack);
+        await roomRef.current.localParticipant.publishTrack(providerTrack, { name: "provider" });
+        await roomRef.current.localParticipant.publishTrack(interpreterTrack, { name: "interpreter" });
+        await roomRef.current.localParticipant.publishTrack(patientTrack, { name: "patient" });
 
         console.log("✅ Simulation tracks published");
       } catch (error) {
