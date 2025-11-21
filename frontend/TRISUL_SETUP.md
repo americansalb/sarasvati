@@ -78,12 +78,13 @@ frontend/
 ## 🔧 Technical Implementation
 
 ### Wavesurfer.js Integration
-- **Version:** 7.7.0 (already in dependencies)
-- **Plugins:** RegionsPlugin for error highlighting
-- **Approach:**
-  - 3 separate WaveSurfer instances (one per role)
-  - Synchronized playback across all tracks
-  - Stacked vertically in unified container
+- **Version:** 7.7.0 (core library)
+- **Multitrack Plugin:** v0.4.12
+- **Architecture:**
+  - **One Multitrack instance** (the Trident shaft)
+  - **Three tracks** (the prongs): Provider, Interpreter, Patient
+  - Centralized cursor, zoom, and playback control
+  - RegionsPlugin attached to Interpreter track for error highlighting
 
 ### Audio Generation
 - Dummy waveforms generated using Web Audio API

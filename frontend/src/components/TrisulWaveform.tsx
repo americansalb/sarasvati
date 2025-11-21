@@ -2,101 +2,74 @@
  * Trisul Waveform Component
  * ==========================
  * Unified 3-track waveform visualization for Provider, Interpreter, Patient.
- * Uses wavesurfer.js with synchronized tracks and error region overlay.
+ * Uses wavesurfer.js with the Multitrack plugin for synchronized rendering.
+ *
+ * Architecture: One Trident (Multitrack instance), three prongs (tracks).
  */
 
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import WaveSurfer from "wavesurfer.js";
+import Multitrack from "wavesurfer-multitrack";
+import type { MultitrackTracks } from "wavesurfer-multitrack";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.esm.js";
 import { Play, Square, AlertTriangle } from "lucide-react";
 
-interface Track {
+interface TrackMetadata {
+  id: string;
   role: "provider" | "interpreter" | "patient";
   label: string;
   color: string;
   icon: string;
-  wavesurfer: WaveSurfer | null;
-  regions: RegionsPlugin | null;
 }
 
-export function TrisulWaveform() {
-  const providerRef = useRef<HTMLDivElement>(null);
-  const interpreterRef = useRef<HTMLDivElement>(null);
-  const patientRef = useRef<HTMLDivElement>(null);
+const TRACK_METADATA: TrackMetadata[] = [
+  {
+    id: "provider",
+    role: "provider",
+    label: "Provider (Doctor)",
+    color: "#3b82f6", // blue-500
+    icon: "👨‍⚕️",
+  },
+  {
+    id: "interpreter",
+    role: "interpreter",
+    label: "Interpreter",
+    color: "#a855f7", // purple-500
+    icon: "🌐",
+  },
+  {
+    id: "patient",
+    role: "patient",
+    label: "Patient",
+    color: "#10b981", // green-500
+    icon: "🧑",
+  },
+];
 
-  const [tracks, setTracks] = useState<Track[]>([
-    {
-      role: "provider",
-      label: "Provider (Doctor)",
-      color: "#3b82f6", // blue-500
-      icon: "👨‍⚕️",
-      wavesurfer: null,
-      regions: null,
-    },
-    {
-      role: "interpreter",
-      label: "Interpreter",
-      color: "#a855f7", // purple-500
-      icon: "🌐",
-      wavesurfer: null,
-      regions: null,
-    },
-    {
-      role: "patient",
-      label: "Patient",
-      color: "#10b981", // green-500
-      icon: "🧑",
-      wavesurfer: null,
-      regions: null,
-    },
-  ]);
+export function TrisulWaveform() {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const multitrackRef = useRef<Multitrack | null>(null);
+  const interpreterRegionsRef = useRef<RegionsPlugin | null>(null);
+  const audioUrlsRef = useRef<string[]>([]);
 
   const [isSimulating, setIsSimulating] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [trackStatuses, setTrackStatuses] = useState<Record<string, "waiting" | "ready">>({
+    provider: "waiting",
+    interpreter: "waiting",
+    patient: "waiting",
+  });
 
-  // Initialize WaveSurfer instances
+  // Cleanup on unmount
   useEffect(() => {
-    if (!providerRef.current || !interpreterRef.current || !patientRef.current)
-      return;
-
-    const refs = [providerRef.current, interpreterRef.current, patientRef.current];
-
-    const newTracks = tracks.map((track, index) => {
-      // Create regions plugin for interpreter track
-      const regions =
-        track.role === "interpreter" ? RegionsPlugin.create() : null;
-
-      const wavesurfer = WaveSurfer.create({
-        container: refs[index],
-        waveColor: track.color,
-        progressColor: track.color + "cc", // slightly transparent
-        cursorColor: "#ffffff",
-        barWidth: 2,
-        barGap: 1,
-        barRadius: 2,
-        height: 80,
-        normalize: true,
-        plugins: regions ? [regions] : [],
-      });
-
-      return {
-        ...track,
-        wavesurfer,
-        regions,
-      };
-    });
-
-    setTracks(newTracks);
-
-    // Cleanup
     return () => {
-      newTracks.forEach((track) => {
-        track.wavesurfer?.destroy();
-      });
+      // Cleanup multitrack instance
+      multitrackRef.current?.destroy();
+
+      // Revoke object URLs
+      audioUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Generate dummy audio buffer for simulation
@@ -120,44 +93,6 @@ export function TrisulWaveform() {
     }
 
     return buffer;
-  };
-
-  // Start simulation mode
-  const startSimulation = () => {
-    if (tracks.some((t) => !t.wavesurfer)) return;
-
-    setIsSimulating(true);
-
-    // Generate different dummy waveforms for each track
-    const providerBuffer = generateDummyAudio(10, 200); // Lower frequency
-    const interpreterBuffer = generateDummyAudio(10, 300); // Mid frequency
-    const patientBuffer = generateDummyAudio(10, 250); // Mid-low frequency
-
-    // Load buffers into wavesurfer instances
-    tracks[0].wavesurfer?.loadBlob(
-      new Blob([audioBufferToWav(providerBuffer)], { type: "audio/wav" })
-    );
-    tracks[1].wavesurfer?.loadBlob(
-      new Blob([audioBufferToWav(interpreterBuffer)], { type: "audio/wav" })
-    );
-    tracks[2].wavesurfer?.loadBlob(
-      new Blob([audioBufferToWav(patientBuffer)], { type: "audio/wav" })
-    );
-
-    // Add red error region to interpreter track after loading
-    setTimeout(() => {
-      if (tracks[1].regions && tracks[1].wavesurfer) {
-        const duration = tracks[1].wavesurfer.getDuration();
-
-        tracks[1].regions.addRegion({
-          start: duration * 0.3, // 30% into the track
-          end: duration * 0.5, // 50% into the track
-          color: "rgba(239, 68, 68, 0.3)", // red-500 with transparency
-          drag: false,
-          resize: false,
-        });
-      }
-    }, 500);
   };
 
   // Simple AudioBuffer to WAV converter
@@ -220,27 +155,159 @@ export function TrisulWaveform() {
     return arrayBuffer;
   };
 
-  // Play/pause all tracks synchronously
+  // Start simulation mode
+  const startSimulation = () => {
+    if (!containerRef.current) return;
+
+    setIsSimulating(true);
+
+    // Generate different dummy waveforms for each track
+    const providerBuffer = generateDummyAudio(10, 200); // Lower frequency
+    const interpreterBuffer = generateDummyAudio(10, 300); // Mid frequency
+    const patientBuffer = generateDummyAudio(10, 250); // Mid-low frequency
+
+    // Convert to blobs
+    const providerBlob = new Blob([audioBufferToWav(providerBuffer)], {
+      type: "audio/wav",
+    });
+    const interpreterBlob = new Blob([audioBufferToWav(interpreterBuffer)], {
+      type: "audio/wav",
+    });
+    const patientBlob = new Blob([audioBufferToWav(patientBuffer)], {
+      type: "audio/wav",
+    });
+
+    // Create object URLs
+    const providerUrl = URL.createObjectURL(providerBlob);
+    const interpreterUrl = URL.createObjectURL(interpreterBlob);
+    const patientUrl = URL.createObjectURL(patientBlob);
+
+    // Store URLs for cleanup
+    audioUrlsRef.current = [providerUrl, interpreterUrl, patientUrl];
+
+    // Create regions plugin for interpreter track
+    const interpreterRegions = RegionsPlugin.create();
+    interpreterRegionsRef.current = interpreterRegions;
+
+    // Define tracks for Multitrack
+    const tracks: MultitrackTracks = [
+      {
+        id: "provider",
+        url: providerUrl,
+        startPosition: 0,
+        options: {
+          waveColor: TRACK_METADATA[0].color,
+          progressColor: TRACK_METADATA[0].color + "cc",
+          height: 80,
+          normalize: true,
+          barWidth: 2,
+          barGap: 1,
+          barRadius: 2,
+        },
+      },
+      {
+        id: "interpreter",
+        url: interpreterUrl,
+        startPosition: 0,
+        options: {
+          waveColor: TRACK_METADATA[1].color,
+          progressColor: TRACK_METADATA[1].color + "cc",
+          height: 80,
+          normalize: true,
+          barWidth: 2,
+          barGap: 1,
+          barRadius: 2,
+          plugins: [interpreterRegions],
+        },
+      },
+      {
+        id: "patient",
+        url: patientUrl,
+        startPosition: 0,
+        options: {
+          waveColor: TRACK_METADATA[2].color,
+          progressColor: TRACK_METADATA[2].color + "cc",
+          height: 80,
+          normalize: true,
+          barWidth: 2,
+          barGap: 1,
+          barRadius: 2,
+        },
+      },
+    ];
+
+    // Create the Multitrack instance (one Trident)
+    const multitrack = Multitrack.create(tracks, {
+      container: containerRef.current,
+      cursorColor: "#ffffff",
+      cursorWidth: 2,
+      trackBackground: "#1f2937", // gray-800
+      trackBorderColor: "#374151", // gray-700
+      rightButtonDrag: false,
+    });
+
+    multitrackRef.current = multitrack;
+
+    // Update track statuses
+    setTrackStatuses({
+      provider: "ready",
+      interpreter: "ready",
+      patient: "ready",
+    });
+
+    // Add red error region to interpreter track after loading
+    setTimeout(() => {
+      if (interpreterRegionsRef.current) {
+        // Use fixed duration of 10 seconds (since we know our dummy audio is 10s)
+        const duration = 10;
+
+        interpreterRegionsRef.current.addRegion({
+          start: duration * 0.3, // 30% into the track
+          end: duration * 0.5, // 50% into the track
+          color: "rgba(239, 68, 68, 0.3)", // red-500 with transparency
+          drag: false,
+          resize: false,
+        });
+      }
+    }, 1000); // Give it time to render
+  };
+
+  // Play/pause all tracks synchronously (Multitrack handles this automatically)
   const togglePlayback = () => {
-    if (!isSimulating) return;
+    if (!isSimulating || !multitrackRef.current) return;
 
     if (isPlaying) {
-      tracks.forEach((track) => track.wavesurfer?.pause());
+      multitrackRef.current.pause();
       setIsPlaying(false);
     } else {
-      tracks.forEach((track) => track.wavesurfer?.play());
+      multitrackRef.current.play();
       setIsPlaying(true);
     }
   };
 
   // Stop simulation
   const stopSimulation = () => {
-    tracks.forEach((track) => {
-      track.wavesurfer?.stop();
-      track.regions?.clearRegions();
-    });
+    if (multitrackRef.current) {
+      multitrackRef.current.pause();
+      multitrackRef.current.destroy();
+      multitrackRef.current = null;
+    }
+
+    // Clear regions
+    interpreterRegionsRef.current?.clearRegions();
+    interpreterRegionsRef.current = null;
+
+    // Revoke object URLs
+    audioUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    audioUrlsRef.current = [];
+
     setIsSimulating(false);
     setIsPlaying(false);
+    setTrackStatuses({
+      provider: "waiting",
+      interpreter: "waiting",
+      patient: "waiting",
+    });
   };
 
   return (
@@ -253,7 +320,7 @@ export function TrisulWaveform() {
             Trisul Protocol — Live Audio Streams
           </h2>
           <p className="text-sm text-gray-400 mt-1">
-            Real-time waveform visualization of Provider, Interpreter, and Patient
+            Real-time waveform visualization using Multitrack plugin
           </p>
         </div>
 
@@ -297,64 +364,50 @@ export function TrisulWaveform() {
         </div>
       </div>
 
-      {/* Tracks */}
-      <div className="space-y-4">
-        {tracks.map((track, index) => (
+      {/* Track Headers (before Multitrack container) */}
+      <div className="space-y-3 mb-4">
+        {TRACK_METADATA.map((track) => (
           <div
-            key={track.role}
-            className="track bg-gray-900 border border-gray-800 rounded-lg p-4"
+            key={track.id}
+            className="flex items-center justify-between px-4 py-2 bg-gray-900 border border-gray-800 rounded-lg"
           >
-            {/* Track Header */}
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <span className="text-2xl">{track.icon}</span>
-                <div>
-                  <h3 className="font-semibold text-sm text-white">
-                    {track.label}
-                  </h3>
-                  <p className="text-xs text-gray-400">
-                    {isSimulating ? (
-                      <span className="flex items-center gap-1">
-                        <span
-                          className="w-2 h-2 rounded-full animate-pulse"
-                          style={{ backgroundColor: track.color }}
-                        />
-                        {isPlaying ? "Playing" : "Ready"}
-                      </span>
-                    ) : (
-                      "Waiting..."
-                    )}
-                  </p>
-                </div>
+            <div className="flex items-center gap-2">
+              <span className="text-2xl">{track.icon}</span>
+              <div>
+                <h3 className="font-semibold text-sm text-white">{track.label}</h3>
+                <p className="text-xs text-gray-400">
+                  {trackStatuses[track.id] === "ready" ? (
+                    <span className="flex items-center gap-1">
+                      <span
+                        className="w-2 h-2 rounded-full animate-pulse"
+                        style={{ backgroundColor: track.color }}
+                      />
+                      {isPlaying ? "Playing" : "Ready"}
+                    </span>
+                  ) : (
+                    "Waiting..."
+                  )}
+                </p>
               </div>
-
-              {/* Error indicator for interpreter track */}
-              {track.role === "interpreter" && isSimulating && (
-                <div className="flex items-center gap-2 px-3 py-1 bg-red-950 border border-red-800 rounded text-red-400 text-xs">
-                  <AlertTriangle className="w-3 h-3" />
-                  Error Region Detected
-                </div>
-              )}
             </div>
 
-            {/* Waveform Container */}
-            <div
-              ref={
-                index === 0
-                  ? providerRef
-                  : index === 1
-                    ? interpreterRef
-                    : patientRef
-              }
-              className="waveform-container rounded bg-gray-950"
-              style={{
-                borderLeft: `3px solid ${track.color}`,
-                paddingLeft: "8px",
-              }}
-            />
+            {/* Error indicator for interpreter track */}
+            {track.role === "interpreter" && isSimulating && (
+              <div className="flex items-center gap-2 px-3 py-1 bg-red-950 border border-red-800 rounded text-red-400 text-xs">
+                <AlertTriangle className="w-3 h-3" />
+                Error Region Detected
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      {/* Multitrack Container (single unified instance) */}
+      <div
+        ref={containerRef}
+        className="multitrack-container rounded-lg bg-gray-900 border border-gray-800 p-4"
+        style={{ minHeight: "300px" }}
+      />
 
       {/* Legend */}
       {isSimulating && (
@@ -381,6 +434,11 @@ export function TrisulWaveform() {
                 Error region (simulated misinterpretation)
               </span>
             </div>
+          </div>
+          <div className="mt-3 p-3 bg-blue-950 border border-blue-800 rounded text-xs text-blue-200">
+            <strong>Architecture:</strong> One Multitrack instance (the Trident shaft)
+            manages three synchronized tracks (the prongs). Cursor, zoom, and playback
+            are centrally controlled.
           </div>
         </div>
       )}
