@@ -3,7 +3,8 @@
  * ==================================
  * Phase 4: Jiva (Integration) - Connect Drishya (Frontend) to Trisul (Backend)
  *
- * Connects to ws://localhost:8000/ws and subscribes to SarasvatiState updates.
+ * Connects to backend WebSocket and subscribes to SarasvatiState updates.
+ * URL determined by NEXT_PUBLIC_BACKEND_URL env var, fallback to localhost for dev.
  * Exposes detected_error events for TrisulWaveform to draw red regions.
  *
  * PROTOCOL ALIGNMENT: This hook matches the backend's TypedDict schemas exactly.
@@ -13,6 +14,31 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+
+// ===== Dynamic WebSocket URL (Phase 6: Cloud-Native) =====
+
+/**
+ * Derives WebSocket URL from environment or falls back to localhost.
+ * - NEXT_PUBLIC_BACKEND_URL=https://api.example.com → wss://api.example.com/ws
+ * - NEXT_PUBLIC_BACKEND_URL=http://localhost:8000 → ws://localhost:8000/ws
+ * - undefined → ws://localhost:8000/ws (local dev fallback)
+ */
+function getWebSocketUrl(): string {
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+
+  if (!backendUrl) {
+    // Local development fallback
+    return "ws://localhost:8000/ws";
+  }
+
+  // Convert http(s) to ws(s)
+  const wsUrl = backendUrl
+    .replace(/^https:\/\//, "wss://")
+    .replace(/^http:\/\//, "ws://");
+
+  // Ensure /ws path
+  return wsUrl.endsWith("/ws") ? wsUrl : `${wsUrl.replace(/\/$/, "")}/ws`;
+}
 
 // ===== Types (aligned with backend/sarasvati/core/state.py) =====
 
@@ -165,7 +191,7 @@ export function useSarasvatiBackend(
   options: UseSarasvatiBackendOptions = {}
 ): UseSarasvatiBackendReturn {
   const {
-    url = "ws://localhost:8000/ws",
+    url = getWebSocketUrl(),
     autoConnect = false,
     onError,
   } = options;

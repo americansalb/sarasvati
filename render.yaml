@@ -1,0 +1,53 @@
+# SARASVATI Render Blueprint (Phase 6: Megh)
+# ==========================================
+# Infrastructure-as-Code for Render.com deployment.
+# Deploy with: render blueprint sync
+
+services:
+  # ===== Redis (Private Service) =====
+  - type: redis
+    name: sarasvati-redis
+    plan: free
+    ipAllowList: []  # Only internal access
+
+  # ===== Backend (Python Web Service) =====
+  - type: web
+    name: sarasvati-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: chmod +x start.sh && ./start.sh
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: GROQ_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: REDIS_URL
+        fromService:
+          name: sarasvati-redis
+          type: redis
+          property: connectionString
+      - key: FRONTEND_URL
+        fromService:
+          name: sarasvati-frontend
+          type: web
+          property: url
+
+  # ===== Frontend (Node Web Service) =====
+  - type: web
+    name: sarasvati-frontend
+    runtime: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NEXT_PUBLIC_BACKEND_URL
+        fromService:
+          name: sarasvati-backend
+          type: web
+          property: url

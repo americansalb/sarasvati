@@ -13,9 +13,10 @@ Protocol: All WebSocket messages match PHASE4_INTEGRATION.md schema exactly.
 
 import asyncio
 import json
+import os
 import uuid
 from datetime import datetime
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any, Set, List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
@@ -292,10 +293,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware for frontend access
+# CORS middleware for frontend access (Phase 6: Cloud-Native)
+def get_cors_origins() -> List[str]:
+    """Build CORS origins list from environment + localhost for dev."""
+    origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    frontend_url = os.getenv("FRONTEND_URL")
+    if frontend_url:
+        origins.append(frontend_url)
+        # Also allow without trailing slash
+        origins.append(frontend_url.rstrip("/"))
+    return origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify actual origins
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -544,15 +558,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 if __name__ == "__main__":
     import uvicorn
 
+    # Phase 6: Use PORT env var (Render assigns dynamic port)
+    port = int(os.getenv("PORT", "8000"))
+
     print("\n" + "=" * 60)
     print("SARASVATI API Server - Phase 5: The Gatekeeper")
     print("=" * 60)
+    print(f"\nPort: {port}")
     print("\nEndpoints:")
     print("  - GET  /health          Health check")
     print("  - POST /session/start   Start monitoring session")
     print("  - POST /session/stop    Stop monitoring session")
     print("  - WS   /ws              WebSocket for real-time events")
-    print("\nRun with: uvicorn sarasvati.api.server:app --host 0.0.0.0 --port 8000 --reload")
+    print("\nRun with: uvicorn sarasvati.api.server:app --host 0.0.0.0 --port $PORT --reload")
     print("=" * 60 + "\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=port)
