@@ -395,9 +395,13 @@ class SarasvatiEngine:
         elif segment["role"] == StreamRole.PATIENT:
             self.state["patient_buffer"].append(buffer_entry)
 
-        # Trigger processing if buffer is large enough
-        # Non-blocking: processing runs in the background
-        if len(self.state["provider_buffer"]) >= 3:
+        # Trigger processing when we have segments to align
+        # Changed from >= 3 to >= 1 for responsive real-time monitoring
+        provider_count = len(self.state["provider_buffer"])
+        interpreter_count = len(self.state["interpreter_buffer"])
+
+        # Trigger if we have both provider and interpreter segments
+        if provider_count >= 1 and interpreter_count >= 1:
             # Single-flight: only one cycle at a time
             if not self._processing_task or self._processing_task.done():
                 self._processing_task = asyncio.create_task(self._process_cycle())
