@@ -62,6 +62,7 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
     errors: [],
     transcripts: [],
     alignments: [],
+    verdicts: [],
     debugInfo: null,
   });
 
@@ -156,6 +157,22 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
         setSessionState((prev) => ({
           ...prev,
           alignments: [...prev.alignments, event.data].slice(-20),
+        }));
+        break;
+
+      case "tribunal_verdict":
+        console.log("⚖️ TRIBUNAL VERDICT:", event.data);
+        setSessionState((prev) => ({
+          ...prev,
+          verdicts: [...(prev.verdicts || []), event.data].slice(-20),
+        }));
+        break;
+
+      case "detected_error":
+        console.warn("🚨 DETECTED ERROR:", event.data);
+        setSessionState((prev) => ({
+          ...prev,
+          errors: [...prev.errors, event.data],
         }));
         break;
     }

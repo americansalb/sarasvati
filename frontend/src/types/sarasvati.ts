@@ -108,6 +108,19 @@ export interface AudioTrackState {
   waveformData: Float32Array | null;
 }
 
+export interface TribunalVerdict {
+  confidence: number;
+  severity: string;
+  num_issues: number;
+  arbiter_decision: string;
+  monitor_findings: string[];
+  errors: Array<{
+    severity: string;
+    error_type: string;
+    description: string;
+  }>;
+}
+
 export interface SessionState {
   sessionId: string | null;
   isActive: boolean;
@@ -115,6 +128,7 @@ export interface SessionState {
   errors: ClinicalError[];
   transcripts: TranscriptSegment[];
   alignments: AlignmentMatch[];
+  verdicts: TribunalVerdict[];
   debugInfo: AgentDebateResult | null;
 }
 
