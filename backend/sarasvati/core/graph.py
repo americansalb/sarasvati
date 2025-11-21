@@ -208,9 +208,15 @@ class SarasvatiGraph:
         if not new_alignments:
             return state
 
+        # Get most recent patient text for triadic validation (Trisul Protocol)
+        patient_text = ""
+        if state["patient_buffer"]:
+            # Get most recent patient segment
+            patient_text = state["patient_buffer"][-1]["segment"]["text"]
+
         # Run debate for each NEW alignment
         for alignment in new_alignments:
-            debate_result = await self.debate_orchestrator.run_debate(alignment)
+            debate_result = await self.debate_orchestrator.run_debate(alignment, patient_text)
 
             # Store result
             state["last_debate_result"] = debate_result

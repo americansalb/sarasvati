@@ -67,9 +67,10 @@ class NodeAExtractor:
         provider_segment: TranscriptSegment,
         interpreter_segment: Optional[TranscriptSegment],
         alignment: AlignmentMatch,
+        patient_text: str = "",
     ) -> Tuple[Dict[str, Any], str]:
         """
-        Extract and compare medical facts from both streams.
+        Extract and compare medical facts from all three streams (Trisul Protocol).
 
         Returns:
             Tuple of (structured_json, extractor_notes)
@@ -77,18 +78,22 @@ class NodeAExtractor:
         provider_text = provider_segment["text"]
         interpreter_text = interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
 
-        prompt = f"""You are a clinical extraction engine. Your task is to extract medical facts from BOTH utterances and produce a structured comparison.
+        # Build patient context for triadic validation
+        patient_context = f'\nPATIENT SAID (in their language):\n"{patient_text}"\n' if patient_text else ""
+
+        prompt = f"""You are a clinical extraction engine. Your task is to extract medical facts from ALL utterances and produce a structured comparison.
 
 PROVIDER SAID:
 "{provider_text}"
 
 INTERPRETER SAID:
 "{interpreter_text}"
-
+{patient_context}
 ALIGNMENT SCORE: {alignment["similarity_score"]:.2f}
 TIME DELTA: {alignment["time_delta"]:.1f} seconds
 
-Extract ALL medical entities from BOTH utterances. Compare them side-by-side.
+Extract ALL medical entities from ALL utterances. Compare them side-by-side.
+IMPORTANT: If interpreter claims to translate what the patient said, verify it matches the patient's actual words.
 
 Return ONLY valid JSON in this exact format:
 {{
@@ -152,13 +157,25 @@ class NodeBMonitor:
         self,
         provider_text: str,
         interpreter_text: str,
+        patient_text: str = "",
     ) -> str:
         """
         Independently analyze the utterances without seeing Node A's output.
+        Implements Trisul Protocol - triangulates all three streams.
 
         Returns:
             Plain-text critique
         """
+        # Build patient context for triadic validation
+        patient_section = f'''
+PATIENT'S ACTUAL STATEMENT (in their language):
+"{patient_text}"
+''' if patient_text else ""
+
+        triangulation_note = """
+6. BACK-TRANSLATION VERIFICATION: If interpreter claims to translate what the patient said,
+   does it actually match the patient's statement? Watch for malicious fabrications!""" if patient_text else ""
+
         prompt = f"""You are a SKEPTICAL medical interpretation monitor. You do NOT see any prior extraction or analysis. Read the text yourself.
 
 PROVIDER'S ORIGINAL STATEMENT:
@@ -166,7 +183,7 @@ PROVIDER'S ORIGINAL STATEMENT:
 
 INTERPRETER'S RENDITION:
 "{interpreter_text}"
-
+{patient_section}
 Your job: Be a skeptic. Assume errors exist until proven otherwise.
 
 Analyze for:
@@ -174,7 +191,7 @@ Analyze for:
 2. ADDITIONS: What did the interpreter add that wasn't in the original?
 3. CHANGES: What was modified (numbers, negations, medications)?
 4. NEGATION FLIPS: Did "do not take" become "take" or vice versa?
-5. SEVERITY: If you find issues, are they life-threatening?
+5. SEVERITY: If you find issues, are they life-threatening?{triangulation_note}
 
 Write a plain-text critique. Be specific. Quote the exact words that concern you.
 
@@ -227,13 +244,27 @@ class NodeCArbiter:
         extractor_json: Dict[str, Any],
         monitor_report: str,
         alignment: AlignmentMatch,
+        patient_text: str = "",
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Make final judgment based on raw evidence and junior analysts' reports.
+        Implements Trisul Protocol - triangulates all three streams.
 
         Returns:
             Tuple of (reasoning, list of error dicts)
         """
+        # Build patient evidence section
+        patient_evidence = f'''
+PATIENT'S ACTUAL STATEMENT (in their language):
+"{patient_text}"
+''' if patient_text else ""
+
+        triangulation_rule = """
+6. TRIANGULATION (CRITICAL): If interpreter claims "the patient said X", verify against
+   the patient's ACTUAL statement above. Malicious interpreters may fabricate insults
+   or false claims - catch them by comparing to what the patient REALLY said!
+""" if patient_text else ""
+
         prompt = f"""You are a SENIOR MEDICAL JUDGE presiding over a clinical interpretation case.
 
 ═══════════════════════════════════════════════════════════
@@ -245,6 +276,7 @@ PROVIDER'S ORIGINAL STATEMENT:
 
 INTERPRETER'S RENDITION:
 "{interpreter_text}"
+{patient_evidence}
 
 ═══════════════════════════════════════════════════════════
 JUNIOR ANALYST REPORTS (These may contain errors)
@@ -265,9 +297,9 @@ YOUR DUTY AS SENIOR JUDGE
 3. If Node A or B claims something that contradicts the raw text, OVERRIDE them
 4. If Node A and B disagree, go back to the raw text to decide
 5. Patient safety is paramount - when in doubt, flag for human review
-
+{triangulation_rule}
 SEVERITY GUIDE:
-- CRITICAL: Wrong medication, wrong dosage, negation flip (e.g., "do not" → "do")
+- CRITICAL: Wrong medication, wrong dosage, negation flip (e.g., "do not" → "do"), FABRICATED statements about what patient said
 - HIGH: Omitted key medical information
 - MEDIUM: Partial omission or imprecise translation
 - LOW: Minor linguistic differences, acceptable paraphrasing
@@ -355,15 +387,18 @@ class ClinicalDebateOrchestrator:
     async def run_debate(
         self,
         alignment: AlignmentMatch,
+        patient_text: str = "",
     ) -> AgentDebateResult:
         """
         Run the Independent Tribunal with anti-telephone data flow.
+        Implements Trisul Protocol - triangulates Provider ↔ Interpreter ↔ Patient.
 
         Flow:
         1. Node A (Extractor) and Node B (Monitor) run IN PARALLEL
         2. Node B does NOT see Node A's output (blind analysis)
-        3. Node C (Arbiter) receives raw evidence + both reports
-        4. Node C can OVERRIDE junior analysts
+        3. All nodes see patient_text for triangulation
+        4. Node C (Arbiter) receives raw evidence + both reports
+        5. Node C can OVERRIDE junior analysts
         """
         start_time = datetime.utcnow()
 
@@ -383,10 +418,10 @@ class ClinicalDebateOrchestrator:
         # ═══════════════════════════════════════════════════════════
 
         extractor_task = asyncio.create_task(
-            self.extractor.extract_comparison(provider_segment, interpreter_segment, alignment)
+            self.extractor.extract_comparison(provider_segment, interpreter_segment, alignment, patient_text)
         )
         monitor_task = asyncio.create_task(
-            self.monitor.analyze_independently(provider_text, interpreter_text)
+            self.monitor.analyze_independently(provider_text, interpreter_text, patient_text)
         )
 
         # Wait for both to complete
@@ -404,6 +439,7 @@ class ClinicalDebateOrchestrator:
             extractor_json=extractor_json,
             monitor_report=monitor_report,
             alignment=alignment,
+            patient_text=patient_text,
         )
 
         # Convert error dicts to ClinicalError objects
