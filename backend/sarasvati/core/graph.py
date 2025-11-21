@@ -337,6 +337,10 @@ class SarasvatiEngine:
         self.state: Optional[SarasvatiState] = None
         self.session_id: Optional[str] = None
 
+        # CRITICAL: Ensure only one processing cycle runs at a time
+        # Per Bhairava's stress audit: prevent concurrent graph cycles on shared state
+        self._processing_task: Optional[asyncio.Task] = None
+
     async def start_session(self, session_id: str) -> None:
         """
         Start a new monitoring session.
@@ -387,8 +391,12 @@ class SarasvatiEngine:
         # Trigger processing if buffer is large enough
         # CRITICAL FIX: Use asyncio.create_task to prevent ingestion starvation
         # This allows ingest to return immediately while processing runs in background
+        # CRITICAL FIX: Single-flight pattern - only one cycle at a time
+        # Per Bhairava's stress audit: prevent concurrent cycles racing on shared state
         if len(self.state["provider_buffer"]) >= 3:
-            asyncio.create_task(self._process_cycle())
+            # Only start a new cycle if none is running
+            if not self._processing_task or self._processing_task.done():
+                self._processing_task = asyncio.create_task(self._process_cycle())
 
     async def _process_cycle(self) -> None:
         """

@@ -14,6 +14,7 @@ import numpy as np
 from typing import List, Optional, Tuple
 from datetime import datetime, timedelta
 import asyncio
+import threading
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -57,6 +58,10 @@ class AlignmentEngine:
         self._embedding_cache: dict = {}
         self.use_real_embeddings = use_real_embeddings
         self._model = None
+
+        # CRITICAL: Lock for embedding cache to prevent race conditions
+        # Per Bhairava's stress audit: multiple worker threads may access cache concurrently
+        self._cache_lock = threading.Lock()
 
         # CRITICAL: ThreadPoolExecutor for CPU-bound work (embedding + DTW)
         # This prevents blocking the event loop during matrix multiplication
@@ -271,12 +276,17 @@ class AlignmentEngine:
         Returns:
             Embedding vector of shape (embedding_dim,)
         """
-        # Check cache first
+        # Check cache first (with lock to prevent race conditions)
+        # Per Bhairava's stress audit: multiple worker threads may read cache concurrently
         cache_key = hash(text)
-        if cache_key in self._embedding_cache:
-            return self._embedding_cache[cache_key]
+        with self._cache_lock:
+            cached = self._embedding_cache.get(cache_key)
 
-        # Use real model if available
+        if cached is not None:
+            return cached
+
+        # Compute embedding OUTSIDE lock (allow parallel model calls)
+        # This is the expensive operation - we want multiple threads computing different embeddings
         if self._model is not None:
             # Real inference using sentence-transformers
             # This runs on CPU and takes ~10-20ms per sentence
@@ -285,8 +295,9 @@ class AlignmentEngine:
             # Fallback to mock (not suitable for production!)
             embedding = self._mock_embedding(text)
 
-        # Cache the result
-        self._embedding_cache[cache_key] = embedding
+        # Store in cache (with lock to prevent race conditions)
+        with self._cache_lock:
+            self._embedding_cache[cache_key] = embedding
 
         return embedding
 
@@ -488,13 +499,18 @@ class BatchAligner:
             if not entry["is_processed"]
         ]
 
+        # CRITICAL FIX: Snapshot interpreter buffer before passing to worker threads
+        # Per Bhairava's stress audit: prevent worker thread from reading live buffer
+        # while main thread mutates it (race condition)
+        interpreter_snapshot = list(state["interpreter_buffer"])
+
         for entry in unprocessed:
             provider_segment = entry["segment"]
 
-            # Try to align this segment
+            # Try to align this segment (pass snapshot, not live buffer)
             alignment = await self.engine.align_segments(
                 provider_segment,
-                state["interpreter_buffer"],
+                interpreter_snapshot,
                 state,
             )
 
