@@ -16,7 +16,7 @@ import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.esm.js";
 import { Play, Square, AlertTriangle, Wifi, WifiOff } from "lucide-react";
 import {
   useSarasvatiBackend,
-  type DetectedError,
+  type ErrorRegion,
 } from "@/hooks/useSarasvatiBackend";
 
 interface TrackMetadata {
@@ -106,22 +106,22 @@ export function TrisulWaveformIntegrated({
     // Clear existing regions
     interpreterRegionsRef.current.clearRegions();
 
-    // Draw red region for each error
-    state.errors.forEach((error) => {
+    // Draw red region for each error (using derived ErrorRegion)
+    state.errorRegions.forEach((region) => {
       if (interpreterRegionsRef.current) {
         interpreterRegionsRef.current.addRegion({
-          start: error.timestamp,
-          end: error.timestamp + error.duration,
-          color: error.severity === "critical"
+          start: region.start,
+          end: region.end,
+          color: region.severity === "critical"
             ? "rgba(239, 68, 68, 0.4)" // red-500, more opaque for critical
             : "rgba(239, 68, 68, 0.2)", // red-500, less opaque for others
           drag: false,
           resize: false,
-          content: error.description,
+          content: region.description,
         });
       }
     });
-  }, [state.errors]);
+  }, [state.errorRegions]);
 
   // Generate dummy audio buffer for simulation
   const generateDummyAudio = (
@@ -430,10 +430,10 @@ export function TrisulWaveformIntegrated({
             </div>
 
             {/* Error count for interpreter track */}
-            {track.role === "interpreter" && state.errors.length > 0 && (
+            {track.role === "interpreter" && state.errorRegions.length > 0 && (
               <div className="flex items-center gap-2 px-3 py-1 bg-red-950 border border-red-800 rounded text-red-400 text-xs">
                 <AlertTriangle className="w-3 h-3" />
-                {state.errors.length} Error{state.errors.length > 1 ? "s" : ""} Detected
+                {state.errorRegions.length} Error{state.errorRegions.length > 1 ? "s" : ""} Detected
               </div>
             )}
           </div>
@@ -477,11 +477,11 @@ export function TrisulWaveformIntegrated({
       )}
 
       {/* Error List */}
-      {state.errors.length > 0 && (
+      {state.errorRegions.length > 0 && (
         <div className="mt-6 p-4 bg-gray-900 border border-gray-800 rounded-lg">
           <div className="flex items-center justify-between mb-3">
             <h4 className="text-sm font-semibold text-white">
-              Detected Errors ({state.errors.length})
+              Detected Errors ({state.errorRegions.length})
             </h4>
             <button
               onClick={clearErrors}
@@ -491,18 +491,18 @@ export function TrisulWaveformIntegrated({
             </button>
           </div>
           <div className="space-y-2 max-h-40 overflow-y-auto">
-            {state.errors.map((error) => (
+            {state.errorRegions.map((region) => (
               <div
-                key={error.id}
+                key={region.id}
                 className={`p-2 rounded text-xs ${
-                  error.severity === "critical"
+                  region.severity === "critical"
                     ? "bg-red-950 border border-red-800 text-red-300"
                     : "bg-orange-950 border border-orange-800 text-orange-300"
                 }`}
               >
-                <div className="font-semibold">{error.description}</div>
+                <div className="font-semibold">{region.description}</div>
                 <div className="text-gray-400 mt-1">
-                  Time: {error.timestamp}s | Score: {error.alignmentScore.toFixed(2)}
+                  Time: {region.start.toFixed(1)}s | Confidence: {region.confidence.toFixed(2)}
                 </div>
               </div>
             ))}
