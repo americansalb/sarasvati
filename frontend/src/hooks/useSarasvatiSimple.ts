@@ -9,9 +9,6 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
-  TranscriptSegment,
-  ClinicalError,
-  WSEvent,
   SessionState,
   StreamRole,
 } from "@/types/sarasvati";
@@ -125,11 +122,12 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
   // ===== Backend Event Handler =====
 
-  const handleBackendEvent = useCallback((event: WSEvent) => {
+  const handleBackendEvent = useCallback((event: { type: string; data: any }) => {
     console.log("Backend event:", event.type, event.data);
 
     switch (event.type) {
       case "session_start":
+      case "session":
         setSessionState((prev) => ({
           ...prev,
           sessionId: event.data.session_id,
