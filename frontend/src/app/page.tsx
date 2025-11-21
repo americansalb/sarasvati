@@ -22,7 +22,7 @@ import {
 import { clsx } from "clsx";
 
 const LIVEKIT_URL = process.env.NEXT_PUBLIC_LIVEKIT_URL || "ws://localhost:7880";
-const BACKEND_WS_URL = process.env.NEXT_PUBLIC_BACKEND_WS_URL || "http://localhost:3001";
+const BACKEND_WS_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 const ROOM_NAME = process.env.NEXT_PUBLIC_ROOM_NAME || "sarasvati-session";
 
 export default function DashboardPage() {
