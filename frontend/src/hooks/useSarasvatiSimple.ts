@@ -31,7 +31,7 @@ interface UseSarasvatiReturn {
   sessionState: SessionState;
   connect: () => Promise<void>;
   disconnect: () => void;
-  startRecording: (role: StreamRole, language?: string) => Promise<void>;
+  startRecording: (role: StreamRole, language?: string, providerLang?: string, patientLang?: string) => Promise<void>;
   stopRecording: () => void;
   sendTranscript: (role: StreamRole, text: string) => void;
 }
@@ -180,11 +180,21 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
   // ===== Audio Recording =====
 
-  const startRecording = useCallback(async (role: StreamRole, language: string = "auto") => {
+  const providerLangRef = useRef<string>("en");
+  const patientLangRef = useRef<string>("auto");
+
+  const startRecording = useCallback(async (
+    role: StreamRole,
+    language: string = "auto",
+    providerLang: string = "en",
+    patientLang: string = "auto"
+  ) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       currentRoleRef.current = role;
       currentLangRef.current = language;
+      providerLangRef.current = providerLang;
+      patientLangRef.current = patientLang;
       audioChunksRef.current = [];
 
       const mediaRecorder = new MediaRecorder(stream, {
@@ -199,7 +209,13 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        await sendAudioForTranscription(audioBlob, currentRoleRef.current, currentLangRef.current);
+        await sendAudioForTranscription(
+          audioBlob,
+          currentRoleRef.current,
+          currentLangRef.current,
+          providerLangRef.current,
+          patientLangRef.current
+        );
         stream.getTracks().forEach((track) => track.stop());
       };
 
@@ -237,12 +253,20 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
   // ===== Send Audio to Backend for Whisper Transcription =====
 
-  const sendAudioForTranscription = async (audioBlob: Blob, role: StreamRole, language: string = "auto") => {
+  const sendAudioForTranscription = async (
+    audioBlob: Blob,
+    role: StreamRole,
+    language: string = "auto",
+    providerLang: string = "en",
+    patientLang: string = "auto"
+  ) => {
     try {
       const formData = new FormData();
       formData.append("audio", audioBlob, "recording.webm");
       formData.append("role", role);
       formData.append("language", language);
+      formData.append("provider_lang", providerLang);
+      formData.append("patient_lang", patientLang);
 
       const response = await fetch(`${options.backendUrl}/transcribe`, {
         method: "POST",
@@ -255,6 +279,9 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
       const result = await response.json();
       console.log(`📝 Transcription (${role}):`, result.text);
+      if (result.detected_language && result.detected_language !== "auto") {
+        console.log(`   🌐 Detected language: ${result.detected_language}`);
+      }
 
       // The backend will broadcast the transcript via WebSocket
     } catch (error) {

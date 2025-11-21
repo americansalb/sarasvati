@@ -539,17 +539,39 @@ class TranscriptionResponse(BaseModel):
     text: str
     role: str
     duration: float
+    detected_language: str = "auto"
+
+
+async def call_whisper(client: httpx.AsyncClient, audio_data: bytes, filename: str, content_type: str, language: str, api_key: str) -> dict:
+    """Helper to call Whisper API with a specific language hint."""
+    whisper_data: dict = {"model": "whisper-large-v3", "response_format": "json"}
+    if language and language != "auto":
+        whisper_data["language"] = language
+
+    response = await client.post(
+        "https://api.groq.com/openai/v1/audio/transcriptions",
+        headers={"Authorization": f"Bearer {api_key}"},
+        files={"file": (filename, audio_data, content_type)},
+        data=whisper_data,
+        timeout=30.0,
+    )
+    if response.status_code != 200:
+        return {"text": "", "duration": 0.0, "error": response.text}
+    return response.json()
+
 
 @app.post("/transcribe", response_model=TranscriptionResponse)
 async def transcribe_audio(
     audio: UploadFile = File(...),
     role: str = Form(default="provider"),
     language: str = Form(default="auto"),
+    provider_lang: str = Form(default="en"),
+    patient_lang: str = Form(default="auto"),
 ) -> TranscriptionResponse:
     """
     Transcribe audio using Groq Whisper API.
-    Accepts audio file, role (provider/interpreter/patient), and language hint.
-    Returns transcription and broadcasts to WebSocket clients.
+    Accepts audio file, role (provider/interpreter/patient), and language hints.
+    For interpreter: runs Whisper twice with both languages, picks better result.
     """
     global engine, session_active
 
@@ -559,28 +581,47 @@ async def transcribe_audio(
 
     # Read audio file
     audio_data = await audio.read()
+    filename = audio.filename or "audio.webm"
+    content_type = audio.content_type or "audio/webm"
 
-    # Build Whisper API data - include language if specified
-    whisper_data: dict = {"model": "whisper-large-v3", "response_format": "json"}
-    if language and language != "auto":
-        whisper_data["language"] = language
+    detected_language = "auto"
 
-    # Call Groq Whisper API
     async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {groq_api_key}"},
-            files={"file": (audio.filename or "audio.webm", audio_data, audio.content_type or "audio/webm")},
-            data=whisper_data,
-            timeout=30.0,
-        )
+        if role == "interpreter" and provider_lang != patient_lang and patient_lang != "auto":
+            # For interpreter: try BOTH languages in parallel, pick better result
+            print(f"🔄 Interpreter dual-language detection: trying {provider_lang} and {patient_lang}")
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=response.status_code, detail=f"Groq API error: {response.text}")
+            results = await asyncio.gather(
+                call_whisper(client, audio_data, filename, content_type, provider_lang, groq_api_key),
+                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key),
+            )
 
-    result = response.json()
-    text = result.get("text", "").strip()
-    duration = result.get("duration", 0.0)
+            result_provider = results[0]
+            result_patient = results[1]
+
+            text_provider = result_provider.get("text", "").strip()
+            text_patient = result_patient.get("text", "").strip()
+
+            # Pick the result with longer text (heuristic: correct language = more coherent transcription)
+            # Could also use perplexity or other metrics in production
+            if len(text_patient) > len(text_provider):
+                text = text_patient
+                duration = result_patient.get("duration", 0.0)
+                detected_language = patient_lang
+                print(f"   → Selected {patient_lang}: '{text[:50]}...'")
+            else:
+                text = text_provider
+                duration = result_provider.get("duration", 0.0)
+                detected_language = provider_lang
+                print(f"   → Selected {provider_lang}: '{text[:50]}...'")
+        else:
+            # For provider/patient or when languages are same: use specified language
+            result = await call_whisper(client, audio_data, filename, content_type, language, groq_api_key)
+            if "error" in result:
+                raise HTTPException(status_code=500, detail=f"Groq API error: {result['error']}")
+            text = result.get("text", "").strip()
+            duration = result.get("duration", 0.0)
+            detected_language = language
 
     # Create transcript segment
     segment = TranscriptSegment(
@@ -607,7 +648,7 @@ async def transcribe_audio(
     })
     await manager.broadcast(message)
 
-    return TranscriptionResponse(text=text, role=role, duration=duration)
+    return TranscriptionResponse(text=text, role=role, duration=duration, detected_language=detected_language)
 
 
 # ===== WebSocket Endpoint =====

@@ -55,9 +55,10 @@ export default function DashboardPage() {
       stopRecording();
     } else {
       // Use appropriate language based on role
+      // For interpreter: pass both languages so backend can try both
       const lang = selectedRole === "provider" ? providerLang :
                    selectedRole === "patient" ? patientLang : "auto";
-      startRecording(selectedRole, lang);
+      startRecording(selectedRole, lang, providerLang, patientLang);
     }
   };
 
