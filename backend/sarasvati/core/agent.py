@@ -46,6 +46,53 @@ DEFAULT_MODEL_MONITOR = "gemma2-9b-it"              # Node B: Google - Diversity
 DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"   # Node C: Meta - Heavy Judge
 
 
+# ===== Cost & Value Estimation Constants =====
+# Groq API pricing (approximate USD per 1K tokens)
+MODEL_COSTS = {
+    "llama-3.1-8b-instant": {"input": 0.00005, "output": 0.00008},      # ~$0.0002/call
+    "gemma2-9b-it": {"input": 0.00010, "output": 0.00015},               # ~$0.0003/call
+    "llama-3.3-70b-versatile": {"input": 0.00059, "output": 0.00079},    # ~$0.005/call
+}
+
+# Estimated harm prevented by catching errors (USD)
+# Based on: malpractice costs, adverse events, readmissions, legal fees
+HARM_VALUES = {
+    "critical": {
+        "negation_flip": 50000,       # "don't take" -> "take" can be fatal
+        "dosage_error": 25000,        # Wrong dose can cause OD/underdose
+        "medication_error": 35000,    # Wrong medication
+        "complete_omission": 15000,   # Entire instruction missed
+        "default": 20000,
+    },
+    "high": {
+        "omission": 5000,             # Key info omitted
+        "partial_omission": 3000,
+        "default": 4000,
+    },
+    "medium": {
+        "default": 500,               # Partial issues
+    },
+    "low": {
+        "default": 50,                # Minor variations
+    },
+}
+
+
+def estimate_call_cost(model: str, input_tokens: int = 500, output_tokens: int = 800) -> float:
+    """Estimate cost of a single API call."""
+    costs = MODEL_COSTS.get(model, MODEL_COSTS["llama-3.1-8b-instant"])
+    return (input_tokens * costs["input"] / 1000) + (output_tokens * costs["output"] / 1000)
+
+
+def estimate_harm_prevented(severity: str, error_type: str, confidence: float) -> float:
+    """Estimate business value of catching an error."""
+    severity_lower = severity.lower() if isinstance(severity, str) else str(severity).lower()
+    severity_values = HARM_VALUES.get(severity_lower, HARM_VALUES["medium"])
+    base_value = severity_values.get(error_type, severity_values["default"])
+    # Scale by confidence (never claim 100% certainty)
+    return base_value * min(confidence, 0.99)
+
+
 class NodeAExtractor:
     """
     Node A: The Extractor (Prosecution)
@@ -470,12 +517,35 @@ class ClinicalDebateOrchestrator:
         # Build monitor findings from report
         monitor_findings = [line.strip() for line in monitor_report.split('\n') if line.strip() and not line.strip().lower().startswith('no significant')]
 
+        # Calculate costs (estimates based on typical token usage)
+        extractor_cost = estimate_call_cost(self.models["extractor"], 600, 800)
+        monitor_cost = estimate_call_cost(self.models["monitor"], 500, 600)
+        arbiter_cost = estimate_call_cost(self.models["arbiter"], 1200, 1000)
+        total_cost = extractor_cost + monitor_cost + arbiter_cost
+
+        # Calculate value prevented from caught errors
+        value_prevented = 0.0
+        for error in clinical_errors:
+            severity_str = error["severity"].value if hasattr(error["severity"], "value") else str(error["severity"])
+            value_prevented += estimate_harm_prevented(
+                severity_str,
+                error["error_type"],
+                error["confidence"]
+            )
+
         return AgentDebateResult(
             extractor_entities=self._json_to_entities(extractor_json, provider_segment),
             monitor_findings=monitor_findings[:5],  # Top 5 findings
             arbiter_decision=arbiter_reasoning,
             detected_errors=clinical_errors,
             processing_time_ms=processing_time,
+            cost_metrics={
+                "extractor": extractor_cost,
+                "monitor": monitor_cost,
+                "arbiter": arbiter_cost,
+                "total": total_cost,
+            },
+            value_prevented=value_prevented,
         )
 
     def _handle_no_match(
@@ -501,12 +571,22 @@ class ClinicalDebateOrchestrator:
 
         processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
 
+        # No API calls made for unmatched segments, minimal cost
+        value_prevented = estimate_harm_prevented("critical", "complete_omission", 0.95)
+
         return AgentDebateResult(
             extractor_entities=[],
             monitor_findings=["CRITICAL: Complete omission - no interpretation detected"],
             arbiter_decision="Critical: Provider statement not interpreted",
             detected_errors=[error],
             processing_time_ms=processing_time,
+            cost_metrics={
+                "extractor": 0.0,
+                "monitor": 0.0,
+                "arbiter": 0.0,
+                "total": 0.0,
+            },
+            value_prevented=value_prevented,
         )
 
     def _extract_entity_from_text(

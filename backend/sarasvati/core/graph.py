@@ -228,23 +228,41 @@ class SarasvatiGraph:
             state["last_debate_result"] = debate_result
             print(f"      📋 Verdict: {debate_result['arbiter_decision'][:100]}...")
 
+            # Aggregate cost metrics
+            cost_metrics = debate_result.get("cost_metrics", {})
+            state["processing_stats"]["total_cost_usd"] += cost_metrics.get("total", 0.0)
+            state["processing_stats"]["cost_by_node"]["extractor"] += cost_metrics.get("extractor", 0.0)
+            state["processing_stats"]["cost_by_node"]["monitor"] += cost_metrics.get("monitor", 0.0)
+            state["processing_stats"]["cost_by_node"]["arbiter"] += cost_metrics.get("arbiter", 0.0)
+
+            # Aggregate value prevented
+            value_prevented = debate_result.get("value_prevented", 0.0)
+            state["processing_stats"]["total_value_prevented_usd"] += value_prevented
+
             # Add any detected errors
             if debate_result["detected_errors"]:
                 state["detected_errors"].extend(debate_result["detected_errors"])
                 state["should_emit_report"] = True
                 print(f"      🚨 ERRORS FOUND: {len(debate_result['detected_errors'])}")
 
-                # Update error flags
+                # Update error flags and value by severity
                 for error in debate_result["detected_errors"]:
                     state["error_flags"][error["error_id"]] = True
+                    severity_key = error["severity"].value if hasattr(error["severity"], "value") else str(error["severity"]).lower()
+                    if severity_key in state["processing_stats"]["value_by_severity"]:
+                        # Attribute value proportionally
+                        state["processing_stats"]["value_by_severity"][severity_key] += value_prevented / len(debate_result["detected_errors"])
             else:
                 print(f"      ✅ No errors detected")
 
         # Update last_verified_count to current matched count
         state["last_verified_count"] = len(matched_pairs)
 
-        # Update stats
+        # Update stats and calculate ROI
         state["processing_stats"]["errors_detected"] = len(state["detected_errors"])
+        total_cost = state["processing_stats"]["total_cost_usd"]
+        total_value = state["processing_stats"]["total_value_prevented_usd"]
+        state["processing_stats"]["roi_multiple"] = (total_value / total_cost) if total_cost > 0 else 0.0
 
         return state
 
@@ -456,23 +474,36 @@ class SarasvatiEngine:
 
         self.state["is_active"] = False
 
+        proc_stats = self.state["processing_stats"]
         stats = {
             "session_id": self.session_id,
             "duration_seconds": (
                 datetime.utcnow() - self.state["session_start"]
             ).total_seconds(),
-            "stats": self.state["processing_stats"],
+            "stats": proc_stats,
             "errors_detected": len(self.state["detected_errors"]),
             "critical_errors": len([
                 e for e in self.state["detected_errors"]
                 if e["severity"] == "critical"
             ]),
+            # Business value metrics
+            "business_metrics": {
+                "total_cost_usd": proc_stats["total_cost_usd"],
+                "total_value_prevented_usd": proc_stats["total_value_prevented_usd"],
+                "roi_multiple": proc_stats["roi_multiple"],
+                "net_benefit_usd": proc_stats["total_value_prevented_usd"] - proc_stats["total_cost_usd"],
+                "cost_by_node": proc_stats["cost_by_node"],
+                "value_by_severity": proc_stats["value_by_severity"],
+            },
         }
 
         print(f"\n🔴 Sarasvati session {self.session_id} stopped")
         print(f"   Duration: {stats['duration_seconds']:.1f}s")
         print(f"   Errors detected: {stats['errors_detected']}")
         print(f"   Critical errors: {stats['critical_errors']}")
+        print(f"   💰 Total Cost: ${proc_stats['total_cost_usd']:.4f}")
+        print(f"   💎 Value Prevented: ${proc_stats['total_value_prevented_usd']:.2f}")
+        print(f"   📈 ROI Multiple: {proc_stats['roi_multiple']:.0f}x")
 
         return stats
 

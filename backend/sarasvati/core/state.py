@@ -90,6 +90,9 @@ class AgentDebateResult(TypedDict):
     arbiter_decision: str                       # Final verdict
     detected_errors: List[ClinicalError]
     processing_time_ms: float
+    # Business value metrics
+    cost_metrics: Dict[str, float]              # API costs by node + total
+    value_prevented: float                      # Estimated harm prevented (USD)
 
 
 class SarasvatiState(TypedDict):
@@ -203,6 +206,21 @@ def create_initial_state(session_id: str, config: GraphConfig) -> SarasvatiState
             "alignments_missed": 0,
             "errors_detected": 0,
             "avg_processing_time_ms": 0.0,
+            # Business value metrics
+            "total_cost_usd": 0.0,           # Total API cost
+            "total_value_prevented_usd": 0.0, # Estimated harm prevented
+            "roi_multiple": 0.0,              # Value / Cost ratio
+            "cost_by_node": {                 # Cost breakdown by agent
+                "extractor": 0.0,
+                "monitor": 0.0,
+                "arbiter": 0.0,
+            },
+            "value_by_severity": {            # Value breakdown by error severity
+                "critical": 0.0,
+                "high": 0.0,
+                "medium": 0.0,
+                "low": 0.0,
+            },
         },
 
         # Control
