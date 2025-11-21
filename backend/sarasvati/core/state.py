@@ -152,7 +152,7 @@ class GraphConfig(TypedDict):
     enable_negation_check: bool                # Enable strict negation detection
     # Independent Tribunal: 3 diverse models on Groq
     groq_model_extractor: str                  # Node A: llama-3.1-8b-instant (Meta - Fast/Structured)
-    groq_model_monitor: str                    # Node B: gemma2-9b-it (Google - Diversity)
+    groq_model_monitor: str                    # Node B: llama3-8b-8192 (Meta - Different for diversity)
     groq_model_arbiter: str                    # Node C: llama-3.3-70b-versatile (Meta - Heavy Judge)
     redis_host: str
     redis_port: int

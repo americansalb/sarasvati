@@ -75,7 +75,7 @@ _redis_host, _redis_port, _redis_db = parse_redis_url()
 
 # Independent Tribunal: 3 diverse models with env precedence
 _model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.1-8b-instant")
-_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "gemma2-9b-it")
+_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "llama3-8b-8192")
 _model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "llama-3.3-70b-versatile")
 
 DEFAULT_CONFIG = GraphConfig(
@@ -85,7 +85,7 @@ DEFAULT_CONFIG = GraphConfig(
     debounce_ms=500,
     enable_negation_check=True,
     groq_model_extractor=_model_extractor,   # Node A: Meta Llama 8B (Fast/Structured)
-    groq_model_monitor=_model_monitor,       # Node B: Google Gemma 9B (Diversity)
+    groq_model_monitor=_model_monitor,       # Node B: Meta Llama 8B (Different for diversity)
     groq_model_arbiter=_model_arbiter,       # Node C: Meta Llama 70B (Heavy Judge)
     redis_host=_redis_host,
     redis_port=_redis_port,
