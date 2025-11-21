@@ -69,6 +69,7 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const currentRoleRef = useRef<StreamRole>("provider");
+  const currentLangRef = useRef<string>("auto");
 
   // ===== WebSocket Connection =====
 
@@ -162,10 +163,11 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
   // ===== Audio Recording =====
 
-  const startRecording = useCallback(async (role: StreamRole) => {
+  const startRecording = useCallback(async (role: StreamRole, language: string = "auto") => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       currentRoleRef.current = role;
+      currentLangRef.current = language;
       audioChunksRef.current = [];
 
       const mediaRecorder = new MediaRecorder(stream, {
@@ -180,7 +182,7 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        await sendAudioForTranscription(audioBlob, currentRoleRef.current);
+        await sendAudioForTranscription(audioBlob, currentRoleRef.current, currentLangRef.current);
         stream.getTracks().forEach((track) => track.stop());
       };
 
@@ -218,11 +220,12 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
   // ===== Send Audio to Backend for Whisper Transcription =====
 
-  const sendAudioForTranscription = async (audioBlob: Blob, role: StreamRole) => {
+  const sendAudioForTranscription = async (audioBlob: Blob, role: StreamRole, language: string = "auto") => {
     try {
       const formData = new FormData();
       formData.append("audio", audioBlob, "recording.webm");
       formData.append("role", role);
+      formData.append("language", language);
 
       const response = await fetch(`${options.backendUrl}/transcribe`, {
         method: "POST",

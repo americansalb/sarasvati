@@ -471,10 +471,11 @@ class TranscriptionResponse(BaseModel):
 async def transcribe_audio(
     audio: UploadFile = File(...),
     role: str = Form(default="provider"),
+    language: str = Form(default="auto"),
 ) -> TranscriptionResponse:
     """
     Transcribe audio using Groq Whisper API.
-    Accepts audio file and role (provider/interpreter/patient).
+    Accepts audio file, role (provider/interpreter/patient), and language hint.
     Returns transcription and broadcasts to WebSocket clients.
     """
     global engine, session_active
@@ -486,13 +487,18 @@ async def transcribe_audio(
     # Read audio file
     audio_data = await audio.read()
 
+    # Build Whisper API data - include language if specified
+    whisper_data: dict = {"model": "whisper-large-v3", "response_format": "json"}
+    if language and language != "auto":
+        whisper_data["language"] = language
+
     # Call Groq Whisper API
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "https://api.groq.com/openai/v1/audio/transcriptions",
             headers={"Authorization": f"Bearer {groq_api_key}"},
             files={"file": (audio.filename or "audio.webm", audio_data, audio.content_type or "audio/webm")},
-            data={"model": "whisper-large-v3", "response_format": "json"},
+            data=whisper_data,
             timeout=30.0,
         )
 

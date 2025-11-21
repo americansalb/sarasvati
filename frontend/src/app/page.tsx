@@ -27,6 +27,21 @@ export default function DashboardPage() {
 
   const [selectedRole, setSelectedRole] = useState<StreamRole>("provider");
   const [manualText, setManualText] = useState("");
+  const [providerLang, setProviderLang] = useState("en");
+  const [patientLang, setPatientLang] = useState("gu"); // Default Gujarati for testing
+
+  const LANGUAGES = [
+    { code: "en", name: "English" },
+    { code: "es", name: "Spanish" },
+    { code: "gu", name: "Gujarati" },
+    { code: "hi", name: "Hindi" },
+    { code: "pt", name: "Portuguese" },
+    { code: "zh", name: "Chinese" },
+    { code: "ar", name: "Arabic" },
+    { code: "fr", name: "French" },
+    { code: "de", name: "German" },
+    { code: "auto", name: "Auto-detect" },
+  ];
 
   const handleSendManual = () => {
     if (manualText.trim()) {
@@ -39,7 +54,10 @@ export default function DashboardPage() {
     if (connectionState.isRecording) {
       stopRecording();
     } else {
-      startRecording(selectedRole);
+      // Use appropriate language based on role
+      const lang = selectedRole === "provider" ? providerLang :
+                   selectedRole === "patient" ? patientLang : "auto";
+      startRecording(selectedRole, lang);
     }
   };
 
@@ -114,6 +132,34 @@ export default function DashboardPage() {
                   {role}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Language Settings */}
+          <div className="mb-4 grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-gray-400 mb-2">Provider Language</label>
+              <select
+                value={providerLang}
+                onChange={(e) => setProviderLang(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg"
+              >
+                {LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>{lang.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-2">Patient Language</label>
+              <select
+                value={patientLang}
+                onChange={(e) => setPatientLang(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg"
+              >
+                {LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>{lang.name}</option>
+                ))}
+              </select>
             </div>
           </div>
 
