@@ -37,6 +37,41 @@ from ..core.graph import SarasvatiEngine, create_engine
 
 # ===== Configuration =====
 
+def parse_redis_url() -> tuple[str, int, int]:
+    """
+    Parse REDIS_URL env var (Render format) into host, port, db.
+    Format: redis://user:pass@host:port/db or redis://host:port/db
+    Fallback: localhost:6379/0 for local dev.
+    """
+    redis_url = os.getenv("REDIS_URL")
+    if not redis_url:
+        return ("localhost", 6379, 0)
+
+    # Strip redis:// or rediss://
+    url = redis_url.replace("redis://", "").replace("rediss://", "")
+
+    # Remove auth if present (user:pass@)
+    if "@" in url:
+        url = url.split("@", 1)[1]
+
+    # Parse host:port/db
+    db = 0
+    if "/" in url:
+        url, db_str = url.rsplit("/", 1)
+        db = int(db_str) if db_str.isdigit() else 0
+
+    host = "localhost"
+    port = 6379
+    if ":" in url:
+        host, port_str = url.split(":", 1)
+        port = int(port_str)
+    else:
+        host = url
+
+    return (host, port, db)
+
+_redis_host, _redis_port, _redis_db = parse_redis_url()
+
 DEFAULT_CONFIG = GraphConfig(
     max_buffer_size=50,
     alignment_threshold=0.65,
@@ -45,9 +80,9 @@ DEFAULT_CONFIG = GraphConfig(
     enable_negation_check=True,
     groq_model_verification="llama-3.1-70b-versatile",
     groq_model_drafting="llama-3.1-8b-instant",
-    redis_host="localhost",
-    redis_port=6379,
-    redis_db=0,
+    redis_host=_redis_host,
+    redis_port=_redis_port,
+    redis_db=_redis_db,
     livekit_url="wss://localhost:7880",
     deepgram_api_key="",
 )
