@@ -162,9 +162,12 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
       case "tribunal_verdict":
         console.log("⚖️ TRIBUNAL VERDICT:", event.data);
+        // Append tribunal errors to the errors list so they show in UI
+        const verdictErrors = event.data.errors || [];
         setSessionState((prev) => ({
           ...prev,
           verdicts: [...(prev.verdicts || []), event.data].slice(-20),
+          errors: [...prev.errors, ...verdictErrors].slice(-50),
         }));
         break;
 
