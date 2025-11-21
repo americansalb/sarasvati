@@ -204,11 +204,11 @@ export default function DashboardPage() {
                     </span>
                   </div>
                   <p className="text-sm text-gray-300">{error.description}</p>
-                  {error.original_text && (
-                    <p className="text-xs text-gray-500 mt-2">Original: "{error.original_text}"</p>
+                  {error.provider_entity && (
+                    <p className="text-xs text-gray-500 mt-2">Provider: "{error.provider_entity.text}"</p>
                   )}
-                  {error.translated_text && (
-                    <p className="text-xs text-gray-500">Translated: "{error.translated_text}"</p>
+                  {error.interpreter_entity && (
+                    <p className="text-xs text-gray-500">Interpreter: "{error.interpreter_entity.text}"</p>
                   )}
                 </div>
               ))
