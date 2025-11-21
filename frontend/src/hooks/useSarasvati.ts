@@ -16,7 +16,7 @@ import {
   createLocalTracks,
   LocalAudioTrack,
 } from "livekit-client";
-import { io, Socket } from "socket.io-client";
+// Native WebSocket (NOT Socket.IO - backend uses plain FastAPI WebSocket)
 import {
   TranscriptSegment,
   ClinicalError,
@@ -75,52 +75,59 @@ export function useSarasvati(
 
   // Refs
   const roomRef = useRef<Room | null>(null);
-  const socketRef = useRef<Socket | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
   const isConnectingRef = useRef(false);
 
   // ===== WebSocket Connection =====
 
   const connectWebSocket = useCallback(() => {
-    if (socketRef.current?.connected) {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
       console.log("WebSocket already connected");
       return;
     }
 
-    console.log("Connecting to backend WebSocket...", options.backendWsUrl);
+    // Convert http(s) URL to ws(s) and add /ws path
+    const wsUrl = options.backendWsUrl
+      .replace(/^https:\/\//, "wss://")
+      .replace(/^http:\/\//, "ws://")
+      .replace(/\/$/, "") + "/ws";
 
-    const socket = io(options.backendWsUrl, {
-      transports: ["websocket", "polling"],
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
-    });
+    console.log("Connecting to backend WebSocket...", wsUrl);
 
-    socket.on("connect", () => {
+    const socket = new WebSocket(wsUrl);
+
+    socket.onopen = () => {
       console.log("✅ WebSocket connected");
       setConnectionState((prev) => ({ ...prev, websocketConnected: true }));
-    });
+      // Start session on connect
+      socket.send(JSON.stringify({ type: "start_session", data: {}, timestamp: Date.now() }));
+    };
 
-    socket.on("disconnect", () => {
+    socket.onclose = () => {
       console.log("⚠️ WebSocket disconnected");
       setConnectionState((prev) => ({ ...prev, websocketConnected: false }));
-    });
+    };
 
-    socket.on("error", (error: Error) => {
+    socket.onerror = (error) => {
       console.error("WebSocket error:", error);
-      setConnectionState((prev) => ({ ...prev, error: error.message }));
-    });
+      setConnectionState((prev) => ({ ...prev, error: "WebSocket connection error" }));
+    };
 
-    // Listen for backend events
-    socket.on("sarasvati:event", (event: WSEvent) => {
-      handleBackendEvent(event);
-    });
+    socket.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        handleBackendEvent({ type: msg.type, data: msg.data, timestamp: msg.timestamp });
+      } catch (e) {
+        console.error("Failed to parse WebSocket message:", e);
+      }
+    };
 
     socketRef.current = socket;
   }, [options.backendWsUrl]);
 
   const disconnectWebSocket = useCallback(() => {
     if (socketRef.current) {
-      socketRef.current.disconnect();
+      socketRef.current.close();
       socketRef.current = null;
       setConnectionState((prev) => ({ ...prev, websocketConnected: false }));
     }
