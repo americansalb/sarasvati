@@ -5,7 +5,7 @@ The "Trisul Protocol" - Three diverse agents with anti-telephone data flow.
 
 Architecture:
 - Node A (Extractor): llama-3.1-8b-instant (Meta) - Structured JSON extraction
-- Node B (Monitor): gemma2-9b-it (Google) - Blind skeptic, independent analysis
+- Node B (Monitor): llama3-8b-8192 (Meta) - Blind skeptic, independent analysis
 - Node C (Arbiter): llama-3.3-70b-versatile (Meta) - Senior judge, overrides juniors
 
 Anti-Telephone Pattern:
@@ -42,7 +42,7 @@ from .state import (
 # ===== Default Models (can be overridden via env) =====
 
 DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"    # Node A: Meta - Fast/Structured
-DEFAULT_MODEL_MONITOR = "gemma2-9b-it"              # Node B: Google - Diversity
+DEFAULT_MODEL_MONITOR = "llama3-8b-8192"            # Node B: Different model for diversity
 DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"   # Node C: Meta - Heavy Judge
 
 
@@ -140,7 +140,7 @@ class NodeBMonitor:
     """
     Node B: The Monitor (Defense/Skeptic)
 
-    Model: gemma2-9b-it (Google) - DIFFERENT training data for diversity
+    Model: llama3-8b-8192 (Meta) - Different model for diversity
 
     Inputs: Raw provider_segment["text"], Raw interpreter_segment["text"]
     Constraint: Node B MUST NOT see Node A's JSON. It is BLIND to prevent anchoring bias.
