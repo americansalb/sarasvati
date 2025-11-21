@@ -38,7 +38,7 @@ from .state import (
 class DTWConfig:
     """Configuration for Dynamic Time Warping alignment."""
     window_size_seconds: float = 30.0      # Search window for finding matches
-    min_similarity_threshold: float = 0.65  # Minimum cosine similarity to consider
+    min_similarity_threshold: float = 0.35  # Lower threshold for cross-lingual matching
     max_time_delta: float = 45.0           # Maximum allowed delay (seconds)
     embedding_dim: int = 384               # Dimension of sentence embeddings
     use_semantic_vad: bool = True          # Use semantic boundaries, not silence
@@ -70,12 +70,12 @@ class AlignmentEngine:
 
         # Load real embedding model if available and requested
         if use_real_embeddings and SENTENCE_TRANSFORMERS_AVAILABLE:
-            print("🔄 Loading sentence embedding model (all-MiniLM-L6-v2)...")
+            print("🔄 Loading multilingual embedding model (paraphrase-multilingual-MiniLM-L12-v2)...")
             try:
-                # This model is small (~80MB), fast (~10-20ms/sentence on CPU),
-                # and produces 384-dim embeddings
-                self._model = SentenceTransformer('all-MiniLM-L6-v2')
-                print("✅ Embedding model loaded successfully")
+                # MULTILINGUAL model - supports 50+ languages including Spanish, Gujarati
+                # Same speed as English-only model but works cross-lingually
+                self._model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+                print("✅ Multilingual embedding model loaded successfully")
                 print("✅ ThreadPoolExecutor initialized (4 workers)")
             except Exception as e:
                 print(f"⚠️  Failed to load embedding model: {e}")
