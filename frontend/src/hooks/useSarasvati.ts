@@ -70,6 +70,7 @@ export function useSarasvati(
     errors: [],
     transcripts: [],
     alignments: [],
+    verdicts: [],
     debugInfo: null,
   });
 
