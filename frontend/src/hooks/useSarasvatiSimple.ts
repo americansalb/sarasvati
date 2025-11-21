@@ -132,7 +132,7 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
           ...prev,
           sessionId: event.data.session_id,
           isActive: true,
-          startTime: Date.now(),
+          startTime: new Date(),
         }));
         break;
 
