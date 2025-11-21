@@ -137,6 +137,9 @@ session_start_time: Optional[datetime] = None
 # Background task for processing
 _processing_task: Optional[asyncio.Task] = None
 
+# Session lock to prevent race conditions on start/stop
+_session_lock = asyncio.Lock()
+
 
 # ===== Schema Converters (Match Phase 4 exactly) =====
 
@@ -408,16 +411,23 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     """
     WebSocket endpoint for real-time communication.
 
-    Protocol (matching Phase 4):
-    - Frontend → Backend: start_session, stop_session, audio_data (mock)
-    - Backend → Frontend: detected_error, state_update, transcript, alignment, session_start, session_end
+    Protocol (Phase 4 Jiva compliant):
 
-    All messages are JSON with structure:
-    {
-        "type": "<message_type>",
-        "data": {...},
-        "timestamp": <unix_timestamp>
-    }
+    Frontend → Backend:
+        - start_session: { session_id?: string }
+        - stop_session: {}
+        - transcript: TranscriptSegment (role, text, timestamp, duration, confidence, is_final)
+        - audio_data: { segment: TranscriptSegment } (legacy/mock)
+        - get_state: {} (debug)
+
+    Backend → Frontend:
+        - detected_error: ClinicalError with alignment_info
+        - transcript: TranscriptSegment echo for rolling display
+        - state_update: { sessionId, isActive, stats }
+        - session_start: { session_id }
+        - session_end: {}
+
+    All messages are JSON: { "type": "<msg_type>", "data": {...}, "timestamp": <unix_ts> }
     """
     global session_active, session_id, engine
 
@@ -482,6 +492,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 speaker_id=segment_data.get("speaker_id"),
                             )
                             await engine.ingest_transcript(segment)
+
+                elif msg_type == "transcript":
+                    # Transcript ingestion (Phase 4 Jiva protocol)
+                    # Frontend sends structured TranscriptSegment, we ingest and echo back
+                    if session_active and engine:
+                        segment_data = msg_data  # data IS the segment (not nested)
+                        if segment_data and segment_data.get("text"):
+                            segment = TranscriptSegment(
+                                role=StreamRole(segment_data.get("role", "provider")),
+                                text=segment_data.get("text", ""),
+                                timestamp=segment_data.get("timestamp", 0.0),
+                                duration=segment_data.get("duration", 1.0),
+                                confidence=segment_data.get("confidence", 0.9),
+                                is_final=segment_data.get("is_final", True),
+                                speaker_id=segment_data.get("speaker_id"),
+                            )
+                            await engine.ingest_transcript(segment)
+
+                            # Echo transcript back to all clients for rolling display
+                            echo_payload = segment_to_payload(segment)
+                            echo_msg = build_ws_message("transcript", echo_payload)
+                            await manager.broadcast(echo_msg)
 
                 elif msg_type == "get_state":
                     # Return current state (for debugging)
