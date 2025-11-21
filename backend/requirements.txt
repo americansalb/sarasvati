@@ -14,6 +14,7 @@ groq>=0.4.0
 
 # HTTP Client (for Groq Whisper API)
 httpx>=0.25.0
+python-multipart>=0.0.6  # For file uploads
 
 # Redis Stack for Hot Buffer
 redis[hiredis]>=5.0.0
