@@ -356,7 +356,7 @@ class SarasvatiEngine:
         print(f"🟢 Sarasvati session {session_id} started")
         print(f"   Monitoring 3 streams: Provider, Interpreter, Patient")
         print(f"   Alignment window: {self.config['alignment_window_seconds']}s")
-        print(f"   Using models: {self.config['groq_model_verification']}")
+        print(f"   Using models: {self.config['groq_model_extractor']}, {self.config['groq_model_monitor']}, {self.config['groq_model_arbiter']}")
 
     async def ingest_transcript(
         self,
