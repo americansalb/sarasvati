@@ -220,11 +220,11 @@ class AlignmentEngine:
             return AlignmentMatch(
                 provider_segment=provider_segment,
                 interpreter_segment=interpreter_seg,
-                similarity_score=raw_similarity,      # Raw cosine similarity (for debugging)
-                combined_score=combined_score,        # Truth vector (for decision-making)
-                time_delta=time_delta,
+                similarity_score=float(raw_similarity),      # Convert numpy to Python float
+                combined_score=float(combined_score),        # Convert numpy to Python float
+                time_delta=float(time_delta),
                 is_matched=True,
-                dtw_distance=dtw_dist,
+                dtw_distance=float(dtw_dist),
             )
 
         # No match found in window
