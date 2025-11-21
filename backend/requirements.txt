@@ -5,6 +5,10 @@
 langgraph>=0.1.0
 langchain>=0.1.0
 
+# Web Server (Phase 5: Gatekeeper)
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
 # LLM Inference
 groq>=0.4.0
 
