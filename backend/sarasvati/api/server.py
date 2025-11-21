@@ -259,23 +259,71 @@ def build_ws_message(msg_type: str, data: Any) -> Dict[str, Any]:
 
 async def emit_error_loop() -> None:
     """
-    Background loop that monitors for new errors and broadcasts them.
+    Background loop that monitors for new verdicts and errors and broadcasts them.
 
-    Runs every 100ms to check for new errors in the engine state.
-    Uses single-flight pattern to avoid duplicate emissions.
+    Runs every 100ms to check for new tribunal verdicts.
+    Emits tribunal_verdict for EVERY assessment (with confidence score).
     """
     global engine, session_active
 
     last_error_count = 0
+    last_verdict_count = 0
 
     while session_active and engine:
         try:
             state = engine.get_state()
             if state:
+                # Emit tribunal verdicts for ALL matched pairs (not just errors)
+                matched_pairs = state.get("matched_pairs", [])
+                current_verdict_count = len(matched_pairs)
+
+                if current_verdict_count > last_verdict_count:
+                    # Get the last debate result
+                    debate_result = state.get("last_debate_result")
+                    if debate_result:
+                        # Compute confidence score (never 100%)
+                        num_errors = len(debate_result.get("detected_errors", []))
+                        severity = "none"
+                        if num_errors > 0:
+                            # Get max severity from errors
+                            severities = [e.get("severity", "medium") for e in debate_result.get("detected_errors", [])]
+                            if any(s == "critical" for s in severities):
+                                severity = "critical"
+                            elif any(s == "high" for s in severities):
+                                severity = "high"
+                            elif any(s == "medium" for s in severities):
+                                severity = "medium"
+                            else:
+                                severity = "low"
+
+                        confidence = compute_confidence(severity, num_errors)
+
+                        verdict_payload = {
+                            "confidence": confidence,
+                            "severity": severity,
+                            "num_issues": num_errors,
+                            "arbiter_decision": debate_result.get("arbiter_decision", ""),
+                            "monitor_findings": debate_result.get("monitor_findings", []),
+                            "errors": [
+                                {
+                                    "severity": str(e.get("severity", "medium")),
+                                    "error_type": e.get("error_type", "unknown"),
+                                    "description": e.get("description", ""),
+                                }
+                                for e in debate_result.get("detected_errors", [])
+                            ],
+                        }
+
+                        message = build_ws_message("tribunal_verdict", verdict_payload)
+                        await manager.broadcast(message)
+                        print(f"📢 Broadcast tribunal_verdict: confidence={confidence:.2f}, severity={severity}, issues={num_errors}")
+
+                    last_verdict_count = current_verdict_count
+
+                # Also emit individual errors (for backwards compatibility)
                 current_errors = state["detected_errors"]
                 new_error_count = len(current_errors)
 
-                # Emit any new errors
                 if new_error_count > last_error_count:
                     new_errors = current_errors[last_error_count:]
                     for error in new_errors:
@@ -292,6 +340,31 @@ async def emit_error_loop() -> None:
         except Exception as e:
             print(f"Error in emit loop: {e}")
             await asyncio.sleep(0.5)
+
+
+def compute_confidence(severity: str, num_issues: int) -> float:
+    """
+    Compute confidence score (0.01 - 0.99, never 100%).
+
+    Starts high, penalizes for severity and number of issues.
+    """
+    base = 0.95
+
+    # Severity penalties
+    if severity == "low":
+        base -= 0.05
+    elif severity == "medium":
+        base -= 0.15
+    elif severity == "high":
+        base -= 0.25
+    elif severity == "critical":
+        base -= 0.40
+
+    # More issues → lower confidence
+    base -= min(num_issues, 5) * 0.03
+
+    # Clamp and never 0 or 1
+    return max(0.01, min(0.99, base))
 
 
 # ===== FastAPI Lifespan =====
