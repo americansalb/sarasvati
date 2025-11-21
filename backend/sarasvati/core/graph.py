@@ -59,7 +59,10 @@ class SarasvatiGraph:
         )
         self.batch_aligner = BatchAligner(self.alignment_engine)
         self.debate_orchestrator = ClinicalDebateOrchestrator(
-            groq_api_key=os.environ.get("GROQ_API_KEY", "")
+            groq_api_key=os.environ.get("GROQ_API_KEY", ""),
+            model_extractor=config["groq_model_extractor"],
+            model_monitor=config["groq_model_monitor"],
+            model_arbiter=config["groq_model_arbiter"],
         )
 
         # Build the graph

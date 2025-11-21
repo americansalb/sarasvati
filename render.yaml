@@ -24,6 +24,13 @@ services:
         value: "3.11"
       - key: GROQ_API_KEY
         sync: false  # Set manually in Render dashboard
+      # Independent Tribunal: 3 diverse models
+      - key: GROQ_MODEL_EXTRACTOR
+        value: "llama-3.1-8b-instant"    # Node A: Meta - Fast/Structured
+      - key: GROQ_MODEL_MONITOR
+        value: "gemma2-9b-it"            # Node B: Google - Diversity
+      - key: GROQ_MODEL_ARBITER
+        value: "llama-3.3-70b-versatile" # Node C: Meta - Heavy Judge
       - key: REDIS_URL
         fromService:
           name: sarasvati-redis
