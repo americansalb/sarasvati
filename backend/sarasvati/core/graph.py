@@ -105,7 +105,7 @@ class SarasvatiGraph:
             self._should_verify,
             {
                 "verify": "verify",
-                "wait": "ingest",  # Loop back if not enough data
+                "wait": END,  # End cycle if not enough data
             },
         )
 
@@ -314,14 +314,13 @@ class SarasvatiGraph:
         state: SarasvatiState,
     ) -> Literal["continue", "end"]:
         """
-        Decide whether to continue processing or end session.
+        Decide whether to continue processing or end this cycle.
 
-        Continue if session is still active.
+        Always return "end" to complete the graph cycle.
+        The external _process_cycle loop handles continuous processing.
         """
-        if state["is_active"]:
-            return "continue"
-        else:
-            return "end"
+        # Always end the cycle - external loop drives continuous processing
+        return "end"
 
 
 # ===== High-Level API =====
