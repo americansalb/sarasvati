@@ -59,13 +59,10 @@ class AlignmentEngine:
         self.use_real_embeddings = use_real_embeddings
         self._model = None
 
-        # CRITICAL: Lock for embedding cache to prevent race conditions
-        # Per Bhairava's stress audit: multiple worker threads may access cache concurrently
+        # Thread-safe cache lock
         self._cache_lock = threading.Lock()
 
-        # CRITICAL: ThreadPoolExecutor for CPU-bound work (embedding + DTW)
-        # This prevents blocking the event loop during matrix multiplication
-        # Per Sthiti's command: offload heavy math to worker threads
+        # ThreadPoolExecutor for CPU-bound work (embedding + DTW)
         self._executor = ThreadPoolExecutor(
             max_workers=4,
             thread_name_prefix="sarasvati_align"
@@ -263,39 +260,26 @@ class AlignmentEngine:
 
     def _get_embedding(self, text: str) -> np.ndarray:
         """
-        Get sentence embedding for semantic similarity (SYNCHRONOUS).
+        Thread-safe embedding retrieval.
 
-        Uses sentence-transformers if available, otherwise falls back to mock.
-
-        CRITICAL: This is CPU-bound (matrix multiplication). It runs in a worker
-        thread via ThreadPoolExecutor, NOT in the main event loop.
-
-        Args:
-            text: Input text to embed
-
-        Returns:
-            Embedding vector of shape (embedding_dim,)
+        - Lock only around cache access.
+        - Run model encoding outside the lock for parallelism.
         """
-        # Check cache first (with lock to prevent race conditions)
-        # Per Bhairava's stress audit: multiple worker threads may read cache concurrently
         cache_key = hash(text)
+
+        # Fast path: locked read
         with self._cache_lock:
             cached = self._embedding_cache.get(cache_key)
-
         if cached is not None:
             return cached
 
-        # Compute embedding OUTSIDE lock (allow parallel model calls)
-        # This is the expensive operation - we want multiple threads computing different embeddings
+        # Compute embedding without holding the lock
         if self._model is not None:
-            # Real inference using sentence-transformers
-            # This runs on CPU and takes ~10-20ms per sentence
             embedding = self._model.encode(text, convert_to_numpy=True)
         else:
-            # Fallback to mock (not suitable for production!)
             embedding = self._mock_embedding(text)
 
-        # Store in cache (with lock to prevent race conditions)
+        # Store result under lock
         with self._cache_lock:
             self._embedding_cache[cache_key] = embedding
 
@@ -499,15 +483,13 @@ class BatchAligner:
             if not entry["is_processed"]
         ]
 
-        # CRITICAL FIX: Snapshot interpreter buffer before passing to worker threads
-        # Per Bhairava's stress audit: prevent worker thread from reading live buffer
-        # while main thread mutates it (race condition)
+        # CRITICAL: snapshot interpreter buffer once per batch
         interpreter_snapshot = list(state["interpreter_buffer"])
 
         for entry in unprocessed:
             provider_segment = entry["segment"]
 
-            # Try to align this segment (pass snapshot, not live buffer)
+            # Try to align this segment against the snapshot
             alignment = await self.engine.align_segments(
                 provider_segment,
                 interpreter_snapshot,
