@@ -305,19 +305,30 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
       formData.append("provider_lang", providerLang);
       formData.append("patient_lang", patientLang);
 
+      console.log(`🌐 Sending ${audioBlob.size} bytes to /transcribe for ${role}`);
+
       const response = await fetch(`${options.backendUrl}/transcribe`, {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error(`Transcription failed: ${response.statusText}`);
+        const errorText = await response.text();
+        throw new Error(`Transcription failed (${response.status}): ${errorText}`);
       }
 
       const result = await response.json();
       console.log(`📝 Transcription (${role}):`, result.text);
+      console.log(`   🎧 Audio duration: ${result.duration?.toFixed(2)}s`);
       if (result.detected_language && result.detected_language !== "auto") {
         console.log(`   🌐 Detected language: ${result.detected_language}`);
+      }
+
+      // Warn if transcription seems suspicious (known Whisper hallucination)
+      if (result.text === "Thank you." || result.text === "Thanks for watching!" || result.text === "Thank you for watching.") {
+        console.warn("⚠️ POSSIBLE WHISPER HALLUCINATION detected!");
+        console.warn("   This usually means the audio was too short, silent, or corrupted.");
+        console.warn(`   Audio size: ${audioBlob.size} bytes, Duration: ${result.duration}s`);
       }
 
       if (role === "interpreter") {
