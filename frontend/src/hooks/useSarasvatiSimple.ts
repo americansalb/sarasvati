@@ -231,6 +231,21 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+
+        // Validate audio blob size
+        console.log(`🎧 Audio blob size: ${audioBlob.size} bytes (${audioChunksRef.current.length} chunks)`);
+
+        if (audioBlob.size < 100) {
+          console.error("⚠️ Audio blob is too small! This will likely result in 'Thank you' hallucination.");
+          console.error("   Make sure you speak for at least 1-2 seconds after clicking Start Recording.");
+          setConnectionState((prev) => ({
+            ...prev,
+            error: "Audio too short - please record for at least 1-2 seconds",
+          }));
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
         await sendAudioForTranscription(
           audioBlob,
           currentRoleRef.current,
