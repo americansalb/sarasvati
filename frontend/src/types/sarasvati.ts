@@ -47,7 +47,7 @@ export interface ClinicalError {
   arbiter_reasoning: string;
   confidence: number;
   detected_at: string; // ISO timestamp
-  alignment_info: AlignmentMatch;
+  alignment_info: AlignmentMatch | null; // null for system errors
   is_system_error: boolean; // true for infrastructure failures, false for clinical errors
 }
 

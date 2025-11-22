@@ -40,10 +40,12 @@ from .state import (
 
 
 # ===== Default Models (can be overridden via env) =====
+# NOTE: These are fallback defaults. Server.py overrides with better models.
+# WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"    # Node A: Meta - Fast/Structured
-DEFAULT_MODEL_MONITOR = "llama3-8b-8192"            # Node B: Different model for diversity
-DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"   # Node C: Meta - Heavy Judge
+DEFAULT_MODEL_EXTRACTOR = "llama-3.3-70b-versatile"  # Node A: Meta - 70B (Prosecution)
+DEFAULT_MODEL_MONITOR = "mixtral-8x7b-32768"         # Node B: Mistral - MoE (Defense)
+DEFAULT_MODEL_ARBITER = "llama-3.1-8b-instant"       # Node C: Meta - 8B (Arbiter, fast)
 
 
 class NodeAExtractor:

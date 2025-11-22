@@ -77,9 +77,10 @@ _redis_host, _redis_port, _redis_db = parse_redis_url()
 # Using LARGEST available models from each company on Groq - critical for medical interpretation
 # NOTE: Claude (Anthropic), GPT (OpenAI), and Gemini (Google) are NOT available via Groq
 # Groq only provides open-source models. For proprietary models, we'd need multi-provider architecture.
+# WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
 _model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.3-70b-versatile")  # Meta AI (70B, latest Llama)
 _model_monitor = os.getenv("GROQ_MODEL_MONITOR", "mixtral-8x7b-32768")           # Mistral AI (MoE, 46.7B active)
-_model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "gemma2-9b-it")                 # Google (9B, largest available)
+_model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "llama-3.1-8b-instant")         # Meta AI (8B, fast inference - Gemma deprecated)
 
 DEFAULT_CONFIG = GraphConfig(
     max_buffer_size=50,
@@ -89,7 +90,7 @@ DEFAULT_CONFIG = GraphConfig(
     enable_negation_check=True,
     groq_model_extractor=_model_extractor,   # Node A: Meta Llama 3.3 70B
     groq_model_monitor=_model_monitor,       # Node B: Mistral Mixtral 8x7B MoE
-    groq_model_arbiter=_model_arbiter,       # Node C: Google Gemma 2 9B
+    groq_model_arbiter=_model_arbiter,       # Node C: Meta Llama 3.1 8B (Gemma decommissioned)
     redis_host=_redis_host,
     redis_port=_redis_port,
     redis_db=_redis_db,
@@ -211,7 +212,7 @@ def clinical_error_to_ws_payload(error: ClinicalError) -> Dict[str, Any]:
         "arbiter_reasoning": error["arbiter_reasoning"],
         "confidence": error["confidence"],
         "detected_at": error["detected_at"].isoformat() if isinstance(error["detected_at"], datetime) else error["detected_at"],
-        "alignment_info": alignment_to_payload(error["alignment_info"]),
+        "alignment_info": alignment_to_payload(error["alignment_info"]) if error["alignment_info"] else None,
         "is_system_error": error.get("is_system_error", False),
     }
 
@@ -678,13 +679,15 @@ async def transcribe_audio(
             if not text:
                 raise HTTPException(status_code=500, detail="Failed to transcribe interpreter audio")
         else:
-            # For provider/patient or when languages are same: use specified language
-            result = await call_whisper(client, audio_data, filename, content_type, language, groq_api_key)
+            # For provider/patient or when languages are same: ALWAYS use auto-detect
+            # CRITICAL: Language hints cause Whisper to TRANSLATE, not transcribe!
+            # We must ALWAYS use "auto" to get accurate transcription in the original language
+            result = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key)
             if "error" in result:
                 raise HTTPException(status_code=500, detail=f"Groq API error: {result['error']}")
             text = result.get("text", "").strip()
             duration = result.get("duration", 0.0)
-            detected_language = result.get("language", language)
+            detected_language = result.get("language", "auto")
 
     # Create transcript segment
     segment = TranscriptSegment(
