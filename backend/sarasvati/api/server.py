@@ -619,21 +619,39 @@ async def transcribe_audio(
                     print(f"   ⚠️ Whisper error for {name} hint: {candidate['error']}")
 
             lang_auto = candidate_auto["lang"]
-            preferred_language = lang_auto if lang_auto in {provider_lang, patient_lang} else None
+            hint_langs = {provider_lang, patient_lang}
 
             chosen: Optional[dict] = None
 
-            if preferred_language == provider_lang and candidate_provider["text"]:
+            # 1) If auto-detect matched a hint language and that transcript exists, trust the hint version
+            if lang_auto == provider_lang and candidate_provider["text"]:
                 chosen = candidate_provider
-                print(f"   → Auto-detected {preferred_language}; using provider hint transcript")
-            elif preferred_language == patient_lang and candidate_patient["text"]:
+                print("   → Auto-detected provider language; using provider hint transcript")
+            elif lang_auto == patient_lang and candidate_patient["text"]:
                 chosen = candidate_patient
-                print(f"   → Auto-detected {preferred_language}; using patient hint transcript")
-            elif candidate_auto["text"]:
+                print("   → Auto-detected patient language; using patient hint transcript")
+
+            # 2) Otherwise, prefer the longest non-empty hint transcript
+            if not chosen:
+                hint_candidates = [
+                    c for c in (candidate_provider, candidate_patient) if c["text"] and c["lang"] in hint_langs
+                ]
+                if len(hint_candidates) == 2:
+                    chosen = max(hint_candidates, key=lambda c: len(c["text"]))
+                    print(
+                        f"   → Both hints returned text; picked longer {chosen['lang']} transcript (len={len(chosen['text'])})"
+                    )
+                elif len(hint_candidates) == 1:
+                    chosen = hint_candidates[0]
+                    print(f"   → Only one hint produced text; using {chosen['lang']} transcript")
+
+            # 3) Fall back to auto transcript if we still have nothing
+            if not chosen and candidate_auto["text"]:
                 chosen = candidate_auto
                 print(f"   → Falling back to auto transcript ({lang_auto})")
-            else:
-                # pick the non-empty candidate with the longest text
+
+            # 4) Final safety: pick the longest non-empty candidate of all
+            if not chosen:
                 candidates = [c for c in (candidate_provider, candidate_patient, candidate_auto) if c["text"]]
                 if candidates:
                     chosen = max(candidates, key=lambda c: len(c["text"]))
