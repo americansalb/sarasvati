@@ -571,7 +571,8 @@ async def transcribe_audio(
     """
     Transcribe audio using Groq Whisper API.
     Accepts audio file, role (provider/interpreter/patient), and language hints.
-    For interpreter: runs Whisper twice with both languages, picks better result.
+    For interpreter: runs Whisper with both languages plus an auto-detect pass and
+    chooses the transcript that matches the detected language when possible.
     """
     global engine, session_active
 
@@ -588,32 +589,88 @@ async def transcribe_audio(
 
     async with httpx.AsyncClient() as client:
         if role == "interpreter" and provider_lang != patient_lang and patient_lang != "auto":
-            # For interpreter: try BOTH languages in parallel, pick better result
+            # For interpreter: try BOTH languages plus an auto-detect pass and pick the most reliable result
             print(f"🔄 Interpreter dual-language detection: trying {provider_lang} and {patient_lang}")
 
-            results = await asyncio.gather(
+            result_auto, result_provider, result_patient = await asyncio.gather(
+                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key),
                 call_whisper(client, audio_data, filename, content_type, provider_lang, groq_api_key),
                 call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key),
             )
 
-            result_provider = results[0]
-            result_patient = results[1]
+            def extract_candidate(result: dict, fallback_lang: str) -> dict:
+                return {
+                    "text": result.get("text", "").strip(),
+                    "duration": result.get("duration", 0.0),
+                    "lang": result.get("language", fallback_lang),
+                    "error": result.get("error"),
+                }
 
-            text_provider = result_provider.get("text", "").strip()
-            text_patient = result_patient.get("text", "").strip()
+            candidate_auto = extract_candidate(result_auto, "auto")
+            candidate_provider = extract_candidate(result_provider, provider_lang)
+            candidate_patient = extract_candidate(result_patient, patient_lang)
 
-            # Pick the result with longer text (heuristic: correct language = more coherent transcription)
-            # Could also use perplexity or other metrics in production
-            if len(text_patient) > len(text_provider):
-                text = text_patient
-                duration = result_patient.get("duration", 0.0)
-                detected_language = patient_lang
-                print(f"   → Selected {patient_lang}: '{text[:50]}...'")
-            else:
-                text = text_provider
-                duration = result_provider.get("duration", 0.0)
-                detected_language = provider_lang
-                print(f"   → Selected {provider_lang}: '{text[:50]}...'")
+            for name, candidate in (
+                ("auto", candidate_auto),
+                ("provider", candidate_provider),
+                ("patient", candidate_patient),
+            ):
+                if candidate.get("error"):
+                    print(f"   ⚠️ Whisper error for {name} hint: {candidate['error']}")
+
+            lang_auto = candidate_auto["lang"]
+            hint_langs = {provider_lang, patient_lang}
+
+            chosen: Optional[dict] = None
+
+            # 1) If auto-detect points to a language outside the hints, trust auto immediately.
+            if candidate_auto["text"] and lang_auto not in hint_langs:
+                chosen = candidate_auto
+                print(f"   → Auto language ({lang_auto}) outside hints; using auto transcript")
+
+            # 2) If auto-detect matched a hint language and that transcript exists, trust the hint version
+            if not chosen:
+                if lang_auto == provider_lang and candidate_provider["text"]:
+                    chosen = candidate_provider
+                    print("   → Auto-detected provider language; using provider hint transcript")
+                elif lang_auto == patient_lang and candidate_patient["text"]:
+                    chosen = candidate_patient
+                    print("   → Auto-detected patient language; using patient hint transcript")
+
+            # 3) Otherwise, prefer the longest non-empty hint transcript
+            if not chosen:
+                hint_candidates = [
+                    c for c in (candidate_provider, candidate_patient) if c["text"] and c["lang"] in hint_langs
+                ]
+                if len(hint_candidates) == 2:
+                    chosen = max(hint_candidates, key=lambda c: len(c["text"]))
+                    print(
+                        f"   → Both hints returned text; picked longer {chosen['lang']} transcript (len={len(chosen['text'])})"
+                    )
+                elif len(hint_candidates) == 1:
+                    chosen = hint_candidates[0]
+                    print(f"   → Only one hint produced text; using {chosen['lang']} transcript")
+
+            # 4) Fall back to auto transcript if we still have nothing
+            if not chosen and candidate_auto["text"]:
+                chosen = candidate_auto
+                print(f"   → Falling back to auto transcript ({lang_auto})")
+
+            # 5) Final safety: pick the longest non-empty candidate of all
+            if not chosen:
+                candidates = [c for c in (candidate_provider, candidate_patient, candidate_auto) if c["text"]]
+                if candidates:
+                    chosen = max(candidates, key=lambda c: len(c["text"]))
+                    print(
+                        f"   → Selected {chosen['lang']} by length (fallback): '{chosen['text'][:50]}...'"
+                    )
+
+            if not chosen:
+                raise HTTPException(status_code=500, detail="Failed to transcribe interpreter audio")
+
+            text = chosen["text"]
+            duration = chosen["duration"]
+            detected_language = chosen["lang"]
         else:
             # For provider/patient or when languages are same: use specified language
             result = await call_whisper(client, audio_data, filename, content_type, language, groq_api_key)
@@ -621,7 +678,7 @@ async def transcribe_audio(
                 raise HTTPException(status_code=500, detail=f"Groq API error: {result['error']}")
             text = result.get("text", "").strip()
             duration = result.get("duration", 0.0)
-            detected_language = language
+            detected_language = result.get("language", language)
 
     # Create transcript segment
     segment = TranscriptSegment(
@@ -645,6 +702,7 @@ async def transcribe_audio(
         "duration": duration,
         "confidence": 1.0,
         "is_final": True,
+        "detected_language": detected_language,
     })
     await manager.broadcast(message)
 
