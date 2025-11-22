@@ -231,15 +231,44 @@ class AlignmentEngine:
                 dtw_distance=float(dtw_dist),
             )
 
-        # No match found in window
-        # Debug: Show why no match was found
+        # No match found in window OR suspiciously low match (possible fabrication)
+        # CRITICAL: If interpreter spoke around the right time but with very low similarity,
+        # this could be a COMPLETE FABRICATION - tribunal must review it!
         if best_match:
-            print(f"      ❌ NO MATCH: best_score={best_match[3]:.3f} < threshold={self.config.min_similarity_threshold}")
-            print(f"         P: '{provider_segment['text'][:50]}...'")
-            print(f"         I: '{best_match[0]['text'][:50]}...' (best candidate)")
+            interpreter_seg, raw_similarity, time_delta, combined_score, dtw_dist = best_match
+
+            # Suspicious fabrication detection: score 0.10-0.39 (something said, but unrelated)
+            # Below 0.10: probably different conversation window, truly unmatched
+            # Above 0.40: normal match threshold
+            FABRICATION_THRESHOLD = 0.10
+
+            if combined_score >= FABRICATION_THRESHOLD:
+                # SUSPICIOUS: Interpreter spoke around the right time, but content is very different
+                # This could be fabrication, omission, or severe mistranslation
+                # Mark as MATCHED so tribunal reviews it!
+                print(f"      ⚠️ SUSPICIOUS FABRICATION: score={combined_score:.3f} (too low for match, too high for coincidence)")
+                print(f"         P: '{provider_segment['text'][:50]}...'")
+                print(f"         I: '{interpreter_seg['text'][:50]}...'")
+                print(f"         → Flagging for tribunal review as potential fabrication/omission")
+
+                return AlignmentMatch(
+                    provider_segment=provider_segment,
+                    interpreter_segment=interpreter_seg,
+                    similarity_score=float(raw_similarity),
+                    combined_score=float(combined_score),
+                    time_delta=float(time_delta),
+                    is_matched=True,  # Mark as matched so tribunal sees it!
+                    dtw_distance=float(dtw_dist),
+                )
+            else:
+                # Very low score: probably unrelated, truly missed
+                print(f"      ❌ NO MATCH: best_score={combined_score:.3f} < fabrication_threshold={FABRICATION_THRESHOLD}")
+                print(f"         P: '{provider_segment['text'][:50]}...'")
+                print(f"         I: '{interpreter_seg['text'][:50]}...' (likely unrelated)")
         else:
             print(f"      ❌ NO MATCH: No candidates in window for P: '{provider_segment['text'][:50]}...'")
 
+        # True no-match: no interpreter segment in time window
         return AlignmentMatch(
             provider_segment=provider_segment,
             interpreter_segment=None,
