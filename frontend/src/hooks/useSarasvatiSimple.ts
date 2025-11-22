@@ -205,6 +205,9 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
   const providerLangRef = useRef<string>("en");
   const patientLangRef = useRef<string>("auto");
 
+  const audioLevelRef = useRef<number>(0);
+  const audioContextRef = useRef<AudioContext | null>(null);
+
   const startRecording = useCallback(async (
     role: StreamRole,
     language: string = "auto",
@@ -218,6 +221,26 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
       providerLangRef.current = providerLang;
       patientLangRef.current = patientLang;
       audioChunksRef.current = [];
+      audioLevelRef.current = 0;
+
+      // Create audio context to monitor audio levels
+      const audioContext = new AudioContext();
+      audioContextRef.current = audioContext;
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      // Monitor audio levels
+      const checkAudioLevel = () => {
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+        audioLevelRef.current = Math.max(audioLevelRef.current, average);
+      };
+
+      const levelCheckInterval = setInterval(checkAudioLevel, 100);
 
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: "audio/webm;codecs=opus",
@@ -230,10 +253,14 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
       };
 
       mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        clearInterval(levelCheckInterval);
+        audioContextRef.current?.close();
 
-        // Validate audio blob size
-        console.log(`🎧 Audio blob size: ${audioBlob.size} bytes (${audioChunksRef.current.length} chunks)`);
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        const maxLevel = audioLevelRef.current;
+
+        // Validate audio blob size and audio levels
+        console.log(`🎧 Audio blob: ${audioBlob.size} bytes (${audioChunksRef.current.length} chunks), max level: ${maxLevel.toFixed(1)}`);
 
         if (audioBlob.size < 100) {
           console.error("⚠️ Audio blob is too small! This will likely result in 'Thank you' hallucination.");
@@ -241,6 +268,20 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
           setConnectionState((prev) => ({
             ...prev,
             error: "Audio too short - please record for at least 1-2 seconds",
+          }));
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        // Check if audio contains actual sound (not just silence)
+        // Typical speech has levels > 10-20, silence is < 5
+        if (maxLevel < 5) {
+          console.error("⚠️ NO AUDIO DETECTED! Microphone may be muted, off, or not selected.");
+          console.error(`   Audio level: ${maxLevel.toFixed(1)} (expected > 10 for speech)`);
+          console.error("   This would cause Whisper to hallucinate 'Thank you'");
+          setConnectionState((prev) => ({
+            ...prev,
+            error: "No audio detected - check your microphone is on and selected",
           }));
           stream.getTracks().forEach((track) => track.stop());
           return;
