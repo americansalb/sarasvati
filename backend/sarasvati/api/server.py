@@ -455,7 +455,8 @@ async def start_session(request: SessionStartRequest) -> SessionStartResponse:
     """
     Start a new monitoring session.
 
-    Creates a new session and initializes the engine.
+    Creates a new session and initializes a FRESH engine.
+    CRITICAL: Each session gets its own engine to prevent state leakage.
     """
     global session_active, session_id, session_start_time, _processing_task, engine
 
@@ -467,9 +468,12 @@ async def start_session(request: SessionStartRequest) -> SessionStartResponse:
     session_start_time = datetime.utcnow()
     session_active = True
 
-    # Start engine session
-    if engine:
-        await engine.start_session(session_id)
+    # CRITICAL FIX: Create a fresh engine for each session to prevent state leakage
+    # The old engine's buffers/state would carry over otherwise
+    print(f"🔄 Creating fresh engine for session {session_id}")
+    engine = create_engine(DEFAULT_CONFIG)
+    await engine.start_session(session_id)
+    print(f"✅ Fresh engine initialized for session {session_id}")
 
     # Start background error emission loop
     _processing_task = asyncio.create_task(emit_error_loop())
@@ -672,9 +676,22 @@ async def transcribe_audio(
                 detected_language = provider_lang
                 print(f"   ⚠️ Whisper returned unknown language '{detected_language}', defaulting to {provider_lang}")
 
-            # ALWAYS use auto transcript
-            text = candidate_auto["text"]
-            duration = candidate_auto["duration"]
+            # Use the transcript that matches the detected language
+            # CRITICAL: Auto-detect sometimes gets the script wrong (e.g., Gujarati → Arabic/Urdu)
+            # When we know the language, use the hint transcript which has the correct script
+            if detected_language == provider_lang and candidate_provider["text"]:
+                text = candidate_provider["text"]
+                duration = candidate_provider["duration"]
+                print(f"   ✅ Using provider hint transcript (correct script for {provider_lang})")
+            elif detected_language == patient_lang and candidate_patient["text"]:
+                text = candidate_patient["text"]
+                duration = candidate_patient["duration"]
+                print(f"   ✅ Using patient hint transcript (correct script for {patient_lang})")
+            else:
+                # Fall back to auto if language unknown or hint failed
+                text = candidate_auto["text"]
+                duration = candidate_auto["duration"]
+                print(f"   ℹ️ Using auto transcript (language={detected_language})")
 
             if not text:
                 raise HTTPException(status_code=500, detail="Failed to transcribe interpreter audio")
