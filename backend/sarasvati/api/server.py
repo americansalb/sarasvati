@@ -74,10 +74,12 @@ def parse_redis_url() -> tuple[str, int, int]:
 _redis_host, _redis_port, _redis_db = parse_redis_url()
 
 # Independent Tribunal: 3 TOTALLY DIFFERENT model families for maximum diversity
-# Using largest models from different companies - critical for medical interpretation
-_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.3-70b-versatile")  # Meta AI (70B, latest)
+# Using LARGEST available models from each company on Groq - critical for medical interpretation
+# NOTE: Claude (Anthropic), GPT (OpenAI), and Gemini (Google) are NOT available via Groq
+# Groq only provides open-source models. For proprietary models, we'd need multi-provider architecture.
+_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.3-70b-versatile")  # Meta AI (70B, latest Llama)
 _model_monitor = os.getenv("GROQ_MODEL_MONITOR", "mixtral-8x7b-32768")           # Mistral AI (MoE, 46.7B active)
-_model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "gemma2-9b-it")                 # Google DeepMind (9B, specialized)
+_model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "gemma2-27b-it")                # Google (27B, largest Gemma)
 
 DEFAULT_CONFIG = GraphConfig(
     max_buffer_size=50,
@@ -87,7 +89,7 @@ DEFAULT_CONFIG = GraphConfig(
     enable_negation_check=True,
     groq_model_extractor=_model_extractor,   # Node A: Meta Llama 3.3 70B
     groq_model_monitor=_model_monitor,       # Node B: Mistral Mixtral 8x7B MoE
-    groq_model_arbiter=_model_arbiter,       # Node C: Google Gemma 2 9B
+    groq_model_arbiter=_model_arbiter,       # Node C: Google Gemma 2 27B (largest)
     redis_host=_redis_host,
     redis_port=_redis_port,
     redis_db=_redis_db,
