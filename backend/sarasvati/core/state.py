@@ -27,6 +27,21 @@ class ErrorSeverity(str, Enum):
     LOW = "low"                # Minor linguistic variations
 
 
+class TribunalCaseType(str, Enum):
+    """
+    Type of tribunal case - determines review context and prompts.
+
+    Bidirectional flows:
+    - OUTBOUND: Provider → Interpreter → Patient (doctor-to-patient leg)
+    - INBOUND: Patient → Interpreter → Provider (patient-to-doctor leg)
+    """
+    ALIGNED_OUTBOUND = "aligned_outbound"      # Provider → Interpreter matched
+    ALIGNED_INBOUND = "aligned_inbound"        # Patient → Interpreter matched
+    OMISSION_OUTBOUND = "omission_outbound"    # Provider spoke, interpreter silent
+    OMISSION_INBOUND = "omission_inbound"      # Patient spoke, interpreter silent
+    FABRICATION = "fabrication"                # Interpreter spoke without prompt
+
+
 class MedicalEntity(TypedDict):
     """Extracted medical entity from clinical speech."""
     entity_type: str           # "drug", "dosage", "frequency", "condition", "instruction"
@@ -50,28 +65,36 @@ class TranscriptSegment(TypedDict):
 
 
 class AlignmentMatch(TypedDict):
-    """Result of DTW/semantic alignment between provider and interpreter."""
-    provider_segment: TranscriptSegment
-    interpreter_segment: Optional[TranscriptSegment]
+    """
+    Result of DTW/semantic alignment.
+
+    Represents a tribunal case - either aligned, omission, or fabrication.
+    Every provider/patient segment and every interpreter segment creates a case.
+    """
+    provider_segment: Optional[TranscriptSegment]     # None for FABRICATION cases
+    interpreter_segment: Optional[TranscriptSegment]  # None for OMISSION cases
+    patient_segment: Optional[TranscriptSegment]      # Patient context (optional)
     similarity_score: float    # Raw semantic similarity [0.0-1.0] (cosine distance)
     combined_score: float      # Truth Vector: 0.7*similarity + 0.3*(1-dtw) [0.0-1.0]
     time_delta: float          # Actual delay (interpreter_time - provider_time)
-    is_matched: bool           # Whether a match was found in the search window
+    is_matched: bool           # Whether alignment threshold was met
     dtw_distance: float        # DTW distance metric
+    case_type: TribunalCaseType  # Type of tribunal review needed
 
 
 class ClinicalError(TypedDict):
-    """Detected error in interpretation."""
+    """Detected error in interpretation OR system error."""
     error_id: str              # Unique identifier
     severity: ErrorSeverity
-    error_type: str            # "omission", "negation_mismatch", "dosage_error", etc.
-    provider_entity: MedicalEntity
-    interpreter_entity: Optional[MedicalEntity]
+    error_type: str            # "omission", "negation_mismatch", "dosage_error", "system_error", etc.
+    provider_entity: Optional[MedicalEntity]     # None for system errors or some fabrications
+    interpreter_entity: Optional[MedicalEntity]  # None for omissions or system errors
     description: str           # Human-readable error description
     arbiter_reasoning: str     # Explanation from the Arbiter agent
     confidence: float          # Error detection confidence
     detected_at: datetime
-    alignment_info: AlignmentMatch
+    alignment_info: Optional[AlignmentMatch]  # None for system errors
+    is_system_error: bool      # True for infrastructure failures, False for clinical errors
 
 
 class BufferEntry(TypedDict):
