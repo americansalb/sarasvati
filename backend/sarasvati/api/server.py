@@ -623,13 +623,19 @@ async def transcribe_audio(
 
             chosen: Optional[dict] = None
 
+            # Debug logging: show all candidates
+            print(f"   📊 Candidates:")
+            print(f"      auto({lang_auto}): '{candidate_auto['text'][:50]}...' (len={len(candidate_auto['text'])})")
+            print(f"      {provider_lang}_hint: '{candidate_provider['text'][:50]}...' (len={len(candidate_provider['text'])})")
+            print(f"      {patient_lang}_hint: '{candidate_patient['text'][:50]}...' (len={len(candidate_patient['text'])})")
+
             # 1) If auto-detect matched a hint language and that transcript exists, trust the hint version
             if lang_auto == provider_lang and candidate_provider["text"]:
                 chosen = candidate_provider
-                print("   → Auto-detected provider language; using provider hint transcript")
+                print(f"   ✅ Selected {provider_lang}: Auto-detected provider language; using provider hint transcript")
             elif lang_auto == patient_lang and candidate_patient["text"]:
                 chosen = candidate_patient
-                print("   → Auto-detected patient language; using patient hint transcript")
+                print(f"   ✅ Selected {patient_lang}: Auto-detected patient language; using patient hint transcript")
 
             # 2) Otherwise, prefer the longest non-empty hint transcript
             if not chosen:
@@ -639,16 +645,16 @@ async def transcribe_audio(
                 if len(hint_candidates) == 2:
                     chosen = max(hint_candidates, key=lambda c: len(c["text"]))
                     print(
-                        f"   → Both hints returned text; picked longer {chosen['lang']} transcript (len={len(chosen['text'])})"
+                        f"   ✅ Selected {chosen['lang']}: Both hints returned text; picked longer transcript (len={len(chosen['text'])})"
                     )
                 elif len(hint_candidates) == 1:
                     chosen = hint_candidates[0]
-                    print(f"   → Only one hint produced text; using {chosen['lang']} transcript")
+                    print(f"   ✅ Selected {chosen['lang']}: Only one hint produced text")
 
             # 3) Fall back to auto transcript if we still have nothing
             if not chosen and candidate_auto["text"]:
                 chosen = candidate_auto
-                print(f"   → Falling back to auto transcript ({lang_auto})")
+                print(f"   ⚠️ Selected {lang_auto}: Falling back to auto transcript")
 
             # 4) Final safety: pick the longest non-empty candidate of all
             if not chosen:
@@ -656,7 +662,7 @@ async def transcribe_audio(
                 if candidates:
                     chosen = max(candidates, key=lambda c: len(c["text"]))
                     print(
-                        f"   → Selected {chosen['lang']} by length (fallback): '{chosen['text'][:50]}...'"
+                        f"   ⚠️ Selected {chosen['lang']} by length (emergency fallback): '{chosen['text'][:50]}...'"
                     )
 
             if not chosen:
