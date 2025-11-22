@@ -66,52 +66,72 @@ class NodeAExtractor:
 
     async def extract_comparison(
         self,
-        provider_segment: TranscriptSegment,
+        source_segment: Optional[TranscriptSegment],
         interpreter_segment: Optional[TranscriptSegment],
         alignment: AlignmentMatch,
         patient_text: str = "",
+        source_role: str = "provider",
+        target_role: str = "patient",
+        case_type: str = "aligned_outbound",
     ) -> Tuple[Dict[str, Any], str]:
         """
-        Extract and compare medical facts from all three streams (Trisul Protocol).
+        Extract and compare medical facts - JUDGING ONLY THE INTERPRETER.
+
+        The source (provider or patient) is GROUND TRUTH.
+        The interpreter's job is to render it faithfully.
+
+        Args:
+            source_segment: The original utterance (provider or patient)
+            interpreter_segment: The interpreter's rendition
+            source_role: "provider" or "patient"
+            target_role: "patient" or "provider"
+            case_type: Type of tribunal case
 
         Returns:
             Tuple of (structured_json, extractor_notes)
         """
-        provider_text = provider_segment["text"]
+        source_text = source_segment["text"] if source_segment else "[NO SOURCE]"
         interpreter_text = interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
 
-        # Build patient context for triadic validation
-        patient_context = f'\nPATIENT SAID (in their language):\n"{patient_text}"\n' if patient_text else ""
+        # Build context string
+        patient_context = f'\nPATIENT CONTEXT:\n"{patient_text}"\n' if patient_text else ""
 
-        prompt = f"""You are a clinical extraction engine. Your task is to extract medical facts from ALL utterances and produce a structured comparison.
+        prompt = f"""You are a clinical extraction engine evaluating INTERPRETER PERFORMANCE.
 
-PROVIDER SAID:
-"{provider_text}"
+CRITICAL: You are ONLY judging the interpreter's accuracy. The {source_role.upper()} is GROUND TRUTH.
 
-INTERPRETER SAID:
+{source_role.upper()} SAID (GROUND TRUTH):
+"{source_text}"
+
+INTERPRETER'S RENDITION (what interpreter said to {target_role}):
 "{interpreter_text}"
 {patient_context}
-ALIGNMENT SCORE: {alignment["similarity_score"]:.2f}
-TIME DELTA: {alignment["time_delta"]:.1f} seconds
+ALIGNMENT SCORE: {alignment.get("similarity_score", 0):.2f}
+TIME DELTA: {alignment.get("time_delta", 0):.1f} seconds
+CASE TYPE: {case_type}
 
-Extract ALL medical entities from ALL utterances. Compare them side-by-side.
-IMPORTANT: If interpreter claims to translate what the patient said, verify it matches the patient's actual words.
+Your task: Extract medical entities and compare INTERPRETER vs {source_role.upper()} (ground truth).
+Identify where the interpreter:
+- Omitted critical information
+- Added information not in the original
+- Distorted/mistranslated
+- Changed tone/register inappropriately
 
-Return ONLY valid JSON in this exact format:
+Return ONLY valid JSON:
 {{
-  "provider_facts": [
-    {{"type": "drug|dosage|frequency|condition|instruction", "value": "exact text", "normalized": "standardized form"}}
+  "source_facts": [
+    {{"type": "drug|dosage|frequency|condition|instruction|symptom", "value": "exact text from {source_role}"}}
   ],
   "interpreter_facts": [
-    {{"type": "drug|dosage|frequency|condition|instruction", "value": "exact text", "normalized": "standardized form"}}
+    {{"type": "drug|dosage|frequency|condition|instruction|symptom", "value": "exact text from interpreter"}}
   ],
-  "discrepancies": [
-    {{"provider_fact": "X", "interpreter_fact": "Y or MISSING", "severity": "critical|high|medium|low", "reason": "explanation"}}
+  "interpreter_errors": [
+    {{"type": "omission|addition|distortion|register", "severity": "critical|high|medium|low", "description": "what interpreter got wrong"}}
   ],
-  "extractor_verdict": "MATCH|PARTIAL|MISMATCH|CRITICAL_ERROR"
+  "extractor_verdict": "ACCURATE|PARTIAL|INACCURATE|CRITICAL_ERROR"
 }}
 
-Be precise. Patient safety depends on accuracy."""
+Patient safety depends on the interpreter's accuracy."""
 
         try:
             response = await self.client.chat.completions.create(
@@ -157,45 +177,52 @@ class NodeBMonitor:
 
     async def analyze_independently(
         self,
-        provider_text: str,
+        source_text: str,
         interpreter_text: str,
         patient_text: str = "",
+        source_role: str = "provider",
+        target_role: str = "patient",
+        case_type: str = "aligned_outbound",
     ) -> str:
         """
-        Independently analyze the utterances without seeing Node A's output.
-        Implements Trisul Protocol - triangulates all three streams.
+        Independently analyze INTERPRETER PERFORMANCE without seeing Node A's output.
+
+        CRITICAL: You are ONLY judging the interpreter. The source is GROUND TRUTH.
 
         Returns:
-            Plain-text critique
+            Plain-text critique of interpreter behavior
         """
         # Build patient context for triadic validation
         patient_section = f'''
-PATIENT'S ACTUAL STATEMENT (in their language):
+PATIENT CONTEXT (for verification):
 "{patient_text}"
 ''' if patient_text else ""
 
-        triangulation_note = """
-6. BACK-TRANSLATION VERIFICATION: If interpreter claims to translate what the patient said,
-   does it actually match the patient's statement? Watch for malicious fabrications!""" if patient_text else ""
+        prompt = f"""You are a SKEPTICAL medical interpretation monitor evaluating INTERPRETER BEHAVIOR.
 
-        prompt = f"""You are a SKEPTICAL medical interpretation monitor. You do NOT see any prior extraction or analysis. Read the text yourself.
+CRITICAL INSTRUCTIONS:
+- You are ONLY judging the interpreter's accuracy and ethics
+- The {source_role.upper()} statement is GROUND TRUTH - do not critique it
+- Focus on what the INTERPRETER did right or wrong
 
-PROVIDER'S ORIGINAL STATEMENT:
-"{provider_text}"
+{source_role.upper()}'S STATEMENT (GROUND TRUTH):
+"{source_text}"
 
-INTERPRETER'S RENDITION:
+INTERPRETER'S RENDITION (what interpreter said to {target_role}):
 "{interpreter_text}"
 {patient_section}
-Your job: Be a skeptic. Assume errors exist until proven otherwise.
+CASE TYPE: {case_type}
 
-Analyze for:
-1. OMISSIONS: What critical info did the interpreter skip?
-2. ADDITIONS: What did the interpreter add that wasn't in the original?
-3. CHANGES: What was modified (numbers, negations, medications)?
-4. NEGATION FLIPS: Did "do not take" become "take" or vice versa?
-5. SEVERITY: If you find issues, are they life-threatening?{triangulation_note}
+Your job: Be a skeptic about the INTERPRETER'S performance.
 
-Write a plain-text critique. Be specific. Quote the exact words that concern you.
+Analyze the INTERPRETER for:
+1. OMISSIONS: What critical info from the {source_role} did the interpreter fail to convey?
+2. ADDITIONS/FABRICATIONS: What did the interpreter add that the {source_role} never said?
+3. DISTORTIONS: What was mistranslated or changed (numbers, negations, medications, tone)?
+4. REGISTER VIOLATIONS: Did the interpreter change tone inappropriately (informal ↔ formal)?
+5. CLINICAL IMPACT: If errors exist, what's the patient safety risk?
+
+Write a plain-text critique of the INTERPRETER'S behavior. Be specific. Quote exact discrepancies.
 
 If the interpretation is accurate, say: "No significant issues detected."
 
@@ -241,83 +268,99 @@ class NodeCArbiter:
 
     async def arbitrate(
         self,
-        provider_text: str,
+        source_text: str,
         interpreter_text: str,
         extractor_json: Dict[str, Any],
         monitor_report: str,
         alignment: AlignmentMatch,
         patient_text: str = "",
+        source_role: str = "provider",
+        target_role: str = "patient",
+        case_type: str = "aligned_outbound",
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Make final judgment based on raw evidence and junior analysts' reports.
-        Implements Trisul Protocol - triangulates all three streams.
+        Make final judgment on INTERPRETER PERFORMANCE.
+
+        CRITICAL: You are ONLY judging the interpreter.
+        Source (provider or patient) is GROUND TRUTH.
 
         Returns:
-            Tuple of (reasoning, list of error dicts)
+            Tuple of (reasoning, list of error dicts with standardized types)
         """
-        # Build patient evidence section
-        patient_evidence = f'''
-PATIENT'S ACTUAL STATEMENT (in their language):
+        # Build context section
+        patient_context = f'''
+PATIENT CONTEXT (for verification):
 "{patient_text}"
 ''' if patient_text else ""
 
-        triangulation_rule = """
-6. TRIANGULATION (CRITICAL): If interpreter claims "the patient said X", verify against
-   the patient's ACTUAL statement above. Malicious interpreters may fabricate insults
-   or false claims - catch them by comparing to what the patient REALLY said!
-""" if patient_text else ""
-
-        prompt = f"""You are a SENIOR MEDICAL JUDGE presiding over a clinical interpretation case.
+        prompt = f"""You are a SENIOR MEDICAL JUDGE evaluating INTERPRETER PERFORMANCE in a {case_type} case.
 
 ═══════════════════════════════════════════════════════════
-PRIMARY EVIDENCE (Trust this above all else)
+CRITICAL INSTRUCTIONS
+═══════════════════════════════════════════════════════════
+YOU ARE ONLY JUDGING THE INTERPRETER.
+The {source_role.upper()} statement is GROUND TRUTH - DO NOT critique it.
+Focus exclusively on what the INTERPRETER did right or wrong.
+
+═══════════════════════════════════════════════════════════
+PRIMARY EVIDENCE
 ═══════════════════════════════════════════════════════════
 
-PROVIDER'S ORIGINAL STATEMENT:
-"{provider_text}"
+{source_role.upper()}'S STATEMENT (GROUND TRUTH):
+"{source_text}"
 
-INTERPRETER'S RENDITION:
+INTERPRETER'S RENDITION (what interpreter said to {target_role}):
 "{interpreter_text}"
-{patient_evidence}
+{patient_context}
+CASE TYPE: {case_type}
 
 ═══════════════════════════════════════════════════════════
-JUNIOR ANALYST REPORTS (These may contain errors)
+JUNIOR ANALYST REPORTS (may contain errors - verify against raw text)
 ═══════════════════════════════════════════════════════════
 
-NODE A (Extractor - Structured Analysis):
+NODE A (Extractor):
 {json.dumps(extractor_json, indent=2)}
 
-NODE B (Monitor - Skeptical Critique):
+NODE B (Monitor):
 {monitor_report}
 
 ═══════════════════════════════════════════════════════════
-YOUR DUTY AS SENIOR JUDGE
+YOUR DUTY
 ═══════════════════════════════════════════════════════════
 
-1. The PRIMARY EVIDENCE is your ground truth
-2. Node A and B are junior analysts - they may have made errors
-3. If Node A or B claims something that contradicts the raw text, OVERRIDE them
-4. If Node A and B disagree, go back to the raw text to decide
-5. Patient safety is paramount - when in doubt, flag for human review
-{triangulation_rule}
-SEVERITY GUIDE:
-- CRITICAL: Wrong medication, wrong dosage, negation flip (e.g., "do not" → "do"), FABRICATED statements about what patient said
-- HIGH: Omitted key medical information
-- MEDIUM: Partial omission or imprecise translation
-- LOW: Minor linguistic differences, acceptable paraphrasing
+1. The PRIMARY EVIDENCE is ground truth
+2. Node A and B may have errors - if they contradict raw text, OVERRIDE them
+3. Judge ONLY the interpreter's behavior, never the {source_role} or patient
+4. Patient safety is paramount
+
+STANDARDIZED ERROR TYPES (use ONLY these):
+- omission: Interpreter failed to convey critical information from source
+- addition: Interpreter added information not in source (fabrication)
+- distortion: Mistranslation, wrong numbers, flipped negations
+- register: Inappropriate tone change (formal ↔ informal, respectful ↔ rude)
+- role_violation: Interpreter overstepped role (gave own opinion, medical advice, etc.)
+
+SEVERITY MAPPED TO CLINICAL IMPACT:
+- CRITICAL: Could directly cause wrong treatment, missed emergency, invalid consent, or physical harm
+  Examples: Wrong medication, wrong dosage, "do not take" → "take", fabricated diagnosis
+- HIGH: Serious emotional harm or major misunderstanding affecting care
+  Examples: Omitted key symptom, changed pain level significantly, inappropriate register causing offense
+- MEDIUM: Meaningful distortion but not immediately dangerous
+  Examples: Partial omission of non-critical info, minor mistranslation of context
+- LOW: Minor issues where overall meaning preserved
+  Examples: Slight paraphrasing, acceptable simplification
 
 Return ONLY valid JSON:
 {{
   "verdict": "NO_ERRORS|MINOR_ISSUES|ERRORS_DETECTED|CRITICAL_ERRORS",
-  "reasoning": "Your judicial analysis (2-3 sentences)",
+  "reasoning": "Your judicial analysis of INTERPRETER performance (2-3 sentences)",
   "override_notes": "If you overrode Node A or B, explain why",
   "errors": [
     {{
       "severity": "critical|high|medium|low",
-      "type": "omission|negation_flip|dosage_error|medication_error|other",
-      "description": "Specific description of the error",
-      "provider_said": "exact quote",
-      "interpreter_said": "exact quote or MISSING"
+      "type": "omission|addition|distortion|register|role_violation",
+      "description": "Specific description of what the INTERPRETER got wrong",
+      "interpreter_said": "exact quote from interpreter or MISSING for omissions"
     }}
   ]
 }}
@@ -392,27 +435,64 @@ class ClinicalDebateOrchestrator:
         patient_text: str = "",
     ) -> AgentDebateResult:
         """
-        Run the Independent Tribunal with anti-telephone data flow.
-        Implements Trisul Protocol - triangulates Provider ↔ Interpreter ↔ Patient.
+        Run the Independent Tribunal to judge INTERPRETER behavior.
 
-        Flow:
-        1. Node A (Extractor) and Node B (Monitor) run IN PARALLEL
-        2. Node B does NOT see Node A's output (blind analysis)
-        3. All nodes see patient_text for triangulation
-        4. Node C (Arbiter) receives raw evidence + both reports
-        5. Node C can OVERRIDE junior analysts
+        CRITICAL: The tribunal ONLY judges the interpreter's performance.
+        Provider and patient are GROUND TRUTH references, not graded participants.
+
+        The question is always: "Did the interpreter faithfully and ethically
+        render this message between provider and patient?"
+
+        Handles all 5 case types:
+        - ALIGNED_OUTBOUND: Provider → Interpreter (matched)
+        - ALIGNED_INBOUND: Patient → Interpreter (matched)
+        - OMISSION_OUTBOUND: Provider spoke, interpreter didn't render it
+        - OMISSION_INBOUND: Patient spoke, interpreter didn't relay it
+        - FABRICATION: Interpreter spoke without provider or patient prompt
         """
         start_time = datetime.utcnow()
 
-        provider_segment = alignment["provider_segment"]
-        interpreter_segment = alignment["interpreter_segment"]
+        # Extract case type and segments
+        case_type = alignment.get("case_type", TribunalCaseType.ALIGNED_OUTBOUND)
+        provider_segment = alignment.get("provider_segment")
+        patient_segment = alignment.get("patient_segment")
+        interpreter_segment = alignment.get("interpreter_segment")
 
-        provider_text = provider_segment["text"]
-        interpreter_text = interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION FOUND]"
+        # Determine source and direction based on case type
+        if case_type in (TribunalCaseType.ALIGNED_OUTBOUND, TribunalCaseType.OMISSION_OUTBOUND):
+            source_role = "provider"
+            source_segment = provider_segment
+            source_text = provider_segment["text"] if provider_segment else ""
+            target_role = "patient"
+            direction = "Provider → Interpreter → Patient"
 
-        # Handle case where no interpreter match
+        elif case_type in (TribunalCaseType.ALIGNED_INBOUND, TribunalCaseType.OMISSION_INBOUND):
+            source_role = "patient"
+            source_segment = patient_segment
+            source_text = patient_segment["text"] if patient_segment else ""
+            target_role = "provider"
+            direction = "Patient → Interpreter → Provider"
+
+        elif case_type == TribunalCaseType.FABRICATION:
+            source_role = "none"
+            source_segment = None
+            source_text = ""
+            target_role = "unknown"
+            direction = "Interpreter spoke without prompt"
+
+        else:
+            # Fallback for unknown case types
+            source_role = "provider"
+            source_segment = provider_segment
+            source_text = provider_segment["text"] if provider_segment else ""
+            target_role = "patient"
+            direction = "Unknown case type"
+
+        interpreter_text = interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
+
+        # Handle omissions (no interpreter response)
         if not alignment["is_matched"] or not interpreter_segment:
-            return self._handle_no_match(alignment, start_time)
+            return self._handle_omission(alignment, start_time, source_role, source_text, case_type)
 
         # ═══════════════════════════════════════════════════════════
         # PARALLEL EXECUTION: Node A and Node B run simultaneously
@@ -420,10 +500,16 @@ class ClinicalDebateOrchestrator:
         # ═══════════════════════════════════════════════════════════
 
         extractor_task = asyncio.create_task(
-            self.extractor.extract_comparison(provider_segment, interpreter_segment, alignment, patient_text)
+            self.extractor.extract_comparison(
+                source_segment, interpreter_segment, alignment, patient_text,
+                source_role, target_role, case_type
+            )
         )
         monitor_task = asyncio.create_task(
-            self.monitor.analyze_independently(provider_text, interpreter_text, patient_text)
+            self.monitor.analyze_independently(
+                source_text, interpreter_text, patient_text,
+                source_role, target_role, case_type
+            )
         )
 
         # Wait for both to complete
@@ -436,12 +522,15 @@ class ClinicalDebateOrchestrator:
         # ═══════════════════════════════════════════════════════════
 
         arbiter_reasoning, error_list = await self.arbiter.arbitrate(
-            provider_text=provider_text,
+            source_text=source_text,
             interpreter_text=interpreter_text,
             extractor_json=extractor_json,
             monitor_report=monitor_report,
             alignment=alignment,
             patient_text=patient_text,
+            source_role=source_role,
+            target_role=target_role,
+            case_type=case_type,
         )
 
         # Convert error dicts to ClinicalError objects
@@ -460,7 +549,7 @@ class ClinicalDebateOrchestrator:
                 error_id=f"err_{datetime.utcnow().timestamp()}_{len(clinical_errors)}",
                 severity=severity,
                 error_type=err.get("type", "unknown"),
-                provider_entity=self._extract_entity_from_text(err.get("provider_said", ""), provider_segment) if not is_sys_error else None,
+                provider_entity=None,  # Provider is ground truth, not graded
                 interpreter_entity=self._extract_entity_from_text(err.get("interpreter_said", ""), interpreter_segment) if interpreter_segment and not is_sys_error else None,
                 description=err.get("description", "Error detected"),
                 arbiter_reasoning=arbiter_reasoning,
@@ -484,34 +573,49 @@ class ClinicalDebateOrchestrator:
             processing_time_ms=processing_time,
         )
 
-    def _handle_no_match(
+    def _handle_omission(
         self,
         alignment: AlignmentMatch,
         start_time: datetime,
+        source_role: str,
+        source_text: str,
+        case_type: str,
     ) -> AgentDebateResult:
-        """Handle case where no interpreter match was found."""
-        provider_segment = alignment["provider_segment"]
+        """
+        Handle omission cases (source spoke, interpreter didn't respond).
+
+        This handles both OMISSION_OUTBOUND and OMISSION_INBOUND.
+        """
+        if case_type == TribunalCaseType.OMISSION_OUTBOUND:
+            description = f"Provider said: '{source_text[:100]}...' but interpreter did not render it to patient"
+            reasoning = "Provider statement was not interpreted within expected timeframe. Critical omission."
+        elif case_type == TribunalCaseType.OMISSION_INBOUND:
+            description = f"Patient said: '{source_text[:100]}...' but interpreter did not relay it to provider"
+            reasoning = "Patient statement was not relayed to provider within expected timeframe. Critical omission."
+        else:
+            description = f"{source_role.capitalize()} spoke but interpreter did not respond"
+            reasoning = "Omission detected - interpreter failed to render the message."
 
         error = ClinicalError(
             error_id=f"err_{datetime.utcnow().timestamp()}",
             severity=ErrorSeverity.CRITICAL,
-            error_type="complete_omission",
-            provider_entity=self._extract_entity_from_text(provider_segment["text"], provider_segment),
-            interpreter_entity=None,
-            description="No matching interpretation found within search window",
-            arbiter_reasoning="Provider statement was not interpreted within expected timeframe. This is a critical omission.",
+            error_type="omission",  # Standardized error type
+            provider_entity=None,  # Provider/patient are ground truth, not graded
+            interpreter_entity=None,  # No interpreter utterance to extract from
+            description=description,
+            arbiter_reasoning=reasoning,
             confidence=0.95,
             detected_at=datetime.utcnow(),
             alignment_info=alignment,
-            is_system_error=False,  # This is a clinical error, not infrastructure failure
+            is_system_error=False,  # Clinical error, not infrastructure
         )
 
         processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
 
         return AgentDebateResult(
             extractor_entities=[],
-            monitor_findings=["CRITICAL: Complete omission - no interpretation detected"],
-            arbiter_decision="Critical: Provider statement not interpreted",
+            monitor_findings=[f"CRITICAL: {source_role.capitalize()} spoke, interpreter silent - complete omission"],
+            arbiter_decision=f"Critical: Interpreter omission in {case_type} case",
             detected_errors=[error],
             processing_time_ms=processing_time,
         )
