@@ -217,6 +217,10 @@ class AlignmentEngine:
                 combined_score *= 0.3  # Severe penalty for negation errors
                 raw_similarity *= 0.3  # Also penalize raw for consistency
 
+            print(f"      ✅ MATCH FOUND: sim={raw_similarity:.3f}, combined={combined_score:.3f}, delta={time_delta:.1f}s")
+            print(f"         P: '{provider_segment['text'][:50]}...'")
+            print(f"         I: '{interpreter_seg['text'][:50]}...'")
+
             return AlignmentMatch(
                 provider_segment=provider_segment,
                 interpreter_segment=interpreter_seg,
@@ -228,6 +232,14 @@ class AlignmentEngine:
             )
 
         # No match found in window
+        # Debug: Show why no match was found
+        if best_match:
+            print(f"      ❌ NO MATCH: best_score={best_match[3]:.3f} < threshold={self.config.min_similarity_threshold}")
+            print(f"         P: '{provider_segment['text'][:50]}...'")
+            print(f"         I: '{best_match[0]['text'][:50]}...' (best candidate)")
+        else:
+            print(f"      ❌ NO MATCH: No candidates in window for P: '{provider_segment['text'][:50]}...'")
+
         return AlignmentMatch(
             provider_segment=provider_segment,
             interpreter_segment=None,
