@@ -119,6 +119,19 @@ export interface ErrorRegion {
   arbiterReasoning: string;
 }
 
+export interface TribunalVerdict {
+  confidence: number;
+  severity: ErrorSeverity | "none";
+  num_issues: number;
+  arbiter_decision: string;
+  monitor_findings: unknown[];
+  errors: {
+    severity: ErrorSeverity;
+    error_type: string;
+    description: string;
+  }[];
+}
+
 export interface BackendState {
   sessionId: string | null;
   isActive: boolean;
@@ -126,6 +139,7 @@ export interface BackendState {
   errorRegions: ErrorRegion[]; // Derived for visualization
   transcripts: TranscriptSegment[];
   alignments: AlignmentMatch[];
+  verdicts: TribunalVerdict[];
   stats: {
     totalSegments: number;
     totalErrors: number;
@@ -137,6 +151,7 @@ export interface WebSocketMessage {
   type:
     | "state_update"
     | "detected_error"
+    | "tribunal_verdict"
     | "transcript"
     | "alignment"
     | "session_start"
@@ -206,6 +221,7 @@ export function useSarasvatiBackend(
     errorRegions: [],
     transcripts: [],
     alignments: [],
+    verdicts: [],
     stats: {
       totalSegments: 0,
       totalErrors: 0,
@@ -331,6 +347,7 @@ export function useSarasvatiBackend(
       errorRegions: [],
       transcripts: [],
       alignments: [],
+      verdicts: [],
       stats: {
         totalSegments: 0,
         totalErrors: 0,
@@ -338,6 +355,30 @@ export function useSarasvatiBackend(
       },
     });
   }, [cleanupSocket]);
+
+  // ===== Critical Alert =====
+
+  const triggerCriticalAlert = useCallback((error: ClinicalError) => {
+    console.error("🚨 CRITICAL ERROR:", error.description);
+
+    if (typeof document !== "undefined") {
+      document.body.classList.add("critical-alert");
+      setTimeout(() => {
+        document.body.classList.remove("critical-alert");
+      }, 1000);
+    }
+
+    if (
+      typeof window !== "undefined" &&
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      new Notification("🔴 CRITICAL ERROR DETECTED", {
+        body: error.description,
+        requireInteraction: true,
+      });
+    }
+  }, []);
 
   // ===== Message Handling =====
 
@@ -391,6 +432,15 @@ export function useSarasvatiBackend(
           break;
         }
 
+        case "tribunal_verdict": {
+          const verdict = message.data as TribunalVerdict;
+          setState((prev) => ({
+            ...prev,
+            verdicts: [...prev.verdicts, verdict].slice(-50),
+          }));
+          break;
+        }
+
         case "transcript": {
           const segment = message.data as TranscriptSegment;
           setState((prev) => ({
@@ -437,32 +487,8 @@ export function useSarasvatiBackend(
           console.warn("Unknown message type:", message.type);
       }
     },
-    [onError]
+    [onError, triggerCriticalAlert]
   );
-
-  // ===== Critical Alert =====
-
-  const triggerCriticalAlert = useCallback((error: ClinicalError) => {
-    console.error("🚨 CRITICAL ERROR:", error.description);
-
-    if (typeof document !== "undefined") {
-      document.body.classList.add("critical-alert");
-      setTimeout(() => {
-        document.body.classList.remove("critical-alert");
-      }, 1000);
-    }
-
-    if (
-      typeof window !== "undefined" &&
-      "Notification" in window &&
-      Notification.permission === "granted"
-    ) {
-      new Notification("🔴 CRITICAL ERROR DETECTED", {
-        body: error.description,
-        requireInteraction: true,
-      });
-    }
-  }, []);
 
   // ===== Actions (wrapped sends, not exposing raw ws) =====
 
