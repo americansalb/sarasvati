@@ -197,6 +197,7 @@ def clinical_error_to_ws_payload(error: ClinicalError) -> Dict[str, Any]:
     - error_id, severity, error_type, description, confidence
     - alignment_info with provider_segment/interpreter_segment
     - arbiter_reasoning, detected_at
+    - is_system_error: separates infrastructure failures from clinical errors
 
     This matches frontend/src/hooks/useSarasvatiBackend.ts exactly.
     """
@@ -211,6 +212,7 @@ def clinical_error_to_ws_payload(error: ClinicalError) -> Dict[str, Any]:
         "confidence": error["confidence"],
         "detected_at": error["detected_at"].isoformat() if isinstance(error["detected_at"], datetime) else error["detected_at"],
         "alignment_info": alignment_to_payload(error["alignment_info"]),
+        "is_system_error": error.get("is_system_error", False),
     }
 
 

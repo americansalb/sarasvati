@@ -31,6 +31,7 @@ from .state import (
     BufferEntry,
     StreamRole,
     SarasvatiState,
+    TribunalCaseType,
 )
 
 
@@ -224,11 +225,13 @@ class AlignmentEngine:
             return AlignmentMatch(
                 provider_segment=provider_segment,
                 interpreter_segment=interpreter_seg,
+                patient_segment=None,  # TODO: Add patient context
                 similarity_score=float(raw_similarity),      # Convert numpy to Python float
                 combined_score=float(combined_score),        # Convert numpy to Python float
                 time_delta=float(time_delta),
                 is_matched=True,
                 dtw_distance=float(dtw_dist),
+                case_type=TribunalCaseType.ALIGNED_OUTBOUND,  # Provider → Interpreter match
             )
 
         # No match found in window OR suspiciously low match (possible fabrication)
@@ -254,11 +257,13 @@ class AlignmentEngine:
                 return AlignmentMatch(
                     provider_segment=provider_segment,
                     interpreter_segment=interpreter_seg,
+                    patient_segment=None,  # TODO: Add patient context
                     similarity_score=float(raw_similarity),
                     combined_score=float(combined_score),
                     time_delta=float(time_delta),
                     is_matched=True,  # Mark as matched so tribunal sees it!
                     dtw_distance=float(dtw_dist),
+                    case_type=TribunalCaseType.ALIGNED_OUTBOUND,  # Still outbound, just suspicious
                 )
             else:
                 # Very low score: probably unrelated, truly missed
@@ -268,15 +273,17 @@ class AlignmentEngine:
         else:
             print(f"      ❌ NO MATCH: No candidates in window for P: '{provider_segment['text'][:50]}...'")
 
-        # True no-match: no interpreter segment in time window
+        # True no-match: no interpreter segment in time window → OMISSION
         return AlignmentMatch(
             provider_segment=provider_segment,
-            interpreter_segment=None,
+            interpreter_segment=None,  # No interpreter response
+            patient_segment=None,  # TODO: Add patient context
             similarity_score=0.0,
             combined_score=0.0,
             time_delta=0.0,
-            is_matched=False,
+            is_matched=False,  # Will trigger omission review in tribunal
             dtw_distance=float("inf"),
+            case_type=TribunalCaseType.OMISSION_OUTBOUND,  # Provider spoke, interpreter didn't
         )
 
     def _get_candidates_in_window(
@@ -510,13 +517,19 @@ class BatchAligner:
 
         This is called when buffer size exceeds threshold or on a timer.
 
+        Implements timeout-based omission detection: If provider speaks but
+        interpreter doesn't respond within 20 seconds, flag as OMISSION and
+        send to tribunal.
+
         Args:
             state: Current graph state with buffers
 
         Returns:
-            List of alignment matches found
+            List of alignment matches found (includes timed-out omissions)
         """
         alignments: List[AlignmentMatch] = []
+        now = datetime.utcnow()
+        OMISSION_TIMEOUT_SECONDS = 20.0  # Per Shiva's guidance
 
         # Get unprocessed provider entries
         unprocessed = [
@@ -529,6 +542,7 @@ class BatchAligner:
 
         for entry in unprocessed:
             provider_segment = entry["segment"]
+            time_in_buffer = (now - entry["buffered_at"]).total_seconds()
 
             # Try to align this segment against the snapshot
             alignment = await self.engine.align_segments(
@@ -538,18 +552,22 @@ class BatchAligner:
             )
 
             if alignment:
+                # Check if this is a timeout case (no match after 20 seconds)
+                if not alignment["is_matched"] and time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
+                    print(f"      ⏰ TIMEOUT OMISSION: Provider spoke {time_in_buffer:.1f}s ago, no interpreter response")
+                    print(f"         P: '{provider_segment['text'][:60]}...'")
+                    # Force this to tribunal review even though unmatched
+                    # The tribunal will see case_type=OMISSION_OUTBOUND
+                    entry["is_processed"] = True
+
                 alignments.append(alignment)
 
                 # Mark as processed if match found
                 if alignment["is_matched"]:
                     entry["is_processed"] = True
                 else:
-                    # Increment attempt counter
+                    # Keep trying if under timeout threshold
                     entry["alignment_attempts"] += 1
-
-                    # If too many attempts, mark as processed anyway (timeout)
-                    if entry["alignment_attempts"] >= 5:
-                        entry["is_processed"] = True
 
         return alignments
 

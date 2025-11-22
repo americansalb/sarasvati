@@ -232,14 +232,14 @@ export default function DashboardPage() {
         <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
             <AlertTriangle className="text-yellow-500" size={20} />
-            Detected Errors ({sessionState.errors.length})
+            Clinical Errors ({sessionState.errors.filter(e => !e.is_system_error).length})
           </h2>
 
           <div className="space-y-3 max-h-96 overflow-y-auto">
-            {sessionState.errors.length === 0 ? (
-              <p className="text-gray-500 italic">No errors detected yet</p>
+            {sessionState.errors.filter(e => !e.is_system_error).length === 0 ? (
+              <p className="text-gray-500 italic">No clinical errors detected yet</p>
             ) : (
-              sessionState.errors.map((error, idx) => (
+              sessionState.errors.filter(e => !e.is_system_error).map((error, idx) => (
                 <div
                   key={idx}
                   className={`p-4 rounded-lg border ${

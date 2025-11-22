@@ -192,23 +192,26 @@ class SarasvatiGraph:
         """
         Node 3: Verify interpretation quality (Combined Extract+Monitor+Arbiter).
 
-        Runs the three-agent debate system on aligned segments.
+        Runs the three-agent debate system on ALL tribunal cases.
 
-        CRITICAL FIX: Only process NEW alignments (not already verified).
+        CRITICAL ARCHITECTURAL CHANGE (per Shiva's guidance):
+        - EVERY utterance goes to tribunal review
+        - Alignment determines TYPE of review (not WHETHER it happens)
+        - Case types: ALIGNED_OUTBOUND, ALIGNED_INBOUND, OMISSION_OUTBOUND,
+          OMISSION_INBOUND, FABRICATION
+
+        CRITICAL FIX: Only process NEW cases (not already verified).
         Update last_verified_count after processing to prevent infinite loops.
         """
-        # Get only matched pairs
-        matched_pairs = [
-            match for match in state["matched_pairs"]
-            if match["is_matched"]
-        ]
+        # Get ALL cases (matched and unmatched) - tribunal reviews everything
+        all_cases = state["matched_pairs"]
 
-        # Get only NEW unverified alignments (since last verification)
+        # Get only NEW unverified cases (since last verification)
         last_verified = state["last_verified_count"]
-        new_alignments = matched_pairs[last_verified:]
+        new_cases = all_cases[last_verified:]
 
-        if not new_alignments:
-            print(f"   📭 No new alignments to verify (matched_pairs={len(matched_pairs)}, last_verified={last_verified})")
+        if not new_cases:
+            print(f"   📭 No new cases to verify (total_cases={len(all_cases)}, last_verified={last_verified})")
             return state
 
         # Get most recent patient text for triadic validation (Trisul Protocol)
@@ -217,12 +220,16 @@ class SarasvatiGraph:
             # Get most recent patient segment
             patient_text = state["patient_buffer"][-1]["segment"]["text"]
 
-        print(f"   ⚖️  Running tribunal on {len(new_alignments)} new alignments. Patient context: {patient_text[:50] if patient_text else 'NONE'}...")
+        print(f"   ⚖️  Running tribunal on {len(new_cases)} new cases. Patient context: {patient_text[:50] if patient_text else 'NONE'}...")
 
-        # Run debate for each NEW alignment
-        for alignment in new_alignments:
-            print(f"      🔍 Debating: P='{alignment['provider_segment']['text'][:40]}...' vs I='{alignment['interpreter_segment']['text'][:40] if alignment['interpreter_segment'] else 'NONE'}...'")
-            debate_result = await self.debate_orchestrator.run_debate(alignment, patient_text)
+        # Run debate for each NEW case (matched, omission, or fabrication)
+        for case in new_cases:
+            case_type = case.get("case_type", "unknown")
+            provider_text = case['provider_segment']['text'][:40] if case['provider_segment'] else 'NONE'
+            interp_text = case['interpreter_segment']['text'][:40] if case['interpreter_segment'] else 'NONE'
+
+            print(f"      🔍 [{case_type}] P='{provider_text}...' vs I='{interp_text}...'")
+            debate_result = await self.debate_orchestrator.run_debate(case, patient_text)
 
             # Store result
             state["last_debate_result"] = debate_result
@@ -240,8 +247,8 @@ class SarasvatiGraph:
             else:
                 print(f"      ✅ No errors detected")
 
-        # Update last_verified_count to current matched count
-        state["last_verified_count"] = len(matched_pairs)
+        # Update last_verified_count to current total case count
+        state["last_verified_count"] = len(all_cases)
 
         # Update stats
         state["processing_stats"]["errors_detected"] = len(state["detected_errors"])

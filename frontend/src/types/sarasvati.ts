@@ -48,6 +48,7 @@ export interface ClinicalError {
   confidence: number;
   detected_at: string; // ISO timestamp
   alignment_info: AlignmentMatch;
+  is_system_error: boolean; // true for infrastructure failures, false for clinical errors
 }
 
 export interface AgentDebateResult {

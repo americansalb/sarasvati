@@ -451,17 +451,21 @@ class ClinicalDebateOrchestrator:
             except ValueError:
                 severity = ErrorSeverity.MEDIUM
 
+            # Determine if this is a system error or clinical error
+            is_sys_error = err.get("type", "").lower() == "system_error"
+
             clinical_error = ClinicalError(
                 error_id=f"err_{datetime.utcnow().timestamp()}_{len(clinical_errors)}",
                 severity=severity,
                 error_type=err.get("type", "unknown"),
-                provider_entity=self._extract_entity_from_text(err.get("provider_said", ""), provider_segment),
-                interpreter_entity=self._extract_entity_from_text(err.get("interpreter_said", ""), interpreter_segment) if interpreter_segment else None,
+                provider_entity=self._extract_entity_from_text(err.get("provider_said", ""), provider_segment) if not is_sys_error else None,
+                interpreter_entity=self._extract_entity_from_text(err.get("interpreter_said", ""), interpreter_segment) if interpreter_segment and not is_sys_error else None,
                 description=err.get("description", "Error detected"),
                 arbiter_reasoning=arbiter_reasoning,
                 confidence=0.85 if severity in [ErrorSeverity.CRITICAL, ErrorSeverity.HIGH] else 0.7,
                 detected_at=datetime.utcnow(),
-                alignment_info=alignment,
+                alignment_info=alignment if not is_sys_error else None,
+                is_system_error=is_sys_error,
             )
             clinical_errors.append(clinical_error)
 
@@ -497,6 +501,7 @@ class ClinicalDebateOrchestrator:
             confidence=0.95,
             detected_at=datetime.utcnow(),
             alignment_info=alignment,
+            is_system_error=False,  # This is a clinical error, not infrastructure failure
         )
 
         processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
