@@ -80,7 +80,7 @@ _model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "llama-3.3-70b-versatile")
 
 DEFAULT_CONFIG = GraphConfig(
     max_buffer_size=50,
-    alignment_threshold=0.65,
+    alignment_threshold=0.40,  # Lowered for cross-lingual matching (was 0.65)
     alignment_window_seconds=30.0,
     debounce_ms=500,
     enable_negation_check=True,
