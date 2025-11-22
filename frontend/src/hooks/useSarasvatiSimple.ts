@@ -20,6 +20,8 @@ interface ConnectionState {
   microphoneActive: boolean;
   isRecording: boolean;
   error: string | null;
+  lastInterpreterLanguage: string | null;
+  interpreterDetectionWarning: string | null;
 }
 
 interface UseSarasvatiOptions {
@@ -53,6 +55,8 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
     microphoneActive: false,
     isRecording: false,
     error: null,
+    lastInterpreterLanguage: null,
+    interpreterDetectionWarning: null,
   });
 
   const [sessionState, setSessionState] = useState<SessionState>({
@@ -139,6 +143,21 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
         break;
 
       case "transcript":
+        if (
+          event.data?.role === "interpreter" &&
+          event.data?.detected_language &&
+          event.data.detected_language !== "auto"
+        ) {
+          const detectedLang: string = event.data.detected_language;
+          setConnectionState((prev) => ({
+            ...prev,
+            lastInterpreterLanguage: detectedLang,
+            interpreterDetectionWarning:
+              detectedLang !== providerLangRef.current && detectedLang !== patientLangRef.current
+                ? `Interpreter detected speaking "${detectedLang}" (expected ${providerLangRef.current} or ${patientLangRef.current})`
+                : null,
+          }));
+        }
         setSessionState((prev) => ({
           ...prev,
           transcripts: [...prev.transcripts, event.data].slice(-50),
@@ -284,6 +303,20 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
       console.log(`📝 Transcription (${role}):`, result.text);
       if (result.detected_language && result.detected_language !== "auto") {
         console.log(`   🌐 Detected language: ${result.detected_language}`);
+      }
+
+      if (role === "interpreter") {
+        const detectedLang: string | null = result.detected_language || null;
+        setConnectionState((prev) => ({
+          ...prev,
+          lastInterpreterLanguage: detectedLang,
+          interpreterDetectionWarning:
+            detectedLang &&
+            detectedLang !== providerLang &&
+            detectedLang !== patientLang
+              ? `Interpreter detected speaking "${detectedLang}" (expected ${providerLang} or ${patientLang})`
+              : null,
+        }));
       }
 
       // The backend will broadcast the transcript via WebSocket

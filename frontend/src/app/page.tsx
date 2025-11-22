@@ -110,6 +110,20 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {(connectionState.lastInterpreterLanguage || connectionState.interpreterDetectionWarning) && (
+        <div className="mb-6 p-4 bg-purple-900/30 border border-purple-700 rounded-lg text-sm text-purple-100">
+          <div className="font-semibold text-purple-200 mb-1">Interpreter language detection</div>
+          {connectionState.lastInterpreterLanguage && (
+            <p className="text-purple-100">
+              Last detected language: <span className="font-mono">{connectionState.lastInterpreterLanguage}</span>
+            </p>
+          )}
+          {connectionState.interpreterDetectionWarning && (
+            <p className="text-yellow-200 mt-1">⚠️ {connectionState.interpreterDetectionWarning}</p>
+          )}
+        </div>
+      )}
+
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Input Panel */}
