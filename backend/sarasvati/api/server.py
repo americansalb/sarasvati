@@ -589,7 +589,9 @@ async def transcribe_audio(
 
     async with httpx.AsyncClient() as client:
         if role == "interpreter" and provider_lang != patient_lang and patient_lang != "auto":
-            # For interpreter: try BOTH languages plus an auto-detect pass and pick the most reliable result
+            # For interpreter: Use auto-detect and compare with hint transcripts to determine language
+            # CRITICAL: Language hints cause Whisper to TRANSLATE, not transcribe!
+            # We use hints only to detect which language was spoken, not to get the transcript.
             print(f"🔄 Interpreter dual-language detection: trying {provider_lang} and {patient_lang}")
 
             result_auto, result_provider, result_patient = await asyncio.gather(
@@ -606,7 +608,7 @@ async def transcribe_audio(
                     "error": result.get("error"),
                 }
 
-            candidate_auto = extract_candidate(result_auto, "auto")
+            candidate_auto = extract_candidate(result_auto, "unknown")
             candidate_provider = extract_candidate(result_provider, provider_lang)
             candidate_patient = extract_candidate(result_patient, patient_lang)
 
@@ -618,59 +620,58 @@ async def transcribe_audio(
                 if candidate.get("error"):
                     print(f"   ⚠️ Whisper error for {name} hint: {candidate['error']}")
 
-            lang_auto = candidate_auto["lang"]
-            hint_langs = {provider_lang, patient_lang}
-
-            chosen: Optional[dict] = None
-
             # Debug logging: show all candidates
             print(f"   📊 Candidates:")
-            print(f"      auto({lang_auto}): '{candidate_auto['text'][:50]}...' (len={len(candidate_auto['text'])})")
+            print(f"      auto: '{candidate_auto['text'][:50]}...' (lang={candidate_auto['lang']}, len={len(candidate_auto['text'])})")
             print(f"      {provider_lang}_hint: '{candidate_provider['text'][:50]}...' (len={len(candidate_provider['text'])})")
             print(f"      {patient_lang}_hint: '{candidate_patient['text'][:50]}...' (len={len(candidate_patient['text'])})")
 
-            # 1) If auto-detect matched a hint language and that transcript exists, trust the hint version
-            if lang_auto == provider_lang and candidate_provider["text"]:
-                chosen = candidate_provider
-                print(f"   ✅ Selected {provider_lang}: Auto-detected provider language; using provider hint transcript")
-            elif lang_auto == patient_lang and candidate_patient["text"]:
-                chosen = candidate_patient
-                print(f"   ✅ Selected {patient_lang}: Auto-detected patient language; using patient hint transcript")
+            # Strategy: ALWAYS use auto transcript (it's already correct!)
+            # Compare it with hints to determine which language was spoken
+            auto_text = candidate_auto["text"].lower()
+            provider_text = candidate_provider["text"].lower()
+            patient_text = candidate_patient["text"].lower()
 
-            # 2) Otherwise, prefer the longest non-empty hint transcript
-            if not chosen:
-                hint_candidates = [
-                    c for c in (candidate_provider, candidate_patient) if c["text"] and c["lang"] in hint_langs
-                ]
-                if len(hint_candidates) == 2:
-                    chosen = max(hint_candidates, key=lambda c: len(c["text"]))
-                    print(
-                        f"   ✅ Selected {chosen['lang']}: Both hints returned text; picked longer transcript (len={len(chosen['text'])})"
-                    )
-                elif len(hint_candidates) == 1:
-                    chosen = hint_candidates[0]
-                    print(f"   ✅ Selected {chosen['lang']}: Only one hint produced text")
+            # If auto matches provider hint closely, it's the provider language
+            # If auto matches patient hint closely, it's the patient language
+            # Otherwise, use Whisper's returned language code
+            detected_language = candidate_auto["lang"]
 
-            # 3) Fall back to auto transcript if we still have nothing
-            if not chosen and candidate_auto["text"]:
-                chosen = candidate_auto
-                print(f"   ⚠️ Selected {lang_auto}: Falling back to auto transcript")
+            if auto_text and provider_text and auto_text == provider_text:
+                detected_language = provider_lang
+                print(f"   ✅ Detected {provider_lang}: Auto matches provider hint exactly")
+            elif auto_text and patient_text and auto_text == patient_text:
+                detected_language = patient_lang
+                print(f"   ✅ Detected {patient_lang}: Auto matches patient hint exactly")
+            elif auto_text and provider_text and patient_text:
+                # Calculate similarity scores to determine language
+                # If provider hint is a translation (very different), auto is probably patient lang
+                # If patient hint is a translation (very different), auto is probably provider lang
+                provider_similarity = len(set(auto_text.split()) & set(provider_text.split())) / max(len(auto_text.split()), len(provider_text.split())) if auto_text and provider_text else 0
+                patient_similarity = len(set(auto_text.split()) & set(patient_text.split())) / max(len(auto_text.split()), len(patient_text.split())) if auto_text and patient_text else 0
 
-            # 4) Final safety: pick the longest non-empty candidate of all
-            if not chosen:
-                candidates = [c for c in (candidate_provider, candidate_patient, candidate_auto) if c["text"]]
-                if candidates:
-                    chosen = max(candidates, key=lambda c: len(c["text"]))
-                    print(
-                        f"   ⚠️ Selected {chosen['lang']} by length (emergency fallback): '{chosen['text'][:50]}...'"
-                    )
+                if provider_similarity > patient_similarity and provider_similarity > 0.5:
+                    detected_language = provider_lang
+                    print(f"   ✅ Detected {provider_lang}: Auto more similar to provider hint (score={provider_similarity:.2f})")
+                elif patient_similarity > provider_similarity and patient_similarity > 0.5:
+                    detected_language = patient_lang
+                    print(f"   ✅ Detected {patient_lang}: Auto more similar to patient hint (score={patient_similarity:.2f})")
+                else:
+                    print(f"   ⚠️ Could not determine language from hints (provider={provider_similarity:.2f}, patient={patient_similarity:.2f})")
+                    print(f"   → Using Whisper's auto language: {detected_language}")
+            elif detected_language in {provider_lang, patient_lang}:
+                print(f"   ✅ Using Whisper's auto-detected language: {detected_language}")
+            else:
+                # Whisper didn't return a valid language, default to provider lang
+                detected_language = provider_lang
+                print(f"   ⚠️ Whisper returned unknown language '{detected_language}', defaulting to {provider_lang}")
 
-            if not chosen:
+            # ALWAYS use auto transcript
+            text = candidate_auto["text"]
+            duration = candidate_auto["duration"]
+
+            if not text:
                 raise HTTPException(status_code=500, detail="Failed to transcribe interpreter audio")
-
-            text = chosen["text"]
-            duration = chosen["duration"]
-            detected_language = chosen["lang"]
         else:
             # For provider/patient or when languages are same: use specified language
             result = await call_whisper(client, audio_data, filename, content_type, language, groq_api_key)
