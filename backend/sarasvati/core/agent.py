@@ -548,10 +548,17 @@ class ClinicalDebateOrchestrator:
         # ═══════════════════════════════════════════════════════════
         # ASR RELIABILITY CHECK: Don't judge interpreter on bad transcripts
         # ═══════════════════════════════════════════════════════════
-        # Check if any segment is marked as unreliable ASR
-        source_unreliable = source_segment and not source_segment.get("asr_reliable", True)
-        interpreter_unreliable = interpreter_segment and not interpreter_segment.get("asr_reliable", True)
-        patient_unreliable = patient_segment and not patient_segment.get("asr_reliable", True)
+        # Check if any segment is EXPLICITLY marked as unreliable
+        # Only treat explicit False as unreliable; None/missing = assume reliable
+        def is_asr_unreliable(seg):
+            if not seg:
+                return False
+            val = seg.get("asr_reliable", True)
+            return val is False  # Only explicit False triggers ASR gating
+
+        source_unreliable = is_asr_unreliable(source_segment)
+        interpreter_unreliable = is_asr_unreliable(interpreter_segment)
+        patient_unreliable = is_asr_unreliable(patient_segment)
 
         if source_unreliable or interpreter_unreliable or patient_unreliable:
             # ASR failed - emit system error, don't judge interpreter
@@ -668,7 +675,10 @@ class ClinicalDebateOrchestrator:
                     source_role=source_role if not is_sys_error else None,  # type: ignore
                     interpreter_quote=interpreter_text if not is_sys_error else None,
                     source_quote=source_text if not is_sys_error else None,
-                    ideal_interpretation=err.get("should_have_said") or err.get("ideal_interpretation") if not is_sys_error else None,
+                    # Sanitize ideal_interpretation: convert string "None" to actual None
+                    ideal_interpretation=self._sanitize_ideal_interpretation(
+                        err.get("should_have_said") or err.get("ideal_interpretation")
+                    ) if not is_sys_error else None,
                 )
                 clinical_errors.append(clinical_error)
 
@@ -762,6 +772,21 @@ class ClinicalDebateOrchestrator:
             detected_errors=[error],
             processing_time_ms=processing_time,
         )
+
+    def _sanitize_ideal_interpretation(self, value: Any) -> Optional[str]:
+        """
+        Convert string 'None' to actual None for ideal_interpretation.
+        LLMs sometimes return the string 'None' instead of null/empty.
+        """
+        if value is None:
+            return None
+        if isinstance(value, str):
+            # Strip whitespace and check for string 'None'
+            stripped = value.strip()
+            if stripped == "None" or stripped == "" or stripped == "null":
+                return None
+            return value
+        return None  # If it's not a string, return None
 
     def _extract_entity_from_text(
         self,

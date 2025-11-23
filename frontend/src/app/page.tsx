@@ -232,16 +232,30 @@ export default function DashboardPage() {
         <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
             <AlertTriangle className="text-yellow-500" size={20} />
-            Clinical Errors ({sessionState.errors.filter(e => !e.is_system_error).length})
+            Clinical Errors ({
+              // Count unique clinical errors only (de-duplicated by error_id)
+              new Set(
+                sessionState.errors
+                  .filter(e => !e.is_system_error)
+                  .map(e => e.error_id)
+              ).size
+            })
           </h2>
 
           <div className="space-y-3 max-h-96 overflow-y-auto">
             {sessionState.errors.filter(e => !e.is_system_error).length === 0 ? (
               <p className="text-gray-500 italic">No clinical errors detected yet</p>
             ) : (
-              sessionState.errors.filter(e => !e.is_system_error).map((error, idx) => (
+              // De-duplicate errors by error_id (some errors are broadcast multiple times during processing)
+              Array.from(
+                new Map(
+                  sessionState.errors
+                    .filter(e => !e.is_system_error)
+                    .map(error => [error.error_id, error])
+                ).values()
+              ).map((error) => (
                 <div
-                  key={idx}
+                  key={error.error_id}
                   className={`p-4 rounded-lg border ${
                     error.severity === "critical"
                       ? "bg-red-900/50 border-red-700"
@@ -258,9 +272,11 @@ export default function DashboardPage() {
                           <span className="text-xs text-gray-400 ml-2">({error.case_type})</span>
                         )}
                       </span>
-                      <span className="text-xs text-gray-400">
-                        Confidence: {(error.confidence * 100).toFixed(0)}%
-                      </span>
+                      {typeof error.confidence === "number" && !Number.isNaN(error.confidence) && (
+                        <span className="text-xs text-gray-400">
+                          Confidence: {(error.confidence * 100).toFixed(0)}%
+                        </span>
+                      )}
                     </div>
                     <span
                       className={`text-xs px-2 py-1 rounded ${
