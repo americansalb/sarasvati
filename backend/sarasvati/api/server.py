@@ -199,9 +199,18 @@ def clinical_error_to_ws_payload(error: ClinicalError) -> Dict[str, Any]:
     - alignment_info with provider_segment/interpreter_segment
     - arbiter_reasoning, detected_at
     - is_system_error: separates infrastructure failures from clinical errors
+    - case_type: extracted from alignment_info for tribunal context
 
     This matches frontend/src/hooks/useSarasvatiBackend.ts exactly.
     """
+    # Extract case_type from alignment_info if present
+    case_type = None
+    if error["alignment_info"]:
+        raw_case_type = error["alignment_info"].get("case_type")
+        if raw_case_type:
+            # Normalize enum to string
+            case_type = raw_case_type.value if hasattr(raw_case_type, "value") else str(raw_case_type)
+
     return {
         "error_id": error["error_id"],
         "severity": error["severity"].value if hasattr(error["severity"], "value") else error["severity"],
@@ -214,6 +223,7 @@ def clinical_error_to_ws_payload(error: ClinicalError) -> Dict[str, Any]:
         "detected_at": error["detected_at"].isoformat() if isinstance(error["detected_at"], datetime) else error["detected_at"],
         "alignment_info": alignment_to_payload(error["alignment_info"]) if error["alignment_info"] else None,
         "is_system_error": error.get("is_system_error", False),
+        "case_type": case_type,
     }
 
 
@@ -676,22 +686,13 @@ async def transcribe_audio(
                 detected_language = provider_lang
                 print(f"   ⚠️ Whisper returned unknown language '{detected_language}', defaulting to {provider_lang}")
 
-            # Use the transcript that matches the detected language
-            # CRITICAL: Auto-detect sometimes gets the script wrong (e.g., Gujarati → Arabic/Urdu)
-            # When we know the language, use the hint transcript which has the correct script
-            if detected_language == provider_lang and candidate_provider["text"]:
-                text = candidate_provider["text"]
-                duration = candidate_provider["duration"]
-                print(f"   ✅ Using provider hint transcript (correct script for {provider_lang})")
-            elif detected_language == patient_lang and candidate_patient["text"]:
-                text = candidate_patient["text"]
-                duration = candidate_patient["duration"]
-                print(f"   ✅ Using patient hint transcript (correct script for {patient_lang})")
-            else:
-                # Fall back to auto if language unknown or hint failed
-                text = candidate_auto["text"]
-                duration = candidate_auto["duration"]
-                print(f"   ℹ️ Using auto transcript (language={detected_language})")
+            # CRITICAL: ALWAYS use auto-detect transcript for UI (preserves raw Whisper text)
+            # Language hints cause Whisper to TRANSLATE, not transcribe!
+            # We only use hints for language detection, not for the actual transcript.
+            # This ensures "no problema" stays as "no problema", not "No hay problema"
+            text = candidate_auto["text"]
+            duration = candidate_auto["duration"]
+            print(f"   ✅ Using auto transcript for UI (language={detected_language}, raw text preserved)")
 
             if not text:
                 raise HTTPException(status_code=500, detail="Failed to transcribe interpreter audio")

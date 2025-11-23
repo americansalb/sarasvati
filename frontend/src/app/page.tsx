@@ -251,7 +251,17 @@ export default function DashboardPage() {
                   }`}
                 >
                   <div className="flex justify-between items-start mb-2">
-                    <span className="font-semibold text-white">{error.error_type}</span>
+                    <div className="flex flex-col gap-1">
+                      <span className="font-semibold text-white">
+                        {error.error_type}
+                        {error.case_type && (
+                          <span className="text-xs text-gray-400 ml-2">({error.case_type})</span>
+                        )}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        Confidence: {(error.confidence * 100).toFixed(0)}%
+                      </span>
+                    </div>
                     <span
                       className={`text-xs px-2 py-1 rounded ${
                         error.severity === "critical"
@@ -264,9 +274,14 @@ export default function DashboardPage() {
                       {error.severity}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-300">{error.description}</p>
+                  <p className="text-sm text-gray-300 mb-2">{error.description}</p>
+                  {error.arbiter_reasoning && (
+                    <p className="text-xs text-blue-300 mb-2 italic">
+                      Arbiter: {error.arbiter_reasoning}
+                    </p>
+                  )}
                   {error.provider_entity && (
-                    <p className="text-xs text-gray-500 mt-2">Provider: "{error.provider_entity.text}"</p>
+                    <p className="text-xs text-gray-500">Provider: "{error.provider_entity.text}"</p>
                   )}
                   {error.interpreter_entity && (
                     <p className="text-xs text-gray-500">Interpreter: "{error.interpreter_entity.text}"</p>

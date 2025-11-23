@@ -49,6 +49,7 @@ export interface ClinicalError {
   detected_at: string; // ISO timestamp
   alignment_info: AlignmentMatch | null; // null for system errors
   is_system_error: boolean; // true for infrastructure failures, false for clinical errors
+  case_type?: string; // "aligned_outbound", "aligned_inbound", "fabrication", "omission_outbound", "omission_inbound"
 }
 
 export interface AgentDebateResult {

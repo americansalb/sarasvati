@@ -36,6 +36,7 @@ from .state import (
     ClinicalError,
     ErrorSeverity,
     AgentDebateResult,
+    TribunalCaseType,  # CRITICAL: Needed for case type handling
 )
 
 
@@ -452,8 +453,18 @@ class ClinicalDebateOrchestrator:
         """
         start_time = datetime.utcnow()
 
-        # Extract case type and segments
-        case_type = alignment.get("case_type", TribunalCaseType.ALIGNED_OUTBOUND)
+        # Extract case type and segments - with null safety and type normalization
+        raw_case_type = alignment.get("case_type", TribunalCaseType.ALIGNED_OUTBOUND)
+        # Normalize: case_type could be string or enum depending on source
+        if isinstance(raw_case_type, str):
+            try:
+                case_type = TribunalCaseType(raw_case_type)
+            except ValueError:
+                # Invalid case type string, default to ALIGNED_OUTBOUND
+                case_type = TribunalCaseType.ALIGNED_OUTBOUND
+        else:
+            case_type = raw_case_type
+
         provider_segment = alignment.get("provider_segment")
         patient_segment = alignment.get("patient_segment")
         interpreter_segment = alignment.get("interpreter_segment")
@@ -495,83 +506,115 @@ class ClinicalDebateOrchestrator:
             return self._handle_omission(alignment, start_time, source_role, source_text, case_type)
 
         # ═══════════════════════════════════════════════════════════
-        # PARALLEL EXECUTION: Node A and Node B run simultaneously
-        # Node B is BLIND to Node A (anti-telephone pattern)
+        # TRIBUNAL EXECUTION WITH ERROR HANDLING
+        # Wrap in try/except so tribunal failures don't kill the whole cycle
         # ═══════════════════════════════════════════════════════════
+        try:
+            # ═══════════════════════════════════════════════════════════
+            # PARALLEL EXECUTION: Node A and Node B run simultaneously
+            # Node B is BLIND to Node A (anti-telephone pattern)
+            # ═══════════════════════════════════════════════════════════
 
-        extractor_task = asyncio.create_task(
-            self.extractor.extract_comparison(
-                source_segment, interpreter_segment, alignment, patient_text,
-                source_role, target_role, case_type
+            extractor_task = asyncio.create_task(
+                self.extractor.extract_comparison(
+                    source_segment, interpreter_segment, alignment, patient_text,
+                    source_role, target_role, case_type
+                )
             )
-        )
-        monitor_task = asyncio.create_task(
-            self.monitor.analyze_independently(
-                source_text, interpreter_text, patient_text,
-                source_role, target_role, case_type
+            monitor_task = asyncio.create_task(
+                self.monitor.analyze_independently(
+                    source_text, interpreter_text, patient_text,
+                    source_role, target_role, case_type
+                )
             )
-        )
 
-        # Wait for both to complete
-        (extractor_json, extractor_notes), monitor_report = await asyncio.gather(
-            extractor_task, monitor_task
-        )
+            # Wait for both to complete
+            (extractor_json, extractor_notes), monitor_report = await asyncio.gather(
+                extractor_task, monitor_task
+            )
 
-        # ═══════════════════════════════════════════════════════════
-        # SEQUENTIAL: Node C (Arbiter) sees everything
-        # ═══════════════════════════════════════════════════════════
+            # ═══════════════════════════════════════════════════════════
+            # SEQUENTIAL: Node C (Arbiter) sees everything
+            # ═══════════════════════════════════════════════════════════
 
-        arbiter_reasoning, error_list = await self.arbiter.arbitrate(
-            source_text=source_text,
-            interpreter_text=interpreter_text,
-            extractor_json=extractor_json,
-            monitor_report=monitor_report,
-            alignment=alignment,
-            patient_text=patient_text,
-            source_role=source_role,
-            target_role=target_role,
-            case_type=case_type,
-        )
+            arbiter_reasoning, error_list = await self.arbiter.arbitrate(
+                source_text=source_text,
+                interpreter_text=interpreter_text,
+                extractor_json=extractor_json,
+                monitor_report=monitor_report,
+                alignment=alignment,
+                patient_text=patient_text,
+                source_role=source_role,
+                target_role=target_role,
+                case_type=case_type,
+            )
 
-        # Convert error dicts to ClinicalError objects
-        clinical_errors = []
-        for err in error_list:
-            severity_str = err.get("severity", "medium").lower()
-            try:
-                severity = ErrorSeverity(severity_str)
-            except ValueError:
-                severity = ErrorSeverity.MEDIUM
+            # Convert error dicts to ClinicalError objects
+            clinical_errors = []
+            for err in error_list:
+                severity_str = err.get("severity", "medium").lower()
+                try:
+                    severity = ErrorSeverity(severity_str)
+                except ValueError:
+                    severity = ErrorSeverity.MEDIUM
 
-            # Determine if this is a system error or clinical error
-            is_sys_error = err.get("type", "").lower() == "system_error"
+                # Determine if this is a system error or clinical error
+                is_sys_error = err.get("type", "").lower() == "system_error"
 
-            clinical_error = ClinicalError(
-                error_id=f"err_{datetime.utcnow().timestamp()}_{len(clinical_errors)}",
-                severity=severity,
-                error_type=err.get("type", "unknown"),
-                provider_entity=None,  # Provider is ground truth, not graded
-                interpreter_entity=self._extract_entity_from_text(err.get("interpreter_said", ""), interpreter_segment) if interpreter_segment and not is_sys_error else None,
-                description=err.get("description", "Error detected"),
-                arbiter_reasoning=arbiter_reasoning,
-                confidence=0.85 if severity in [ErrorSeverity.CRITICAL, ErrorSeverity.HIGH] else 0.7,
+                clinical_error = ClinicalError(
+                    error_id=f"err_{datetime.utcnow().timestamp()}_{len(clinical_errors)}",
+                    severity=severity,
+                    error_type=err.get("type", "unknown"),
+                    provider_entity=None,  # Provider is ground truth, not graded
+                    interpreter_entity=self._extract_entity_from_text(err.get("interpreter_said", ""), interpreter_segment) if interpreter_segment and not is_sys_error else None,
+                    description=err.get("description", "Error detected"),
+                    arbiter_reasoning=arbiter_reasoning,
+                    confidence=0.85 if severity in [ErrorSeverity.CRITICAL, ErrorSeverity.HIGH] else 0.7,
+                    detected_at=datetime.utcnow(),
+                    alignment_info=alignment if not is_sys_error else None,
+                    is_system_error=is_sys_error,
+                )
+                clinical_errors.append(clinical_error)
+
+            processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+            # Build monitor findings from report
+            monitor_findings = [line.strip() for line in monitor_report.split('\n') if line.strip() and not line.strip().lower().startswith('no significant')]
+
+            return AgentDebateResult(
+                extractor_entities=self._json_to_entities(extractor_json, source_segment),
+                monitor_findings=monitor_findings[:5],  # Top 5 findings
+                arbiter_decision=arbiter_reasoning,
+                detected_errors=clinical_errors,
+                processing_time_ms=processing_time,
+            )
+
+        except Exception as e:
+            # Tribunal failed - emit system error but DON'T kill the cycle
+            processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+            print(f"⚠️ Tribunal error for case_type={case_type}: {e}")
+
+            system_error = ClinicalError(
+                error_id=f"err_{datetime.utcnow().timestamp()}_system",
+                severity=ErrorSeverity.HIGH,
+                error_type="system_error",
+                provider_entity=None,
+                interpreter_entity=None,
+                description=f"Tribunal processing failed: {str(e)[:200]}",
+                arbiter_reasoning=f"System error during tribunal: {type(e).__name__}",
+                confidence=0.5,
                 detected_at=datetime.utcnow(),
-                alignment_info=alignment if not is_sys_error else None,
-                is_system_error=is_sys_error,
+                alignment_info=alignment,
+                is_system_error=True,
             )
-            clinical_errors.append(clinical_error)
 
-        processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
-
-        # Build monitor findings from report
-        monitor_findings = [line.strip() for line in monitor_report.split('\n') if line.strip() and not line.strip().lower().startswith('no significant')]
-
-        return AgentDebateResult(
-            extractor_entities=self._json_to_entities(extractor_json, provider_segment),
-            monitor_findings=monitor_findings[:5],  # Top 5 findings
-            arbiter_decision=arbiter_reasoning,
-            detected_errors=clinical_errors,
-            processing_time_ms=processing_time,
-        )
+            return AgentDebateResult(
+                extractor_entities=[],
+                monitor_findings=[f"Tribunal error: {str(e)[:100]}"],
+                arbiter_decision=f"System error: {type(e).__name__}",
+                detected_errors=[system_error],
+                processing_time_ms=processing_time,
+            )
 
     def _handle_omission(
         self,
