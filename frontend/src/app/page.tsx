@@ -280,11 +280,26 @@ export default function DashboardPage() {
                       Arbiter: {error.arbiter_reasoning}
                     </p>
                   )}
+                  {error.source_quote && (
+                    <p className="text-xs text-green-400 mb-1">
+                      {error.source_role === "provider" ? "Provider" : "Patient"}: "{error.source_quote}"
+                    </p>
+                  )}
+                  {error.interpreter_quote && (
+                    <p className="text-xs text-purple-400 mb-1">
+                      Interpreter said: "{error.interpreter_quote}"
+                    </p>
+                  )}
+                  {error.ideal_interpretation && (
+                    <p className="text-xs text-cyan-400 mb-1">
+                      Should have said: "{error.ideal_interpretation}"
+                    </p>
+                  )}
                   {error.provider_entity && (
-                    <p className="text-xs text-gray-500">Provider: "{error.provider_entity.text}"</p>
+                    <p className="text-xs text-gray-500">Provider entity: "{error.provider_entity.text}"</p>
                   )}
                   {error.interpreter_entity && (
-                    <p className="text-xs text-gray-500">Interpreter: "{error.interpreter_entity.text}"</p>
+                    <p className="text-xs text-gray-500">Interpreter entity: "{error.interpreter_entity.text}"</p>
                   )}
                 </div>
               ))

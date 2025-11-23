@@ -224,6 +224,11 @@ def clinical_error_to_ws_payload(error: ClinicalError) -> Dict[str, Any]:
         "alignment_info": alignment_to_payload(error["alignment_info"]) if error["alignment_info"] else None,
         "is_system_error": error.get("is_system_error", False),
         "case_type": case_type,
+        # Interpreter-centric tribunal context
+        "source_role": error.get("source_role"),
+        "interpreter_quote": error.get("interpreter_quote"),
+        "source_quote": error.get("source_quote"),
+        "ideal_interpretation": error.get("ideal_interpretation"),
     }
 
 
@@ -250,6 +255,7 @@ def segment_to_payload(segment: TranscriptSegment) -> Dict[str, Any]:
         "confidence": segment["confidence"],
         "is_final": segment["is_final"],
         "speaker_id": segment.get("speaker_id"),
+        "segment_id": segment.get("segment_id"),
     }
 
 
@@ -298,11 +304,14 @@ async def emit_error_loop() -> None:
                     debate_result = state.get("last_debate_result")
                     if debate_result:
                         # Compute confidence score (never 100%)
-                        num_errors = len(debate_result.get("detected_errors", []))
+                        detected_errors = debate_result.get("detected_errors") or []
+                        # Filter out None errors
+                        valid_errors = [e for e in detected_errors if e]
+                        num_errors = len(valid_errors)
                         severity = "none"
                         if num_errors > 0:
                             # Get max severity from errors
-                            severities = [e.get("severity", "medium") for e in debate_result.get("detected_errors", [])]
+                            severities = [e.get("severity", "medium") for e in valid_errors]
                             if any(s == "critical" for s in severities):
                                 severity = "critical"
                             elif any(s == "high" for s in severities):
@@ -319,14 +328,14 @@ async def emit_error_loop() -> None:
                             "severity": severity,
                             "num_issues": num_errors,
                             "arbiter_decision": debate_result.get("arbiter_decision", ""),
-                            "monitor_findings": debate_result.get("monitor_findings", []),
+                            "monitor_findings": debate_result.get("monitor_findings", []) or [],
                             "errors": [
                                 {
                                     "severity": str(e.get("severity", "medium")),
                                     "error_type": e.get("error_type", "unknown"),
                                     "description": e.get("description", ""),
                                 }
-                                for e in debate_result.get("detected_errors", [])
+                                for e in valid_errors
                             ],
                         }
 
@@ -337,15 +346,16 @@ async def emit_error_loop() -> None:
                     last_verdict_count = current_verdict_count
 
                 # Also emit individual errors (for backwards compatibility)
-                current_errors = state["detected_errors"]
+                current_errors = state.get("detected_errors") or []
                 new_error_count = len(current_errors)
 
                 if new_error_count > last_error_count:
                     new_errors = current_errors[last_error_count:]
                     for error in new_errors:
-                        payload = clinical_error_to_ws_payload(error)
-                        message = build_ws_message("detected_error", payload)
-                        await manager.broadcast(message)
+                        if error:  # Skip None errors
+                            payload = clinical_error_to_ws_payload(error)
+                            message = build_ws_message("detected_error", payload)
+                            await manager.broadcast(message)
 
                     last_error_count = new_error_count
 
@@ -707,7 +717,8 @@ async def transcribe_audio(
             duration = result.get("duration", 0.0)
             detected_language = result.get("language", "auto")
 
-    # Create transcript segment
+    # Create transcript segment with unique ID for error mapping
+    segment_id = f"seg_{uuid.uuid4().hex[:12]}"
     segment = TranscriptSegment(
         role=role,  # type: ignore
         text=text,
@@ -715,6 +726,7 @@ async def transcribe_audio(
         duration=duration,
         confidence=1.0,
         is_final=True,
+        segment_id=segment_id,
     )
 
     # Feed to engine if session active
@@ -730,6 +742,7 @@ async def transcribe_audio(
         "confidence": 1.0,
         "is_final": True,
         "detected_language": detected_language,
+        "segment_id": segment_id,
     })
     await manager.broadcast(message)
 

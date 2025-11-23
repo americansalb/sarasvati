@@ -62,6 +62,7 @@ class TranscriptSegment(TypedDict):
     confidence: float          # ASR confidence score
     is_final: bool             # Whether this is a final transcript (not interim)
     speaker_id: Optional[str]  # Optional: speaker identifier from ASR
+    segment_id: Optional[str]  # Unique ID for error-transcript mapping
 
 
 class AlignmentMatch(TypedDict):
@@ -86,7 +87,7 @@ class ClinicalError(TypedDict):
     """Detected error in interpretation OR system error."""
     error_id: str              # Unique identifier
     severity: ErrorSeverity
-    error_type: str            # "omission", "negation_mismatch", "dosage_error", "system_error", etc.
+    error_type: str            # "omission", "negation_mismatch", "dosage_error", "fabrication_medical", etc.
     provider_entity: Optional[MedicalEntity]     # None for system errors or some fabrications
     interpreter_entity: Optional[MedicalEntity]  # None for omissions or system errors
     description: str           # Human-readable error description
@@ -95,6 +96,11 @@ class ClinicalError(TypedDict):
     detected_at: datetime
     alignment_info: Optional[AlignmentMatch]  # None for system errors
     is_system_error: bool      # True for infrastructure failures, False for clinical errors
+    # Interpreter-centric fields for detailed tribunal context
+    source_role: Optional[StreamRole]  # Who we're protecting (provider/patient)
+    interpreter_quote: Optional[str]   # Exact text interpreter said
+    source_quote: Optional[str]        # Exact text from source (provider/patient)
+    ideal_interpretation: Optional[str]  # What interpreter should have said
 
 
 class BufferEntry(TypedDict):

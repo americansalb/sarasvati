@@ -334,22 +334,32 @@ YOUR DUTY
 3. Judge ONLY the interpreter's behavior, never the {source_role} or patient
 4. Patient safety is paramount
 
-STANDARDIZED ERROR TYPES (use ONLY these):
-- omission: Interpreter failed to convey critical information from source
-- addition: Interpreter added information not in source (fabrication)
-- distortion: Mistranslation, wrong numbers, flipped negations
-- register: Inappropriate tone change (formal ↔ informal, respectful ↔ rude)
-- role_violation: Interpreter overstepped role (gave own opinion, medical advice, etc.)
+STANDARDIZED ERROR TYPES (use ONLY these - be SPECIFIC):
+FABRICATIONS (interpreter added info not in source):
+- fabrication_medical: Invented diagnosis, symptom, or medical fact (ALWAYS CRITICAL)
+- fabrication_diagnosis: False statements about patient's condition (ALWAYS CRITICAL)
+- fabrication_treatment: Made up medication, dosage, or treatment plan (ALWAYS CRITICAL)
+- fabrication: Other fabricated information not in source (usually HIGH)
 
-SEVERITY MAPPED TO CLINICAL IMPACT:
-- CRITICAL: Could directly cause wrong treatment, missed emergency, invalid consent, or physical harm
-  Examples: Wrong medication, wrong dosage, "do not take" → "take", fabricated diagnosis
-- HIGH: Serious emotional harm or major misunderstanding affecting care
-  Examples: Omitted key symptom, changed pain level significantly, inappropriate register causing offense
-- MEDIUM: Meaningful distortion but not immediately dangerous
-  Examples: Partial omission of non-critical info, minor mistranslation of context
-- LOW: Minor issues where overall meaning preserved
-  Examples: Slight paraphrasing, acceptable simplification
+OMISSIONS (interpreter failed to convey info):
+- omission_critical: Missed vital medical info affecting treatment (CRITICAL or HIGH)
+- omission: Missed non-critical but meaningful information (MEDIUM)
+
+OTHER ERRORS:
+- distortion_medical: Wrong numbers, flipped negations on medical info (CRITICAL or HIGH)
+- distortion: Mistranslation of non-medical content (MEDIUM or LOW)
+- register_inappropriate: Rude, disrespectful, or grossly inappropriate tone (HIGH)
+- register: Minor tone issues (LOW)
+- role_violation: Interpreter gave own opinion, advice, or overstepped role (HIGH)
+- incoherent: Nonsensical, gibberish, or incomprehensible output (HIGH or CRITICAL)
+
+SEVERITY CALIBRATION (strictly enforce):
+- CRITICAL: Medical fabrications, dangerous distortions, could cause physical harm
+  MANDATORY CRITICAL: fabrication_medical, fabrication_diagnosis, fabrication_treatment,
+                      wrong medication/dosage, flipped "do not" to "do", fabricated diagnosis
+- HIGH: Serious emotional harm, major misunderstanding, omitted key symptoms, incoherent gibberish
+- MEDIUM: Meaningful distortion, partial omission of non-critical info
+- LOW: Minor paraphrasing, acceptable simplification, preserved overall meaning
 
 Return ONLY valid JSON:
 {{
@@ -359,9 +369,10 @@ Return ONLY valid JSON:
   "errors": [
     {{
       "severity": "critical|high|medium|low",
-      "type": "omission|addition|distortion|register|role_violation",
+      "type": "fabrication_medical|fabrication_diagnosis|fabrication_treatment|fabrication|omission_critical|omission|distortion_medical|distortion|register_inappropriate|register|role_violation|incoherent",
       "description": "Specific description of what the INTERPRETER got wrong",
-      "interpreter_said": "exact quote from interpreter or MISSING for omissions"
+      "interpreter_said": "exact quote from interpreter or MISSING for omissions",
+      "should_have_said": "what the correct interpretation would be"
     }}
   ]
 }}
@@ -388,7 +399,18 @@ If no errors: return {{"verdict": "NO_ERRORS", "reasoning": "...", "override_not
                 reasoning = parsed.get("reasoning", "No reasoning provided")
                 if parsed.get("override_notes"):
                     reasoning += f" [OVERRIDE: {parsed['override_notes']}]"
-                return (reasoning, parsed.get("errors", []))
+
+                # ENFORCE SEVERITY CALIBRATION: Medical fabrications MUST be CRITICAL
+                errors = parsed.get("errors", [])
+                for error in errors:
+                    error_type = error.get("type", "").lower()
+                    if error_type in ["fabrication_medical", "fabrication_diagnosis", "fabrication_treatment"]:
+                        # Force CRITICAL severity and high confidence for medical fabrications
+                        if error.get("severity") != "critical":
+                            print(f"⚠️ SEVERITY OVERRIDE: {error_type} changed from {error.get('severity')} to CRITICAL")
+                            error["severity"] = "critical"
+
+                return (reasoning, errors)
             else:
                 return ("Failed to parse arbiter response", [])
 
@@ -573,6 +595,11 @@ class ClinicalDebateOrchestrator:
                     detected_at=datetime.utcnow(),
                     alignment_info=alignment if not is_sys_error else None,
                     is_system_error=is_sys_error,
+                    # Interpreter-centric tribunal context
+                    source_role=source_role if not is_sys_error else None,  # type: ignore
+                    interpreter_quote=interpreter_text if not is_sys_error else None,
+                    source_quote=source_text if not is_sys_error else None,
+                    ideal_interpretation=err.get("should_have_said") or err.get("ideal_interpretation") if not is_sys_error else None,
                 )
                 clinical_errors.append(clinical_error)
 
@@ -606,6 +633,10 @@ class ClinicalDebateOrchestrator:
                 detected_at=datetime.utcnow(),
                 alignment_info=alignment,
                 is_system_error=True,
+                source_role=None,
+                interpreter_quote=None,
+                source_quote=None,
+                ideal_interpretation=None,
             )
 
             return AgentDebateResult(

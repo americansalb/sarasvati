@@ -134,12 +134,18 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
     switch (event.type) {
       case "session_start":
       case "session":
-        setSessionState((prev) => ({
-          ...prev,
+        // CRITICAL: Reset ALL state on new session to prevent leakage
+        setSessionState({
           sessionId: event.data.session_id,
           isActive: true,
           startTime: new Date(),
-        }));
+          errors: [],          // Clear old errors
+          transcripts: [],     // Clear old transcripts
+          alignments: [],      // Clear old alignments
+          verdicts: [],        // Clear old verdicts
+          debugInfo: null,     // Clear debug info
+        });
+        console.log("🔄 Session reset: all state cleared for new session");
         break;
 
       case "transcript":
