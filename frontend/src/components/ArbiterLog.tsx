@@ -133,6 +133,54 @@ function ErrorCard({ error }: { error: ClinicalError }) {
       {/* Expanded Details */}
       {isExpanded && (
         <div className="ml-8 mt-3 pt-3 border-t border-gray-800 space-y-3">
+          {/* Case Type & Direction */}
+          {error.case_type && (
+            <div>
+              <h4 className="text-xs font-semibold text-gray-400 mb-1">
+                🔀 Direction:
+              </h4>
+              <p className="text-sm text-gray-300">
+                {error.case_type === "aligned_outbound" && "Provider → Interpreter → Patient (aligned_outbound)"}
+                {error.case_type === "aligned_inbound" && "Patient → Interpreter → Provider (aligned_inbound)"}
+                {error.case_type === "omission_outbound" && "Provider → [OMITTED] → Patient (omission_outbound)"}
+                {error.case_type === "omission_inbound" && "Patient → [OMITTED] → Provider (omission_inbound)"}
+                {error.case_type === "fabrication" && "Interpreter spoke without prompt (fabrication)"}
+                {!["aligned_outbound", "aligned_inbound", "omission_outbound", "omission_inbound", "fabrication"].includes(error.case_type) && `(${error.case_type})`}
+              </p>
+            </div>
+          )}
+
+          {/* Tribunal Context: Who said what */}
+          {(error.source_quote || error.interpreter_quote || error.ideal_interpretation) && (
+            <div>
+              <h4 className="text-xs font-semibold text-gray-400 mb-2">
+                🗣️ Tribunal Context:
+              </h4>
+              <div className="space-y-2">
+                {error.source_quote && (
+                  <div className="text-sm bg-gray-900 rounded p-2">
+                    <span className="text-green-400 font-semibold">
+                      {error.source_role === "provider" ? "Provider" : error.source_role === "patient" ? "Patient" : "Source"}:
+                    </span>{" "}
+                    <span className="text-gray-200">&quot;{error.source_quote}&quot;</span>
+                  </div>
+                )}
+                {error.interpreter_quote && (
+                  <div className="text-sm bg-gray-900 rounded p-2">
+                    <span className="text-purple-400 font-semibold">Interpreter said:</span>{" "}
+                    <span className="text-gray-200">&quot;{error.interpreter_quote}&quot;</span>
+                  </div>
+                )}
+                {error.ideal_interpretation && (
+                  <div className="text-sm bg-gray-900 rounded p-2">
+                    <span className="text-cyan-400 font-semibold">Should have said:</span>{" "}
+                    <span className="text-gray-200">&quot;{error.ideal_interpretation}&quot;</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Arbiter Reasoning */}
           <div>
             <h4 className="text-xs font-semibold text-gray-400 mb-1">
@@ -175,41 +223,43 @@ function ErrorCard({ error }: { error: ClinicalError }) {
             </div>
           )}
 
-          {/* Alignment Info */}
-          <div>
-            <h4 className="text-xs font-semibold text-gray-400 mb-1">
-              🔗 Alignment Details:
-            </h4>
-            <div className="text-sm bg-gray-900 rounded p-2 space-y-1">
-              <div>
-                <span className="text-gray-400">Similarity:</span>{" "}
-                <span
-                  className={clsx(
-                    "font-mono",
-                    error.alignment_info.similarity_score > 0.8
-                      ? "text-green-400"
-                      : error.alignment_info.similarity_score > 0.5
-                      ? "text-yellow-400"
-                      : "text-red-400"
-                  )}
-                >
-                  {(error.alignment_info.similarity_score * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-400">Time Delta:</span>{" "}
-                <span className="font-mono text-gray-300">
-                  {error.alignment_info.time_delta.toFixed(1)}s
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-400">DTW Distance:</span>{" "}
-                <span className="font-mono text-gray-300">
-                  {error.alignment_info.dtw_distance.toFixed(3)}
-                </span>
+          {/* Alignment Info - NULL SAFE */}
+          {error.alignment_info && (
+            <div>
+              <h4 className="text-xs font-semibold text-gray-400 mb-1">
+                🔗 Alignment Details:
+              </h4>
+              <div className="text-sm bg-gray-900 rounded p-2 space-y-1">
+                <div>
+                  <span className="text-gray-400">Similarity:</span>{" "}
+                  <span
+                    className={clsx(
+                      "font-mono",
+                      error.alignment_info.similarity_score > 0.8
+                        ? "text-green-400"
+                        : error.alignment_info.similarity_score > 0.5
+                        ? "text-yellow-400"
+                        : "text-red-400"
+                    )}
+                  >
+                    {(error.alignment_info.similarity_score * 100).toFixed(1)}%
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400">Time Delta:</span>{" "}
+                  <span className="font-mono text-gray-300">
+                    {error.alignment_info.time_delta.toFixed(1)}s
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400">DTW Distance:</span>{" "}
+                  <span className="font-mono text-gray-300">
+                    {error.alignment_info.dtw_distance.toFixed(3)}
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Error ID */}
           <p className="text-xs text-gray-600 font-mono">{error.error_id}</p>
