@@ -303,6 +303,11 @@ YOU ARE ONLY JUDGING THE INTERPRETER.
 The {source_role.upper()} statement is GROUND TRUTH - DO NOT critique it.
 Focus exclusively on what the INTERPRETER did right or wrong.
 
+ZERO TOLERANCE for:
+1. MEDICAL FABRICATIONS: Any invented diagnosis, symptom, treatment, or medical fact → ALWAYS CRITICAL
+2. BODY-SHAMING/HARASSMENT: Insulting patient's appearance, weight, or person → ALWAYS HIGH or CRITICAL
+3. FABRICATED CLINICAL CONTENT: Adding medical info not in source → ALWAYS CRITICAL
+
 ═══════════════════════════════════════════════════════════
 PRIMARY EVIDENCE
 ═══════════════════════════════════════════════════════════
@@ -314,6 +319,11 @@ INTERPRETER'S RENDITION (what interpreter said to {target_role}):
 "{interpreter_text}"
 {patient_context}
 CASE TYPE: {case_type}
+
+EXAMPLES OF CRITICAL ERRORS:
+- Source: "How are you doing?" → Interpreter: "You have fat" → CRITICAL (body-shaming fabrication)
+- Source: "Thank you" → Interpreter: "You have cancer" → CRITICAL (medical fabrication)
+- Source: "Take one pill daily" → Interpreter: "Take three pills" → CRITICAL (dosage distortion)
 
 ═══════════════════════════════════════════════════════════
 JUNIOR ANALYST REPORTS (may contain errors - verify against raw text)
@@ -400,15 +410,27 @@ If no errors: return {{"verdict": "NO_ERRORS", "reasoning": "...", "override_not
                 if parsed.get("override_notes"):
                     reasoning += f" [OVERRIDE: {parsed['override_notes']}]"
 
-                # ENFORCE SEVERITY CALIBRATION: Medical fabrications MUST be CRITICAL
+                # ENFORCE SEVERITY CALIBRATION: Medical fabrications and body-shaming MUST be CRITICAL/HIGH
                 errors = parsed.get("errors", [])
                 for error in errors:
                     error_type = error.get("type", "").lower()
+                    description = error.get("description", "").lower()
+                    interpreter_said = error.get("interpreter_said", "").lower()
+
+                    # Force CRITICAL for medical fabrications
                     if error_type in ["fabrication_medical", "fabrication_diagnosis", "fabrication_treatment"]:
-                        # Force CRITICAL severity and high confidence for medical fabrications
                         if error.get("severity") != "critical":
                             print(f"⚠️ SEVERITY OVERRIDE: {error_type} changed from {error.get('severity')} to CRITICAL")
                             error["severity"] = "critical"
+
+                    # Force HIGH/CRITICAL for body-shaming, harassment, insults
+                    body_shame_keywords = ["fat", "gordo", "gorda", "ugly", "feo", "fea", "stupid", "retard", "idiot"]
+                    if any(keyword in interpreter_said or keyword in description for keyword in body_shame_keywords):
+                        if error.get("severity") not in ["critical", "high"]:
+                            print(f"⚠️ SEVERITY OVERRIDE: Body-shaming detected, changed from {error.get('severity')} to HIGH")
+                            error["severity"] = "high"
+                            if not error.get("type"):
+                                error["type"] = "register_inappropriate"
 
                 return (reasoning, errors)
             else:
@@ -522,6 +544,53 @@ class ClinicalDebateOrchestrator:
             direction = "Unknown case type"
 
         interpreter_text = interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
+
+        # ═══════════════════════════════════════════════════════════
+        # ASR RELIABILITY CHECK: Don't judge interpreter on bad transcripts
+        # ═══════════════════════════════════════════════════════════
+        # Check if any segment is marked as unreliable ASR
+        source_unreliable = source_segment and not source_segment.get("asr_reliable", True)
+        interpreter_unreliable = interpreter_segment and not interpreter_segment.get("asr_reliable", True)
+        patient_unreliable = patient_segment and not patient_segment.get("asr_reliable", True)
+
+        if source_unreliable or interpreter_unreliable or patient_unreliable:
+            # ASR failed - emit system error, don't judge interpreter
+            unreliable_segments = []
+            if source_unreliable:
+                unreliable_segments.append(f"{source_role} (lang={source_segment.get('detected_language', 'unknown')})")
+            if interpreter_unreliable:
+                unreliable_segments.append(f"interpreter (lang={interpreter_segment.get('detected_language', 'unknown')})")
+            if patient_unreliable:
+                unreliable_segments.append(f"patient (lang={patient_segment.get('detected_language', 'unknown')})")
+
+            asr_error = ClinicalError(
+                error_id=f"err_{datetime.utcnow().timestamp()}_asr",
+                severity=ErrorSeverity.MEDIUM,
+                error_type="asr_unreliable",
+                provider_entity=None,
+                interpreter_entity=None,
+                description=f"ASR could not reliably transcribe {', '.join(unreliable_segments)}. Interpreter judgment not possible for this segment.",
+                arbiter_reasoning="ASR transcription failed or produced gibberish. Cannot judge interpreter performance on corrupted data.",
+                confidence=0.3,
+                detected_at=datetime.utcnow(),
+                alignment_info=alignment,
+                is_system_error=True,
+                source_role=None,
+                interpreter_quote=None,
+                source_quote=None,
+                ideal_interpretation=None,
+            )
+
+            processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+            print(f"⚠️ ASR UNRELIABLE: Skipping tribunal for {', '.join(unreliable_segments)}")
+
+            return AgentDebateResult(
+                extractor_entities=[],
+                monitor_findings=[f"ASR unreliable for: {', '.join(unreliable_segments)}"],
+                arbiter_decision="ASR transcription unreliable - interpreter not judged",
+                detected_errors=[asr_error],
+                processing_time_ms=processing_time,
+            )
 
         # Handle omissions (no interpreter response)
         if not alignment["is_matched"] or not interpreter_segment:

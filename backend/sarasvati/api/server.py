@@ -233,15 +233,27 @@ def clinical_error_to_ws_payload(error: ClinicalError) -> Dict[str, Any]:
 
 
 def alignment_to_payload(alignment: AlignmentMatch) -> Dict[str, Any]:
-    """Convert AlignmentMatch to JSON-serializable dict."""
+    """
+    Convert AlignmentMatch to JSON-serializable dict.
+
+    CRITICAL: Handle inbound cases where provider_segment may be None.
+    For inbound cases (patient → interpreter → provider), patient is the source.
+    """
+    # Safely handle potentially None segments (especially for inbound cases)
+    provider_seg = alignment.get("provider_segment")
+    interpreter_seg = alignment.get("interpreter_segment")
+    patient_seg = alignment.get("patient_segment")
+
     return {
-        "provider_segment": segment_to_payload(alignment["provider_segment"]),
-        "interpreter_segment": segment_to_payload(alignment["interpreter_segment"]) if alignment["interpreter_segment"] else None,
-        "similarity_score": alignment["similarity_score"],
-        "combined_score": alignment["combined_score"],
-        "time_delta": alignment["time_delta"],
-        "is_matched": alignment["is_matched"],
-        "dtw_distance": alignment["dtw_distance"],
+        "provider_segment": segment_to_payload(provider_seg) if provider_seg else None,
+        "interpreter_segment": segment_to_payload(interpreter_seg) if interpreter_seg else None,
+        "patient_segment": segment_to_payload(patient_seg) if patient_seg else None,
+        "similarity_score": alignment.get("similarity_score", 0.0),
+        "combined_score": alignment.get("combined_score", 0.0),
+        "time_delta": alignment.get("time_delta", 0.0),
+        "is_matched": alignment.get("is_matched", False),
+        "dtw_distance": alignment.get("dtw_distance", 0.0),
+        "case_type": str(alignment.get("case_type", "unknown")),
     }
 
 
@@ -719,6 +731,26 @@ async def transcribe_audio(
 
     # Create transcript segment with unique ID for error mapping
     segment_id = f"seg_{uuid.uuid4().hex[:12]}"
+
+    # ASR RELIABILITY CHECK: Detect when transcription is likely unreliable
+    asr_reliable = True
+    if detected_language == "unknown" or detected_language not in ["en", "es", "gu", "hi", "pt", "zh", "ar", "fr", "de", "auto"]:
+        asr_reliable = False
+        print(f"   ⚠️ ASR UNRELIABLE: Unknown or unsupported language detected: {detected_language}")
+
+    # Check for high character entropy (gibberish detection)
+    if len(text) > 5:
+        # Simple entropy check: count unique characters vs length
+        unique_chars = len(set(text.replace(" ", "").lower()))
+        total_chars = len(text.replace(" ", ""))
+        entropy_ratio = unique_chars / total_chars if total_chars > 0 else 0
+        if entropy_ratio > 0.7:  # Very high entropy suggests gibberish
+            asr_reliable = False
+            print(f"   ⚠️ ASR UNRELIABLE: High character entropy detected ({entropy_ratio:.2f}) - possible gibberish")
+
+    if not asr_reliable:
+        print(f"   🚨 ASR RELIABILITY WARNING: This transcript may be unreliable. Tribunal should not judge interpreter based on this segment.")
+
     segment = TranscriptSegment(
         role=role,  # type: ignore
         text=text,
@@ -727,6 +759,8 @@ async def transcribe_audio(
         confidence=1.0,
         is_final=True,
         segment_id=segment_id,
+        asr_reliable=asr_reliable,
+        detected_language=detected_language,
     )
 
     # Feed to engine if session active

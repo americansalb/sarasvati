@@ -63,6 +63,8 @@ class TranscriptSegment(TypedDict):
     is_final: bool             # Whether this is a final transcript (not interim)
     speaker_id: Optional[str]  # Optional: speaker identifier from ASR
     segment_id: Optional[str]  # Unique ID for error-transcript mapping
+    asr_reliable: Optional[bool]  # False if ASR failed/low confidence/unknown language
+    detected_language: Optional[str]  # Language detected by Whisper (for debugging)
 
 
 class AlignmentMatch(TypedDict):
