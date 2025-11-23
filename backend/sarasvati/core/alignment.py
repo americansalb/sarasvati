@@ -678,21 +678,20 @@ class BatchAligner:
             )
 
             if alignment:
-                # Check if this is a timeout case (no match after 20 seconds)
-                if not alignment["is_matched"] and time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
+                # CRITICAL FIX: Only send to tribunal if MATCHED or TIMED OUT
+                # Don't judge prematurely while waiting for interpreter response
+                if alignment["is_matched"]:
+                    # Match found - send to tribunal for quality review
+                    entry["is_processed"] = True
+                    alignments.append(alignment)
+                elif time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
+                    # Timeout omission - interpreter never responded
                     print(f"      ⏰ TIMEOUT OMISSION (OUTBOUND): Provider spoke {time_in_buffer:.1f}s ago, no interpreter response")
                     print(f"         P: '{provider_segment['text'][:60]}...'")
-                    # Force this to tribunal review even though unmatched
-                    # The tribunal will see case_type=OMISSION_OUTBOUND
                     entry["is_processed"] = True
-
-                alignments.append(alignment)
-
-                # Mark as processed if match found
-                if alignment["is_matched"]:
-                    entry["is_processed"] = True
+                    alignments.append(alignment)
                 else:
-                    # Keep trying if under timeout threshold
+                    # Still waiting for interpreter - don't judge yet
                     entry["alignment_attempts"] += 1
 
         # ===== INBOUND LEG: Patient → Interpreter → Provider =====
@@ -714,18 +713,20 @@ class BatchAligner:
             )
 
             if alignment:
-                # Check if this is a timeout case (patient spoke, interpreter never relayed it)
-                if not alignment["is_matched"] and time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
+                # CRITICAL FIX: Only send to tribunal if MATCHED or TIMED OUT
+                # Don't judge prematurely while waiting for interpreter response
+                if alignment["is_matched"]:
+                    # Match found - send to tribunal for quality review
+                    entry["is_processed"] = True
+                    alignments.append(alignment)
+                elif time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
+                    # Timeout omission - interpreter never relayed patient's message
                     print(f"      ⏰ TIMEOUT OMISSION (INBOUND): Patient spoke {time_in_buffer:.1f}s ago, interpreter didn't relay to provider")
                     print(f"         Pt: '{patient_segment['text'][:60]}...'")
                     entry["is_processed"] = True
-
-                alignments.append(alignment)
-
-                # Mark as processed if match found
-                if alignment["is_matched"]:
-                    entry["is_processed"] = True
+                    alignments.append(alignment)
                 else:
+                    # Still waiting for interpreter - don't judge yet
                     entry["alignment_attempts"] += 1
 
         # ===== FABRICATION DETECTION: Interpreter-only segments =====

@@ -659,6 +659,46 @@ class ClinicalDebateOrchestrator:
                 # Determine if this is a system error or clinical error
                 is_sys_error = err.get("type", "").lower() == "system_error"
 
+                # ═══════════════════════════════════════════════════════════
+                # SEMANTIC IMPORTANCE CALIBRATION
+                # ═══════════════════════════════════════════════════════════
+                # Adjust severity based on clinical impact, not just linguistic accuracy
+                description_lower = err.get("description", "").lower()
+                interpreter_quote_lower = (interpreter_text or "").lower()
+                error_type = err.get("type", "unknown").lower()
+
+                # DOWNGRADE: Likely pronunciation errors on names (Ramirez → Demirres)
+                # These are LOW severity unless they cause clinical confusion
+                if "name" in description_lower or "apellido" in description_lower or "last name" in description_lower:
+                    if error_type in ["distortion", "distortion_medical"]:
+                        # Check similarity score from alignment - if high, it's likely pronunciation
+                        similarity = alignment.get("similarity_score", 0) if alignment else 0
+                        if similarity > 0.5:  # Similar sounding names
+                            severity = ErrorSeverity.LOW
+                            print(f"      ⚙️  SEVERITY DOWNGRADE: Name pronunciation error ({similarity:.2f} similarity) → LOW")
+
+                # CRITICAL: Body part substitutions (head → arm, cabeza → brazo)
+                # These can cause serious clinical harm
+                body_parts = ["head", "cabeza", "arm", "brazo", "leg", "pierna", "chest", "pecho",
+                              "stomach", "estómago", "back", "espalda", "neck", "cuello",
+                              "hand", "mano", "foot", "pie"]
+                if any(part in interpreter_quote_lower or part in description_lower for part in body_parts):
+                    if error_type in ["distortion", "distortion_medical", "fabrication"]:
+                        severity = ErrorSeverity.CRITICAL
+                        print(f"      ⚙️  SEVERITY UPGRADE: Body part error → CRITICAL")
+
+                # CRITICAL: Medication/diagnosis/treatment errors
+                # These directly impact patient safety
+                medical_critical_terms = ["medication", "medicación", "medicine", "medicina",
+                                         "diagnosis", "diagnóstico", "treatment", "tratamiento",
+                                         "prescription", "receta", "dose", "dosis", "pill", "píldora",
+                                         "surgery", "cirugía", "procedure", "procedimiento"]
+                if any(term in interpreter_quote_lower or term in description_lower for term in medical_critical_terms):
+                    if error_type in ["fabrication", "omission", "distortion", "fabrication_medical",
+                                     "fabrication_diagnosis", "fabrication_treatment", "omission_critical"]:
+                        severity = ErrorSeverity.CRITICAL
+                        print(f"      ⚙️  SEVERITY UPGRADE: Medical information error → CRITICAL")
+
                 clinical_error = ClinicalError(
                     error_id=f"err_{datetime.utcnow().timestamp()}_{len(clinical_errors)}",
                     severity=severity,
