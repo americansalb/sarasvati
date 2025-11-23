@@ -110,7 +110,13 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
         const msg = JSON.parse(event.data);
         handleBackendEvent({ type: msg.type, data: msg.data });
       } catch (e) {
+        // Enhanced error logging to help debug JSON parsing issues (e.g., Infinity)
         console.error("Failed to parse WebSocket message:", e);
+        if (event.data) {
+          const preview = String(event.data).substring(0, 200);
+          console.error("Message preview:", preview);
+        }
+        // Continue processing other messages - don't break the connection
       }
     };
 

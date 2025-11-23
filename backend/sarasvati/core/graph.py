@@ -268,6 +268,10 @@ class SarasvatiGraph:
         errors_to_report = state["detected_errors"]
 
         if errors_to_report:
+            # Separate clinical errors from system/ASR errors
+            clinical_errors = [e for e in errors_to_report if not e.get("is_system_error", False)]
+            system_errors = [e for e in errors_to_report if e.get("is_system_error", False)]
+
             # In production, this would:
             # 1. Push to Redis pub/sub
             # 2. Send to WebSocket connections
@@ -275,10 +279,13 @@ class SarasvatiGraph:
             # 4. Trigger alerts for CRITICAL errors
 
             print(f"\n{'='*60}")
-            print(f"🚨 CLINICAL ERRORS DETECTED: {len(errors_to_report)}")
+            print(f"🚨 CLINICAL ERRORS DETECTED: {len(clinical_errors)}")
+            if system_errors:
+                print(f"🛠️  SYSTEM / ASR ISSUES: {len(system_errors)}")
             print(f"{'='*60}")
 
-            for error in errors_to_report:
+            # Display clinical errors in detail
+            for error in clinical_errors:
                 severity_emoji = {
                     "critical": "🔴",
                     "high": "🟠",
@@ -291,6 +298,15 @@ class SarasvatiGraph:
                 print(f"   Description: {error['description']}")
                 print(f"   Confidence: {error['confidence']:.2f}")
                 print(f"   Detected at: {error['detected_at']}")
+
+            # Display system errors (ASR issues) separately with less detail
+            if system_errors:
+                print(f"\n{'─'*60}")
+                print(f"🛠️  SYSTEM / ASR ISSUES ({len(system_errors)}):")
+                print(f"{'─'*60}")
+                for error in system_errors:
+                    print(f"\n🟡 [{error['severity'].upper()}] {error['error_type']}")
+                    print(f"   Description: {error['description'][:100]}...")
 
             print(f"\n{'='*60}\n")
 

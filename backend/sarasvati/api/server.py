@@ -13,11 +13,13 @@ Protocol: All WebSocket messages match PHASE4_INTEGRATION.md schema exactly.
 
 import asyncio
 import json
+import math
 import os
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any, Set, List
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +36,8 @@ from ..core.state import (
     create_initial_state,
 )
 from ..core.graph import SarasvatiEngine, create_engine
+
+logger = logging.getLogger(__name__)
 
 
 # ===== Configuration =====
@@ -126,6 +130,31 @@ class HealthResponse(BaseModel):
     timestamp: str
 
 
+# ===== JSON Safety Utilities =====
+
+def safe_number(value: Any) -> Optional[float]:
+    """
+    Ensure we never send NaN/Infinity over WebSocket JSON.
+    Returns a finite float or None.
+
+    JavaScript's JSON.parse rejects NaN/Infinity as invalid JSON.
+    Python's json.dumps allows them by default, breaking the frontend.
+
+    Usage:
+        "dtw_distance": safe_number(alignment.get("dtw_distance"))
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if math.isfinite(value):
+            return float(value)
+        # Replace NaN/Inf with None so JSON is standards-compliant
+        logger.warning(f"⚠️ Sanitizing non-finite value {value} to None for WS payload")
+        return None
+    # If it's not a number, return None
+    return None
+
+
 # ===== WebSocket Connection Manager =====
 
 class ConnectionManager:
@@ -150,7 +179,19 @@ class ConnectionManager:
             self.active_connections.discard(websocket)
 
     async def broadcast(self, message: Dict[str, Any]) -> None:
-        """Broadcast a message to all connected clients."""
+        """
+        Broadcast a message to all connected clients.
+
+        CRITICAL: Pre-validate JSON serialization to prevent Infinity/NaN from breaking clients.
+        """
+        # Pre-validate that the message can be serialized without NaN/Infinity
+        try:
+            # Test serialization with allow_nan=False (JavaScript JSON.parse compatible)
+            json.dumps(message, allow_nan=False)
+        except (ValueError, TypeError) as e:
+            logger.error(f"❌ Failed to serialize WS payload: {e} | message type: {message.get('type')} | data preview: {str(message.get('data', {}))[:200]}")
+            return  # Don't broadcast invalid JSON
+
         async with self._lock:
             connections = list(self.active_connections)
 
@@ -159,7 +200,8 @@ class ConnectionManager:
         for connection in connections:
             try:
                 await connection.send_json(message)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"❌ Failed to send WS message to client: {e}")
                 dead_connections.append(connection)
 
         # Clean up dead connections
@@ -219,7 +261,7 @@ def clinical_error_to_ws_payload(error: ClinicalError) -> Dict[str, Any]:
         "interpreter_entity": error["interpreter_entity"],
         "description": error["description"],
         "arbiter_reasoning": error["arbiter_reasoning"],
-        "confidence": error["confidence"],
+        "confidence": safe_number(error["confidence"]),
         "detected_at": error["detected_at"].isoformat() if isinstance(error["detected_at"], datetime) else error["detected_at"],
         "alignment_info": alignment_to_payload(error["alignment_info"]) if error["alignment_info"] else None,
         "is_system_error": error.get("is_system_error", False),
@@ -238,6 +280,8 @@ def alignment_to_payload(alignment: AlignmentMatch) -> Dict[str, Any]:
 
     CRITICAL: Handle inbound cases where provider_segment may be None.
     For inbound cases (patient → interpreter → provider), patient is the source.
+
+    CRITICAL: Sanitize all numeric values to prevent Infinity/NaN from breaking JSON.
     """
     # Safely handle potentially None segments (especially for inbound cases)
     provider_seg = alignment.get("provider_segment")
@@ -248,23 +292,23 @@ def alignment_to_payload(alignment: AlignmentMatch) -> Dict[str, Any]:
         "provider_segment": segment_to_payload(provider_seg) if provider_seg else None,
         "interpreter_segment": segment_to_payload(interpreter_seg) if interpreter_seg else None,
         "patient_segment": segment_to_payload(patient_seg) if patient_seg else None,
-        "similarity_score": alignment.get("similarity_score", 0.0),
-        "combined_score": alignment.get("combined_score", 0.0),
-        "time_delta": alignment.get("time_delta", 0.0),
+        "similarity_score": safe_number(alignment.get("similarity_score")),
+        "combined_score": safe_number(alignment.get("combined_score")),
+        "time_delta": safe_number(alignment.get("time_delta")),
         "is_matched": alignment.get("is_matched", False),
-        "dtw_distance": alignment.get("dtw_distance", 0.0),
+        "dtw_distance": safe_number(alignment.get("dtw_distance")),
         "case_type": str(alignment.get("case_type", "unknown")),
     }
 
 
 def segment_to_payload(segment: TranscriptSegment) -> Dict[str, Any]:
-    """Convert TranscriptSegment to JSON-serializable dict."""
+    """Convert TranscriptSegment to JSON-serializable dict with NaN/Infinity safety."""
     return {
         "role": segment["role"].value if hasattr(segment["role"], "value") else segment["role"],
         "text": segment["text"],
-        "timestamp": segment["timestamp"],
-        "duration": segment["duration"],
-        "confidence": segment["confidence"],
+        "timestamp": safe_number(segment["timestamp"]),
+        "duration": safe_number(segment["duration"]),
+        "confidence": safe_number(segment["confidence"]),
         "is_final": segment["is_final"],
         "speaker_id": segment.get("speaker_id"),
         "segment_id": segment.get("segment_id"),
