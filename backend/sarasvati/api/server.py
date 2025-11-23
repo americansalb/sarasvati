@@ -253,14 +253,33 @@ def clinical_error_to_ws_payload(error: ClinicalError) -> Dict[str, Any]:
             # Normalize enum to string
             case_type = raw_case_type.value if hasattr(raw_case_type, "value") else str(raw_case_type)
 
+    # Strip debug metacommentary from arbiter_reasoning for user-facing display
+    arbiter_reasoning = error["arbiter_reasoning"]
+    if arbiter_reasoning:
+        # Remove [OVERRIDE: ...] notes (internal tribunal debugging)
+        import re
+        arbiter_reasoning = re.sub(r'\s*\[OVERRIDE:.*?\]', '', arbiter_reasoning, flags=re.DOTALL)
+        arbiter_reasoning = arbiter_reasoning.strip()
+
+    # Strip debug placeholders from description
+    description = error["description"]
+    if description:
+        import re
+        # Remove [NO SOURCE], [NO INTERPRETATION], etc.
+        description = re.sub(r"'\[NO SOURCE\]'", "the original message", description)
+        description = re.sub(r"'\[NO INTERPRETATION\]'", "any translation", description)
+        description = re.sub(r'\[NO SOURCE\]', "the original message", description)
+        description = re.sub(r'\[NO INTERPRETATION\]', "any translation", description)
+        description = description.strip()
+
     return {
         "error_id": error["error_id"],
         "severity": error["severity"].value if hasattr(error["severity"], "value") else error["severity"],
         "error_type": error["error_type"],
         "provider_entity": error["provider_entity"],
         "interpreter_entity": error["interpreter_entity"],
-        "description": error["description"],
-        "arbiter_reasoning": error["arbiter_reasoning"],
+        "description": description,
+        "arbiter_reasoning": arbiter_reasoning,
         "confidence": safe_number(error["confidence"]),
         "detected_at": error["detected_at"].isoformat() if isinstance(error["detected_at"], datetime) else error["detected_at"],
         "alignment_info": alignment_to_payload(error["alignment_info"]) if error["alignment_info"] else None,
@@ -960,6 +979,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         await manager.disconnect(websocket)
         print(f"WebSocket client disconnected. Total connections: {manager.connection_count()}")
+
+        # CRITICAL FIX: Auto-stop session when last client disconnects
+        # This prevents session state from leaking into next connection
+        if manager.connection_count() == 0 and session_active:
+            print("⚠️ Last client disconnected - auto-stopping session to prevent state leak")
+            session_active = False
+            if engine:
+                try:
+                    await engine.stop_session()
+                except Exception as e:
+                    print(f"Error stopping engine on disconnect: {e}")
+
+            if _processing_task and not _processing_task.done():
+                _processing_task.cancel()
+                try:
+                    await _processing_task
+                except asyncio.CancelledError:
+                    pass
+
+            print("✅ Session auto-stopped, ready for fresh session on reconnect")
 
 
 # ===== Development Runner =====
