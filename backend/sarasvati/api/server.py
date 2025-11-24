@@ -843,8 +843,34 @@ async def transcribe_audio(
     chooses the transcript that matches the detected language when possible.
 
     Uses OpenAI gpt-4o-transcribe by default (configurable via asr_config).
+
+    Role-based language enforcement (when scenario metadata is available):
+    - Provider: ALWAYS English (language="en")
+    - Patient: Use scenario.patient_language (e.g., "gu" for Gujarati)
+    - Interpreter: Dual-language detection (provider_lang + patient_lang)
     """
-    global engine, session_active
+    global engine, session_active, current_scenario
+
+    # ROLE-BASED LANGUAGE ENFORCEMENT using scenario metadata
+    if current_scenario:
+        print(f"📋 Enforcing scenario language constraints:")
+        if role == "provider":
+            # Provider MUST speak English
+            provider_lang = current_scenario.provider_language
+            language = provider_lang
+            print(f"   Provider → forcing language={provider_lang}")
+        elif role == "patient":
+            # Patient MUST speak scenario language
+            patient_lang = current_scenario.patient_language
+            language = patient_lang if patient_lang != "auto" else "auto"
+            print(f"   Patient → forcing language={patient_lang}")
+        elif role == "interpreter":
+            # Interpreter: use scenario languages for dual-detection
+            provider_lang = current_scenario.provider_language
+            patient_lang = current_scenario.patient_language
+            print(f"   Interpreter → dual-language ({provider_lang} / {patient_lang})")
+    else:
+        print(f"⚠️ No scenario metadata - using default language detection")
 
     # Get API keys - OpenAI is primary, Groq is fallback
     groq_api_key = os.getenv("GROQ_API_KEY", "")
@@ -1077,16 +1103,35 @@ async def transcribe_audio(
             if not text:
                 raise HTTPException(status_code=500, detail="Failed to transcribe patient audio")
         else:
-            # For provider or when languages are same: ALWAYS use auto-detect
+            # For provider or when languages are same: use role-specific language
             # CRITICAL: Language hints cause Whisper to TRANSLATE, not transcribe!
-            # We must ALWAYS use "auto" to get accurate transcription in the original language
-            # For provider (usually English), don't pass expected_scripts (not needed for Latin script)
-            result = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role, None)
+            # For English provider, we can use "auto" safely since Whisper detects English well
+            # For non-English patient (like Gujarati), we pass language hint to ASR
+
+            # Determine which language to pass to ASR
+            asr_language = language if language != "auto" else "auto"
+
+            # For provider, force English detection
+            if role == "provider":
+                asr_language = provider_lang  # Already enforced to "en" above
+                expected_scripts_for_role = None  # English doesn't need script validation
+            elif role == "patient":
+                asr_language = patient_lang
+                expected_scripts_for_role = get_expected_scripts(patient_lang) if patient_lang != "auto" else None
+            else:
+                expected_scripts_for_role = None
+
+            result = await call_whisper(client, audio_data, filename, content_type, asr_language, groq_api_key, role, expected_scripts_for_role)
             if result.get("error"):  # Only raise if error is not None/empty
                 raise HTTPException(status_code=500, detail=f"ASR error: {result['error']}")
             text = result.get("text", "").strip()
             duration = result.get("duration", 0.0)
-            detected_language = result.get("language", "auto")
+            detected_language = result.get("language", asr_language)
+
+            # ENFORCE LANGUAGE CONSTRAINT: Provider MUST NOT have "unknown" language
+            if role == "provider" and detected_language == "unknown":
+                print(f"   ⚠️ Provider returned unknown language - forcing to {provider_lang}")
+                detected_language = provider_lang
 
     # Create transcript segment with unique ID for error mapping
     segment_id = f"seg_{uuid.uuid4().hex[:12]}"
@@ -1203,18 +1248,36 @@ async def transcribe_audio(
             except Exception as e:
                 print(f"   ⚠️ Translation failed: {str(e)}")
 
+    # Prepare text in all 3 formats for QA/UI
+    # For English text: original = english, no translation needed
+    # For non-English: original = native script, transliteration = Latin, english = translation
+    if detected_language in ["en", "unknown"]:
+        text_original = text
+        text_transliteration = None  # English doesn't need transliteration
+        text_english = text  # Already English
+    else:
+        text_original = text  # Original script (Gujarati, Hindi, etc.)
+        text_transliteration = transliteration  # Latin transliteration
+        text_english = english_translation or f"[No translation: {text}]"  # English translation (always present)
+
     # Broadcast transcript to all clients
     message = build_ws_message("transcript", {
         "role": role,
-        "text": text,
+        # NEW FIELDS (QA-friendly):
+        "text_original": text_original,  # Original script
+        "text_transliteration": text_transliteration,  # Latin transliteration (or null for English)
+        "text_english": text_english,  # English translation (or original if already English)
+        # OLD FIELDS (backwards compatibility - will deprecate):
+        "text": text,  # Keep for legacy UI
+        "english_translation": english_translation,
+        "transliteration": transliteration,
+        # METADATA:
         "timestamp": segment["timestamp"],
         "duration": duration,
         "confidence": 1.0,
         "is_final": True,
         "detected_language": detected_language,
         "segment_id": segment_id,
-        "english_translation": english_translation,
-        "transliteration": transliteration,
     })
     await manager.broadcast(message)
 

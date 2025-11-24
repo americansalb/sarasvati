@@ -161,6 +161,16 @@ CRITICAL RULES:
                 result = response.json()
                 content = result["choices"][0]["message"]["content"].strip()
 
+                # Clean markdown fences if present (GPT sometimes returns ```json ... ```)
+                if content.startswith("```"):
+                    # Remove opening fence (```json or ```JSON or just ```)
+                    content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                    # Remove closing fence
+                    if content.endswith("```"):
+                        content = content[:-3].strip()
+
+                content = content.strip()
+
                 # Parse JSON response
                 try:
                     parsed = json.loads(content)
@@ -175,7 +185,7 @@ CRITICAL RULES:
                     return TranslationResult(
                         original=text,
                         detected_language=suspected_language,
-                        error=f"Failed to parse GPT response: {content[:100]}",
+                        error=f"Failed to parse GPT response: {content[:200]}",
                     )
 
             except Exception as e:
@@ -356,10 +366,57 @@ class EnsembleTranslation:
             valid_results.append((chr(65+i), result))
 
         if not valid_results:
+            print(f"   ⚠️ All 3 strategies failed - using emergency fallback")
+            # HARD FALLBACK: Simple GPT-4o call for plain English only
+            # This ensures we NEVER return N/A to the UI
+            try:
+                async with httpx.AsyncClient() as client:
+                    fallback_response = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": "gpt-4o",
+                            "messages": [
+                                {
+                                    "role": "system",
+                                    "content": "You are a medical interpreter. Translate the following text to English. Return ONLY the English translation, no JSON, no formatting, no explanations."
+                                },
+                                {
+                                    "role": "user",
+                                    "content": f"Translate to English: {text}"
+                                },
+                            ],
+                            "temperature": 0.1,
+                            "max_tokens": 200,
+                        },
+                        timeout=30.0,
+                    )
+
+                    if fallback_response.status_code == 200:
+                        fallback_result = fallback_response.json()
+                        english_text = fallback_result["choices"][0]["message"]["content"].strip()
+                        print(f"   🆘 FALLBACK SUCCESS: {english_text[:60]}...")
+                        return TranslationResult(
+                            original=text,
+                            detected_language=suspected_language,
+                            translation=english_text,
+                            transliteration=None,  # No transliteration in fallback
+                        )
+                    else:
+                        print(f"   ❌ Fallback also failed: {fallback_response.status_code}")
+            except Exception as fallback_error:
+                print(f"   ❌ Fallback exception: {fallback_error}")
+
+            # Absolute worst case - return original text as "translation"
+            print(f"   ⚠️ WORST CASE: Returning original text as translation")
             return TranslationResult(
                 original=text,
                 detected_language=suspected_language,
-                error="All ensemble strategies failed",
+                translation=f"[Translation failed: {text}]",
+                error="All ensemble strategies + fallback failed",
             )
 
         print(f"   ✓ Got {len(valid_results)} valid translations")
