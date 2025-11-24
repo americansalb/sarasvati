@@ -471,6 +471,8 @@ class SarasvatiEngine:
         """
         Stop the current session and return stats.
 
+        CRITICAL: Clears ALL buffers and state to prevent leaks into next session.
+
         Returns:
             Session statistics and detected errors
         """
@@ -496,6 +498,19 @@ class SarasvatiEngine:
         print(f"   Duration: {stats['duration_seconds']:.1f}s")
         print(f"   Errors detected: {stats['errors_detected']}")
         print(f"   Critical errors: {stats['critical_errors']}")
+
+        # CRITICAL FIX: Clear ALL buffers and state to prevent session leaks
+        # Old segments must not appear in next session
+        print(f"   🧹 Clearing buffers: P={len(self.state['provider_buffer'])}, I={len(self.state['interpreter_buffer'])}, Pt={len(self.state['patient_buffer'])}")
+        self.state["provider_buffer"].clear()
+        self.state["interpreter_buffer"].clear()
+        self.state["patient_buffer"].clear()
+        self.state["matched_pairs"].clear()
+        self.state["detected_errors"].clear()
+        self.state["error_flags"].clear()
+        self.state["last_verified_count"] = 0
+        self.state["last_debate_result"] = None
+        print(f"   ✅ All buffers cleared, ready for fresh session")
 
         return stats
 
