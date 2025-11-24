@@ -37,7 +37,7 @@ from ..core.state import (
 )
 from ..core.graph import SarasvatiEngine, create_engine
 from ..asr.providers import ASRProviderFactory, asr_config, ASRBackend, EnsembleASR
-from ..asr.translation import TranslationService
+from ..asr.translation import TranslationService, EnsembleTranslation
 
 logger = logging.getLogger(__name__)
 
@@ -1126,12 +1126,16 @@ async def transcribe_audio(
     transliteration = None
 
     if detected_language not in ["en", "unknown", "auto"] and len(text.strip()) > 0:
-        # Initialize translation service with GPT-4o for medical accuracy
+        # Use ensemble translation for medical accuracy (3 strategies with consensus)
         openai_key = os.getenv("OPENAI_API_KEY", "")
         if openai_key:
             try:
-                translation_service = TranslationService(openai_key, model="gpt-4o")
-                translation_result = await translation_service.process_non_english(text, detected_language)
+                # ENSEMBLE MODE: Run 3 GPT-4o strategies in parallel with medical term validation
+                translation_result = await EnsembleTranslation.translate_ensemble(
+                    text=text,
+                    suspected_language=detected_language,
+                    api_key=openai_key,
+                )
                 english_translation = translation_result.translation
                 transliteration = translation_result.transliteration
                 print(f"   🌐 Translation: {text[:40]}... → {english_translation[:40] if english_translation else 'N/A'}...")
