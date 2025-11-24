@@ -1016,19 +1016,12 @@ async def transcribe_audio(
         # Interpreter can use both provider and patient scripts
         expected_scripts = get_expected_scripts(provider_lang) + get_expected_scripts(patient_lang)
 
-    # Check for offensive/harmful content first - these MUST go to tribunal regardless of script/entropy
-    offensive_keywords = ["retard", "stupid", "idiot", "dumb", "fat", "gordo", "ugly", "feo",
-                         "estúpido", "idiota", "tonto", "pendejo", "imbécil"]
-    has_offensive_content = any(keyword in text.lower() for keyword in offensive_keywords)
-
-    if has_offensive_content:
-        # Override ASR unreliable - tribunal MUST review offensive statements
-        asr_reliable = True
-        detected_language = provider_lang  # Assume provider language for offensive content
-        print(f"   ⚠️ OFFENSIVE CONTENT DETECTED: Forcing tribunal review regardless of script/entropy")
+    # REMOVED: Offensive content detection - not clinically relevant
+    # Focus only on clinical errors: omissions, fabrications, dosage errors, etc.
+    # Interpreter professionalism/ethics are out of scope for medical accuracy monitoring
 
     # Check if script matches expected language (Indic scripts are valid, not gibberish!)
-    elif detected_script in expected_scripts and detected_script in ["gujarati", "devanagari", "arabic", "chinese"]:
+    if detected_script in expected_scripts and detected_script in ["gujarati", "devanagari", "arabic", "chinese"]:
         # Valid Indic/non-Latin script detected - mark as reliable even if Whisper says unknown
         asr_reliable = True
         # Override language if Whisper said unknown but we detected valid script

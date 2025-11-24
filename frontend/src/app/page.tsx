@@ -28,7 +28,7 @@ export default function DashboardPage() {
   const [selectedRole, setSelectedRole] = useState<StreamRole>("provider");
   const [manualText, setManualText] = useState("");
   const [providerLang, setProviderLang] = useState("en");
-  const [patientLang, setPatientLang] = useState("gu"); // Default Gujarati for testing
+  const [patientLang, setPatientLang] = useState("es"); // Default Spanish for testing (change to "gu" for Gujarati, etc.)
   const [asrBackend, setAsrBackend] = useState<"groq" | "openai">("openai");
   const [asrBackendLoading, setAsrBackendLoading] = useState(false);
 
@@ -220,6 +220,9 @@ export default function DashboardPage() {
               </select>
             </div>
           </div>
+          <p className="text-xs text-yellow-500 mb-4">
+            ⚠️ Keep language settings consistent during a session. Changing mid-session may cause incorrect transcriptions.
+          </p>
 
           {/* ASR Backend Selector */}
           <div className="mb-4">

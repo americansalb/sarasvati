@@ -321,9 +321,9 @@ INTERPRETER'S RENDITION (what interpreter said to {target_role}):
 CASE TYPE: {case_type}
 
 EXAMPLES OF CRITICAL ERRORS:
-- Source: "How are you doing?" → Interpreter: "You have fat" → CRITICAL (body-shaming fabrication)
 - Source: "Thank you" → Interpreter: "You have cancer" → CRITICAL (medical fabrication)
 - Source: "Take one pill daily" → Interpreter: "Take three pills" → CRITICAL (dosage distortion)
+- Source: "Pain in my head" → Interpreter: "Pain in my stomach" → CRITICAL (fabricated symptom location)
 
 ═══════════════════════════════════════════════════════════
 JUNIOR ANALYST REPORTS (may contain errors - verify against raw text)
@@ -358,8 +358,6 @@ OMISSIONS (interpreter failed to convey info):
 OTHER ERRORS:
 - distortion_medical: Wrong numbers, flipped negations on medical info (CRITICAL or HIGH)
 - distortion: Mistranslation of non-medical content (MEDIUM or LOW)
-- register_inappropriate: Rude, disrespectful, or grossly inappropriate tone (HIGH)
-- register: Minor tone issues (LOW)
 - role_violation: Interpreter gave own opinion, advice, or overstepped role (HIGH)
 - incoherent: Nonsensical, gibberish, or incomprehensible output (HIGH or CRITICAL)
 
@@ -379,8 +377,8 @@ Return ONLY valid JSON:
   "errors": [
     {{
       "severity": "critical|high|medium|low",
-      "type": "fabrication_medical|fabrication_diagnosis|fabrication_treatment|fabrication|omission_critical|omission|distortion_medical|distortion|register_inappropriate|register|role_violation|incoherent",
-      "description": "Specific description of what the INTERPRETER got wrong",
+      "type": "fabrication_medical|fabrication_diagnosis|fabrication_treatment|fabrication|omission_critical|omission|distortion_medical|distortion|role_violation|incoherent",
+      "description": "Specific description of what the INTERPRETER got wrong (focus on clinical accuracy only)",
       "interpreter_said": "exact quote from interpreter or MISSING for omissions",
       "should_have_said": "what the correct interpretation would be"
     }}
@@ -410,27 +408,16 @@ If no errors: return {{"verdict": "NO_ERRORS", "reasoning": "...", "override_not
                 if parsed.get("override_notes"):
                     reasoning += f" [OVERRIDE: {parsed['override_notes']}]"
 
-                # ENFORCE SEVERITY CALIBRATION: Medical fabrications and body-shaming MUST be CRITICAL/HIGH
+                # ENFORCE SEVERITY CALIBRATION: Medical fabrications MUST be CRITICAL
                 errors = parsed.get("errors", [])
                 for error in errors:
                     error_type = error.get("type", "").lower()
-                    description = error.get("description", "").lower()
-                    interpreter_said = error.get("interpreter_said", "").lower()
 
                     # Force CRITICAL for medical fabrications
                     if error_type in ["fabrication_medical", "fabrication_diagnosis", "fabrication_treatment"]:
                         if error.get("severity") != "critical":
                             print(f"⚠️ SEVERITY OVERRIDE: {error_type} changed from {error.get('severity')} to CRITICAL")
                             error["severity"] = "critical"
-
-                    # Force HIGH/CRITICAL for body-shaming, harassment, insults
-                    body_shame_keywords = ["fat", "gordo", "gorda", "ugly", "feo", "fea", "stupid", "retard", "idiot"]
-                    if any(keyword in interpreter_said or keyword in description for keyword in body_shame_keywords):
-                        if error.get("severity") not in ["critical", "high"]:
-                            print(f"⚠️ SEVERITY OVERRIDE: Body-shaming detected, changed from {error.get('severity')} to HIGH")
-                            error["severity"] = "high"
-                            if not error.get("type"):
-                                error["type"] = "register_inappropriate"
 
                 return (reasoning, errors)
             else:
