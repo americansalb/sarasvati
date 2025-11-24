@@ -302,6 +302,7 @@ class EnsembleASR:
         # Strategy 2: High similarity
         groq_words = set(groq_result.text.lower().split())
         openai_words = set(openai_result.text.lower().split())
+        similarity = 0.0
         if groq_words and openai_words:
             similarity = len(groq_words & openai_words) / max(len(groq_words), len(openai_words))
             if similarity > 0.8:
@@ -311,6 +312,7 @@ class EnsembleASR:
             print(f"   ⚠️ DISAGREEMENT (similarity={similarity:.0%})")
 
         # Strategy 3: Script validation (for Gujarati, Hindi, Arabic, etc.)
+        script_issue_detected = False
         if expected_scripts:
             groq_script = EnsembleASR._detect_script(groq_result.text)
             openai_script = EnsembleASR._detect_script(openai_result.text)
@@ -328,6 +330,10 @@ class EnsembleASR:
                 print(f"   ✅ OpenAI has valid script")
                 openai_result.provider = "ensemble-script-validation"
                 return openai_result
+            elif not groq_valid and not openai_valid:
+                # BOTH have wrong script - GPT-4o referee needed!
+                print(f"   ⚠️ BOTH transcripts have wrong script - calling GPT-4o referee")
+                script_issue_detected = True
 
         # Strategy 4: Length check (avoid empty/short results)
         if len(groq_result.text.strip()) < 3 and len(openai_result.text.strip()) >= 5:
@@ -338,6 +344,35 @@ class EnsembleASR:
             print(f"   ✅ Groq has content, OpenAI too short")
             groq_result.provider = "ensemble-length-check"
             return groq_result
+
+        # Strategy 5: GPT-4o Referee (linguistic expert)
+        # Call referee when:
+        # 1. Models disagree (similarity < 0.8) OR
+        # 2. Both have wrong script OR
+        # 3. We have expected_language specified (enables role constraints)
+        should_call_referee = (
+            script_issue_detected or  # Both wrong script
+            (groq_words and openai_words and similarity < 0.8) or  # Low similarity
+            language is not None  # Have language expectations
+        )
+
+        if should_call_referee:
+            # Try to get OpenAI key from environment if not passed via ensemble
+            import os
+            referee_key = os.getenv("OPENAI_API_KEY", "")
+            if referee_key:
+                print(f"   📞 Calling GPT-4o referee for linguistic mediation...")
+                referee_result = await ASRReferee.mediate(
+                    groq_result=groq_result,
+                    openai_result=openai_result,
+                    expected_language=language,
+                    expected_scripts=expected_scripts,
+                    role="unknown",  # Role not passed to ensemble yet - TODO
+                    openai_key=referee_key,
+                )
+                return referee_result
+            else:
+                print(f"   ⚠️ No OpenAI key - skipping referee")
 
         # Default: Prefer Groq (Whisper Large V3 > V1)
         print(f"   ➡️ Defaulting to Groq (larger model)")
@@ -473,3 +508,179 @@ class ASRConfig:
 
 # Global ASR configuration instance
 asr_config = ASRConfig()
+
+
+class ASRReferee:
+    """
+    GPT-4o referee for ASR debate mediation.
+
+    When multiple ASR models disagree or produce wrong scripts, the referee:
+    1. Analyzes both transcripts with linguistic knowledge
+    2. Validates script correctness (Gujarati vs Devanagari vs Latin)
+    3. Enforces language constraints (role-specific languages)
+    4. Returns best transcript or repairs it
+
+    This is the "real debate" - using GPT-4o's multilingual understanding
+    to pick the right transcript beyond simple string similarity.
+    """
+
+    @staticmethod
+    async def mediate(
+        groq_result: ASRResult,
+        openai_result: ASRResult,
+        expected_language: Optional[str] = None,
+        expected_scripts: Optional[list[str]] = None,
+        role: str = "unknown",
+        openai_key: str = "",
+    ) -> ASRResult:
+        """
+        Use GPT-4o to mediate between two ASR transcripts.
+
+        Args:
+            groq_result: Groq Whisper Large V3 result
+            openai_result: OpenAI (gpt-4o-transcribe or whisper-1) result
+            expected_language: Expected language code (e.g., "gu", "hi", "es")
+            expected_scripts: Expected scripts (e.g., ["gujarati", "devanagari"])
+            role: Speaker role ("provider", "patient", "interpreter")
+            openai_key: OpenAI API key
+
+        Returns:
+            ASRResult with best/repaired transcript, marked with provider="referee-..."
+        """
+        if not openai_key:
+            print("   ⚠️ No OpenAI key - referee cannot mediate, using Groq")
+            groq_result.provider = "referee-groq-fallback"
+            return groq_result
+
+        # Detect scripts
+        groq_script = EnsembleASR._detect_script(groq_result.text)
+        openai_script = EnsembleASR._detect_script(openai_result.text)
+
+        print(f"\n🎯 GPT-4o REFEREE: Mediating ASR debate")
+        print(f"   Role: {role}")
+        print(f"   Expected language: {expected_language or 'auto'}")
+        print(f"   Expected scripts: {expected_scripts or 'any'}")
+        print(f"   Groq:   '{groq_result.text[:60]}...' (script={groq_script})")
+        print(f"   OpenAI: '{openai_result.text[:60]}...' (script={openai_script})")
+
+        # Build referee prompt
+        prompt = f"""You are a linguistic expert referee for medical interpreter training.
+
+TWO ASR MODELS have transcribed the same audio clip. Your job:
+1. Determine which transcript is MORE ACCURATE for the audio
+2. If BOTH have wrong script but you can infer the correct text, repair it
+3. Enforce language constraints for medical roles
+
+CONTEXT:
+- Role: {role}
+- Expected language: {expected_language or "auto-detect"}
+- Expected scripts: {expected_scripts or "any"}
+
+TRANSCRIPT A (Groq Whisper Large V3):
+Text: {groq_result.text}
+Detected script: {groq_script}
+Language: {groq_result.language}
+
+TRANSCRIPT B (OpenAI {openai_result.provider}):
+Text: {openai_result.text}
+Detected script: {openai_script}
+Language: {openai_result.language}
+
+SCRIPT VALIDATION:
+- If expecting Gujarati (gu), text MUST be in Gujarati script (ગુજરાતી), NOT Devanagari (देवनागरी) or Latin
+- If expecting Hindi (hi), Devanagari is correct
+- If expecting English (en), Latin script only
+
+ROLE CONSTRAINTS:
+- Provider: MUST speak English only (reject non-English)
+- Patient (Gujarati scenario): MUST speak Gujarati (reject English/Hindi)
+- Interpreter: Depends on direction (provider→patient = Gujarati, patient→provider = English)
+
+YOUR DECISION:
+Return JSON with:
+{{
+  "choice": "A" | "B" | "repaired",
+  "reason": "Brief explanation why this transcript is better",
+  "repaired_text": "<only if choice=repaired, provide corrected text in proper script>",
+  "confidence": 0.0-1.0,
+  "script_issue": true|false,
+  "language_violation": true|false
+}}
+
+EXAMPLES:
+- If A is Devanagari and B is Gujarati script for gu language → choose B
+- If both are Devanagari but expecting Gujarati → choice="repaired", convert to Gujarati script
+- If patient says English in Gujarati scenario → language_violation=true
+- If both look good → choose the one with better linguistic quality
+"""
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openai_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "gpt-4o",  # Use GPT-4o for linguistic reasoning
+                        "messages": [
+                            {"role": "system", "content": "You are a multilingual linguistic expert. Respond ONLY with valid JSON."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0.1,  # Low temperature for consistent decisions
+                        "max_tokens": 500,
+                        "response_format": {"type": "json_object"},  # Force JSON output
+                    },
+                    timeout=30.0,
+                )
+
+                if response.status_code != 200:
+                    print(f"   ❌ Referee API error: {response.status_code}, falling back to Groq")
+                    groq_result.provider = "referee-error-fallback"
+                    return groq_result
+
+                result = response.json()
+                content = result["choices"][0]["message"]["content"]
+
+                import json
+                decision = json.loads(content)
+
+                choice = decision.get("choice", "A")
+                reason = decision.get("reason", "No reason provided")
+                confidence = decision.get("confidence", 0.5)
+                script_issue = decision.get("script_issue", False)
+                language_violation = decision.get("language_violation", False)
+
+                print(f"   🏛️ REFEREE DECISION: {choice} (confidence={confidence:.2f})")
+                print(f"      Reason: {reason}")
+                if script_issue:
+                    print(f"      ⚠️ SCRIPT ISSUE DETECTED")
+                if language_violation:
+                    print(f"      🚫 LANGUAGE VIOLATION DETECTED")
+
+                # Return appropriate result
+                if choice == "A":
+                    groq_result.provider = f"referee-chose-groq (confidence={confidence:.2f})"
+                    return groq_result
+                elif choice == "B":
+                    openai_result.provider = f"referee-chose-openai (confidence={confidence:.2f})"
+                    return openai_result
+                elif choice == "repaired":
+                    repaired_text = decision.get("repaired_text", groq_result.text)
+                    print(f"      🔧 REPAIRED: {repaired_text[:60]}...")
+                    return ASRResult(
+                        text=repaired_text,
+                        duration=groq_result.duration,
+                        language=expected_language or groq_result.language,
+                        provider=f"referee-repaired (confidence={confidence:.2f})",
+                    )
+                else:
+                    print(f"   ⚠️ Unknown choice: {choice}, defaulting to Groq")
+                    groq_result.provider = "referee-unknown-fallback"
+                    return groq_result
+
+        except Exception as e:
+            print(f"   ❌ Referee exception: {e}")
+            groq_result.provider = "referee-exception-fallback"
+            return groq_result
