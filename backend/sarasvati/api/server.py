@@ -1087,6 +1087,58 @@ async def transcribe_audio(
     return TranscriptionResponse(text=text, role=role, duration=duration, detected_language=detected_language)
 
 
+# ===== Admin API Endpoints =====
+
+@app.get("/admin/asr-config")
+async def get_asr_config():
+    """Get current ASR backend configuration."""
+    return {
+        "current_config": asr_config.get_all(),
+        "available_backends": ["groq", "openai-gpt4o-transcribe", "openai-whisper1"],
+        "note": "openai-gpt4o-transcribe and openai-whisper1 both use whisper-1 model currently",
+    }
+
+
+@app.post("/admin/asr-config/switch-default")
+async def switch_default_asr(backend: str):
+    """
+    Switch default ASR backend between Groq and OpenAI.
+
+    Args:
+        backend: "groq" or "openai" (will use openai-gpt4o-transcribe)
+    """
+    if backend == "groq":
+        asr_config.set_default("groq")
+        asr_config.set_backend("provider", "en", "groq")
+        asr_config.set_backend("patient", "auto", "groq")
+        asr_config.set_backend("interpreter", "auto", "groq")
+        return {"status": "success", "message": "Switched to Groq Whisper Large V3", "config": asr_config.get_all()}
+    elif backend == "openai":
+        asr_config.set_default("openai-gpt4o-transcribe")
+        asr_config.set_backend("provider", "en", "openai-gpt4o-transcribe")
+        asr_config.set_backend("patient", "auto", "openai-gpt4o-transcribe")
+        asr_config.set_backend("interpreter", "auto", "openai-gpt4o-transcribe")
+        return {"status": "success", "message": "Switched to OpenAI Whisper-1", "config": asr_config.get_all()}
+    else:
+        raise HTTPException(status_code=400, detail=f"Invalid backend: {backend}. Use 'groq' or 'openai'")
+
+
+@app.post("/admin/asr-config/update")
+async def update_asr_config(config: dict):
+    """
+    Update ASR configuration directly.
+
+    Example:
+        {
+            "provider_en": "groq",
+            "patient_gu": "openai-gpt4o-transcribe",
+            "interpreter_auto": "openai-gpt4o-transcribe"
+        }
+    """
+    asr_config.update(config)
+    return {"status": "success", "config": asr_config.get_all()}
+
+
 # ===== WebSocket Endpoint =====
 
 @app.websocket("/ws")
