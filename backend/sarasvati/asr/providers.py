@@ -116,9 +116,9 @@ class GroqProvider(ASRProvider):
 
 
 class OpenAIProvider(ASRProvider):
-    """OpenAI ASR provider (supports gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper-1)."""
+    """OpenAI ASR provider (supports gpt-4o-audio-preview, gpt-4o-mini-audio-preview, whisper-1)."""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o-transcribe"):
+    def __init__(self, api_key: str, model: str = "gpt-4o-audio-preview"):
         super().__init__(api_key)
         self.model = model
 
@@ -129,9 +129,17 @@ class OpenAIProvider(ASRProvider):
         content_type: str,
         language: Optional[str] = None,
     ) -> ASRResult:
-        """Transcribe using OpenAI Audio API."""
+        """Transcribe using OpenAI Audio API with medical context."""
         # OpenAI Audio API format
-        data: dict = {"model": self.model}
+        data: dict = {
+            "model": self.model,
+            # Medical context prompt for better accuracy
+            "prompt": (
+                "This is a medical interview between a provider and a patient, "
+                "with a professional interpreter. Transcribe accurately, "
+                "preserving medical terminology and non-English words exactly."
+            ),
+        }
         if language and language != "auto":
             data["language"] = language
 
@@ -206,12 +214,12 @@ class ASRConfig:
     """
 
     def __init__(self):
-        # Default configuration
+        # Default configuration - OpenAI gpt-4o-transcribe for all
         self.config = {
-            "default": "groq",
-            "provider_en": "groq",
-            "patient_auto": "groq",
-            "interpreter_auto": "groq",
+            "default": "openai-gpt4o-transcribe",
+            "provider_en": "openai-gpt4o-transcribe",
+            "patient_auto": "openai-gpt4o-transcribe",
+            "interpreter_auto": "openai-gpt4o-transcribe",
         }
 
     def get_backend(self, role: str, language: str) -> ASRBackend:
