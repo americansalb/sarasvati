@@ -101,6 +101,9 @@ class NodeAExtractor:
 
 CRITICAL: You are ONLY judging the interpreter's accuracy. The {source_role.upper()} is GROUND TRUTH.
 
+⚠️ CANONICAL ENGLISH TRANSLATION: The English text below is from a medical translation ensemble.
+DO NOT re-translate or reinterpret non-English text yourself. Use the provided English as ground truth.
+
 {source_role.upper()} SAID (GROUND TRUTH):
 "{source_text}"
 
@@ -206,6 +209,9 @@ CRITICAL INSTRUCTIONS:
 - The {source_role.upper()} statement is GROUND TRUTH - do not critique it
 - Focus on what the INTERPRETER did right or wrong
 
+⚠️ CANONICAL ENGLISH TRANSLATION: The English text below is from a medical translation ensemble.
+DO NOT re-translate or reinterpret non-English text yourself. Use the provided English as ground truth.
+
 {source_role.upper()}'S STATEMENT (GROUND TRUTH):
 "{source_text}"
 
@@ -302,6 +308,13 @@ CRITICAL INSTRUCTIONS
 YOU ARE ONLY JUDGING THE INTERPRETER.
 The {source_role.upper()} statement is GROUND TRUTH - DO NOT critique it.
 Focus exclusively on what the INTERPRETER did right or wrong.
+
+⚠️ CANONICAL ENGLISH TRANSLATION REQUIREMENT ⚠️
+For any non-English utterance, you MUST use the provided English text as the true meaning.
+The English translations below are from a specialized medical translation ensemble (single source of truth).
+DO NOT reinterpret or re-translate the original script yourself.
+DO NOT second-guess the English translations provided.
+Assume the English text is accurate and represents the speaker's true intent.
 
 ZERO TOLERANCE for:
 1. MEDICAL FABRICATIONS: Any invented diagnosis, symptom, treatment, or medical fact → ALWAYS CRITICAL
@@ -539,17 +552,20 @@ class ClinicalDebateOrchestrator:
         interpreter_segment = alignment.get("interpreter_segment")
 
         # Determine source and direction based on case type
+        # CRITICAL: Use text_english as canonical meaning (single source of truth from translation ensemble)
         if case_type in (TribunalCaseType.ALIGNED_OUTBOUND, TribunalCaseType.OMISSION_OUTBOUND):
             source_role = "provider"
             source_segment = provider_segment
-            source_text = provider_segment["text"] if provider_segment else ""
+            # Use text_english if available (canonical translation), fallback to text
+            source_text = provider_segment.get("text_english") or provider_segment["text"] if provider_segment else ""
             target_role = "patient"
             direction = "Provider → Interpreter → Patient"
 
         elif case_type in (TribunalCaseType.ALIGNED_INBOUND, TribunalCaseType.OMISSION_INBOUND):
             source_role = "patient"
             source_segment = patient_segment
-            source_text = patient_segment["text"] if patient_segment else ""
+            # Use text_english if available (canonical translation), fallback to text
+            source_text = patient_segment.get("text_english") or patient_segment["text"] if patient_segment else ""
             target_role = "provider"
             direction = "Patient → Interpreter → Provider"
 
@@ -564,11 +580,13 @@ class ClinicalDebateOrchestrator:
             # Fallback for unknown case types
             source_role = "provider"
             source_segment = provider_segment
-            source_text = provider_segment["text"] if provider_segment else ""
+            # Use text_english if available (canonical translation), fallback to text
+            source_text = provider_segment.get("text_english") or provider_segment["text"] if provider_segment else ""
             target_role = "patient"
             direction = "Unknown case type"
 
-        interpreter_text = interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
+        # Use text_english for interpreter as well (canonical translation)
+        interpreter_text = interpreter_segment.get("text_english") or interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
 
         # ═══════════════════════════════════════════════════════════
         # ASR RELIABILITY CHECK: Don't judge interpreter on bad transcripts
@@ -672,6 +690,13 @@ class ClinicalDebateOrchestrator:
                 target_role=target_role,
                 case_type=case_type,
             )
+
+            # ═══════════════════════════════════════════════════════════
+            # DEDUPLICATION: Prevent double-tagging same issue
+            # ═══════════════════════════════════════════════════════════
+            # If we have both distortion and omission for the same content,
+            # keep only the distortion (more specific) and drop the omission
+            error_list = self._deduplicate_errors(error_list)
 
             # Convert error dicts to ClinicalError objects
             clinical_errors = []
@@ -838,6 +863,42 @@ class ClinicalDebateOrchestrator:
             detected_errors=[error],
             processing_time_ms=processing_time,
         )
+
+    def _deduplicate_errors(self, error_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Prevent double-tagging: If both distortion and omission are flagged,
+        keep the more specific error (distortion) and drop the generic omission.
+
+        Logic:
+        - If we have BOTH distortion-type AND omission-type errors, drop omissions
+        - Distortion is more specific (tells us what went wrong)
+        - Omission is generic (just says something is missing)
+        """
+        if len(error_list) <= 1:
+            return error_list
+
+        # Categorize errors
+        distortions = []
+        omissions = []
+        others = []
+
+        for err in error_list:
+            error_type = err.get("type", "").lower()
+            if "distortion" in error_type or "fabrication" in error_type:
+                distortions.append(err)
+            elif "omission" in error_type:
+                omissions.append(err)
+            else:
+                others.append(err)
+
+        # If we have both distortions and omissions, drop omissions
+        # (distortion is more specific and informative)
+        if distortions and omissions:
+            print(f"      🔧 DEDUPLICATION: Dropping {len(omissions)} omission(s) because {len(distortions)} distortion(s) found")
+            return distortions + others
+
+        # Otherwise return all errors
+        return error_list
 
     def _sanitize_ideal_interpretation(self, value: Any) -> Optional[str]:
         """

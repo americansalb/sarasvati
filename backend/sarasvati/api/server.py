@@ -1244,23 +1244,8 @@ async def transcribe_audio(
     if not asr_reliable:
         print(f"   🚨 ASR RELIABILITY WARNING: This transcript may be unreliable. Tribunal should not judge interpreter based on this segment.")
 
-    segment = TranscriptSegment(
-        role=role,  # type: ignore
-        text=text,
-        timestamp=datetime.utcnow().timestamp(),
-        duration=duration,
-        confidence=1.0,
-        is_final=True,
-        segment_id=segment_id,
-        asr_reliable=asr_reliable,
-        detected_language=detected_language,
-    )
-
-    # Feed to engine if session active
-    if session_active and engine:
-        await engine.ingest_transcript(segment)
-
-    # Add English translation for non-English segments (for QA monitors)
+    # Add English translation for non-English segments (BEFORE creating segment for Tribunal)
+    # This ensures the Tribunal has canonical English meaning and doesn't re-translate
     english_translation = None
     transliteration = None
 
@@ -1280,6 +1265,23 @@ async def transcribe_audio(
                 print(f"   🌐 Translation: {text[:40]}... → {english_translation[:40] if english_translation else 'N/A'}...")
             except Exception as e:
                 print(f"   ⚠️ Translation failed: {str(e)}")
+
+    segment = TranscriptSegment(
+        role=role,  # type: ignore
+        text=text,
+        text_english=english_translation if english_translation else text,  # Canonical English meaning
+        timestamp=datetime.utcnow().timestamp(),
+        duration=duration,
+        confidence=1.0,
+        is_final=True,
+        segment_id=segment_id,
+        asr_reliable=asr_reliable,
+        detected_language=detected_language,
+    )
+
+    # Feed to engine if session active
+    if session_active and engine:
+        await engine.ingest_transcript(segment)
 
     # Prepare text in all 3 formats for QA/UI
     # For English text: original = english, no translation needed

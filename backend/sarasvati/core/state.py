@@ -56,7 +56,8 @@ class MedicalEntity(TypedDict):
 class TranscriptSegment(TypedDict):
     """A segment of transcribed audio from a single stream."""
     role: StreamRole           # Which stream this came from
-    text: str                  # Transcribed text
+    text: str                  # Transcribed text (original language/script)
+    text_english: Optional[str]  # Canonical English translation (for non-English segments)
     timestamp: float           # Start time in stream (seconds)
     duration: float            # Duration of segment (seconds)
     confidence: float          # ASR confidence score
