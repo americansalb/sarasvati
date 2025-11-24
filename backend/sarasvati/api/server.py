@@ -1354,7 +1354,7 @@ async def transcribe_audio(
         role=role,
         duration=duration,
         detected_language=detected_language,
-        english_translation=english_translation,
+        english_translation=english_translation_literal or english_translation_smooth,
         transliteration=transliteration
     )
 

@@ -415,13 +415,33 @@ ACCEPTABLE FUNCTIONAL EQUIVALENTS (not distortion):
 - "high blood pressure" → "BP medicine" or "બી.પી." (widely understood)
 - "twice daily" → "morning and evening" (functional equivalent)
 
-ONLY flag distortion when there is a change in:
+ACCEPTABLE PARAPHRASES (not distortion_medical):
+- "breathing with some difficulty" ↔ "difficulty breathing / difficulty to breathe" (same symptom)
+- "tightness in the chest" ↔ "pressure in the chest / chest pressure" (same symptom)
+- "shortness of breath" ↔ "lack of breathing / lack of air" (same symptom)
+- "since his admission this morning" ↔ "since they admitted him to the hospital this morning" (same timeframe)
+- "history of COPD" ↔ "his history of COPD / with his COPD history" (same medical fact)
+- "recent pneumonia" ↔ "the pneumonia he had recently" (same medical fact)
+
+⚠️ EXAMPLE OF CORRECT (NO ERROR) INTERPRETATION:
+Provider: "He has been breathing with some difficulty, tightness in the chest and shortness of breath, which is expected given his history of COPD and the recent pneumonia."
+
+Interpreter (ES→EN): "He has been with difficulty to breathe and has felt pressure in the chest and a little lack of breathing, which is to be expected with his history of COPD and the pneumonia that he had recently."
+
+→ This is ACCURATE. All symptoms preserved (difficulty breathing, chest pressure, shortness of breath).
+→ All context preserved (COPD history, recent pneumonia, expected outcome).
+→ DO NOT flag as distortion_medical. This is acceptable paraphrase.
+
+ONLY flag distortion_medical when there is a CLINICALLY MEANINGFUL change:
 1. Drug/medicine name (e.g., "insulin" → "paracetamol")
 2. Dose (e.g., "one pill" → "three pills")
 3. Frequency (e.g., "twice" → "once", "morning" → "evening")
-4. Body part (e.g., "head" → "stomach")
-5. Negation (e.g., "no pain" → "has pain", "don't take" → "take")
-6. Laterality (e.g., "left arm" → "right arm")
+4. Body part (e.g., "head" → "stomach", "chest" → "abdomen")
+5. Symptom addition/removal (e.g., adding "fever" when not mentioned)
+6. Negation flip (e.g., "no pain" → "has pain", "don't take" → "take")
+7. Laterality (e.g., "left arm" → "right arm")
+8. Severity change (e.g., "mild" → "severe", "some" → "extreme")
+9. Temporal change (e.g., "today" → "last week", "recent" → "chronic")
 
 SEVERITY CALIBRATION (strictly enforce):
 - CRITICAL: Medical fabrications, dangerous distortions, could cause physical harm
@@ -616,6 +636,47 @@ class ClinicalDebateOrchestrator:
         # This is CRITICAL: we must see the interpreter's actual errors
         # Example: "Lo siento porque yo escucho" → "I'm sorry because I listen" (NOT "I'm sorry to hear that")
         interpreter_text = interpreter_segment.get("text_english_literal") or interpreter_segment.get("text_english") or interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
+
+        # ═══════════════════════════════════════════════════════════
+        # ALIGNMENT SANITY CHECK: ALIGNED cases must have valid source
+        # ═══════════════════════════════════════════════════════════
+        # CRITICAL BUG FIX: If we have an ALIGNED case but no source text, this is a logic error
+        # in the alignment layer, NOT an interpreter error. Never judge on invalid state.
+        if case_type in (TribunalCaseType.ALIGNED_OUTBOUND, TribunalCaseType.ALIGNED_INBOUND):
+            if not source_segment or not source_text or not source_text.strip():
+                print(f"🚨 TRIBUNAL BUG: {case_type} case with NO_SOURCE segment")
+                print(f"   Source segment: {source_segment is not None}")
+                print(f"   Source text: '{source_text[:50] if source_text else 'EMPTY'}...'")
+                print(f"   This is an alignment layer bug - returning NO_ERRORS to avoid false positives")
+
+                processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+                # Return system error, not interpreter error
+                system_error = ClinicalError(
+                    error_id=f"err_{datetime.utcnow().timestamp()}_alignment_bug",
+                    severity=ErrorSeverity.MEDIUM,
+                    error_type="system_error",
+                    provider_entity=None,
+                    interpreter_entity=None,
+                    description=f"Alignment bug: {case_type} case created without valid source segment",
+                    arbiter_reasoning="System error: Alignment layer created ALIGNED case without source text. This is not an interpreter error.",
+                    confidence=0.9,
+                    detected_at=datetime.utcnow(),
+                    alignment_info=alignment,
+                    is_system_error=True,
+                    source_role=None,
+                    interpreter_quote=None,
+                    source_quote=None,
+                    ideal_interpretation=None,
+                )
+
+                return AgentDebateResult(
+                    extractor_entities=[],
+                    monitor_findings=[f"System bug: {case_type} with no source text"],
+                    arbiter_decision="Alignment layer bug - no source segment for ALIGNED case",
+                    detected_errors=[system_error],
+                    processing_time_ms=processing_time,
+                )
 
         # ═══════════════════════════════════════════════════════════
         # ASR RELIABILITY CHECK: Don't judge interpreter on bad transcripts
@@ -902,15 +963,18 @@ class ClinicalDebateOrchestrator:
         2. Distortion: Interpreter changed meaning → More specific than omission
         3. Omission: Interpreter missed info → Generic, least specific
 
+        Note: This handles subtypes like fabrication_medical, distortion_medical, omission_critical
+        by checking if the base type is contained in the error_type string.
+
         Logic:
-        - If fabrication exists, drop ALL distortion/omission tags (can't distort/omit non-existent source)
-        - If distortion exists (but no fabrication), drop omissions (distortion is more specific)
+        - If fabrication* exists, drop ALL distortion*/omission* tags (can't distort/omit non-existent source)
+        - If distortion* exists (but no fabrication*), drop omissions* (distortion is more specific)
         - Otherwise, keep all errors
         """
         if len(error_list) <= 1:
             return error_list
 
-        # Categorize errors by type
+        # Categorize errors by base type family (handles subtypes like *_medical, *_critical)
         fabrications = []
         distortions = []
         omissions = []
@@ -918,6 +982,7 @@ class ClinicalDebateOrchestrator:
 
         for err in error_list:
             error_type = err.get("type", "").lower()
+            # Check base type family
             if "fabrication" in error_type:
                 fabrications.append(err)
             elif "distortion" in error_type:
@@ -930,12 +995,17 @@ class ClinicalDebateOrchestrator:
         # Rule 1: Fabrication is dominant - can't distort/omit what doesn't exist
         if fabrications:
             if distortions or omissions:
-                print(f"      🔧 DEDUPLICATION: Dropping {len(distortions)} distortion(s) and {len(omissions)} omission(s) because {len(fabrications)} fabrication(s) found (fabrication is dominant)")
+                fab_types = [e.get("type") for e in fabrications]
+                dist_types = [e.get("type") for e in distortions]
+                omit_types = [e.get("type") for e in omissions]
+                print(f"      🔧 DEDUPLICATION: Dropping {len(distortions)} distortion(s) {dist_types} and {len(omissions)} omission(s) {omit_types} because {len(fabrications)} fabrication(s) {fab_types} found (fabrication is dominant)")
             return fabrications + others
 
         # Rule 2: Distortion is more specific than omission
         if distortions and omissions:
-            print(f"      🔧 DEDUPLICATION: Dropping {len(omissions)} omission(s) because {len(distortions)} distortion(s) found (distortion is more specific)")
+            dist_types = [e.get("type") for e in distortions]
+            omit_types = [e.get("type") for e in omissions]
+            print(f"      🔧 DEDUPLICATION: Dropping {len(omissions)} omission(s) {omit_types} because {len(distortions)} distortion(s) {dist_types} found (distortion is more specific)")
             return distortions + others
 
         # Otherwise return all errors
