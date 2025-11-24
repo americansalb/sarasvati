@@ -57,7 +57,9 @@ class TranscriptSegment(TypedDict):
     """A segment of transcribed audio from a single stream."""
     role: StreamRole           # Which stream this came from
     text: str                  # Transcribed text (original language/script)
-    text_english: Optional[str]  # Canonical English translation (for non-English segments)
+    text_english: Optional[str]  # DEPRECATED: Use text_english_smooth or text_english_literal
+    text_english_smooth: Optional[str]   # Smooth, natural English (for provider/patient ground truth)
+    text_english_literal: Optional[str]  # Literal, error-preserving English (for interpreter eval)
     timestamp: float           # Start time in stream (seconds)
     duration: float            # Duration of segment (seconds)
     confidence: float          # ASR confidence score

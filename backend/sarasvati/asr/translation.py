@@ -11,13 +11,25 @@ Example:
     Transliteration: "namaste, tame kem cho?"
     Translation: "Hello, how are you?"
 
+TRANSLATION MODES:
+1. "ground_truth" (default): Smooth, natural English translation for provider/patient
+   - Fixes grammar and idioms
+   - Makes output fluent and readable
+   - Example: "Lo siento escuchar eso" → "I'm sorry to hear that"
+
+2. "interpreter_eval": Literal, error-preserving translation for interpreter grading
+   - Preserves errors, weird phrasing, and ungrammatical structures
+   - Does NOT fix or improve the original
+   - Example: "Lo siento porque yo escucho" → "I'm sorry because I listen"
+   - Example: "Dolor en otros cuerpos" → "Pain in other bodies" (NOT "pain in other parts of your body")
+
 ENSEMBLE MODE:
 - Runs multiple translation strategies in parallel (different temperatures/prompts)
 - Uses consensus logic to pick most medically accurate translation
 - Validates critical medical terms (ઝાડા=diarrhea, કબજિયાત=constipation)
 """
 
-from typing import Optional, List
+from typing import Optional, List, Literal
 import httpx
 import json
 import asyncio
@@ -53,6 +65,7 @@ class TranslationService:
         self,
         text: str,
         suspected_language: str = "unknown",
+        mode: Literal["ground_truth", "interpreter_eval"] = "ground_truth",
     ) -> TranslationResult:
         """
         Process non-English text: detect language, transliterate, and translate.
@@ -63,6 +76,7 @@ class TranslationService:
         Args:
             text: Original text in any language/script
             suspected_language: Hint from ASR (e.g., "gu", "es", "hi")
+            mode: "ground_truth" (smooth) or "interpreter_eval" (literal, error-preserving)
 
         Returns:
             TranslationResult with transliteration and translation
@@ -74,10 +88,46 @@ class TranslationService:
                 error="Empty text",
             )
 
+        # Build mode-specific prompt
+        if mode == "interpreter_eval":
+            # LITERAL MODE: Preserve errors for interpreter grading
+            mode_instructions = """
+🔍 LITERAL TRANSLATION MODE (for interpreter evaluation):
+
+⚠️ CRITICAL: DO NOT fix or improve the text. Translate LITERALLY.
+
+RULES:
+1. Preserve ALL errors - grammatical, idiomatic, logical
+2. If the text is ungrammatical in the source language, keep it ungrammatical in English
+3. If idioms are used incorrectly, translate them literally (wrong)
+4. If the sentence is nonsensical or absurd, keep it nonsensical in English
+5. DO NOT add words, remove words, or fix phrasing
+6. DO NOT interpret what the speaker "meant to say"
+
+EXAMPLES OF LITERAL TRANSLATION:
+- "Lo siento porque yo escucho" → "I'm sorry because I listen" (NOT "I'm sorry to hear that")
+- "¿Tienes dolor en otros cuerpos?" → "Do you have pain in other bodies?" (NOT "in other parts of your body")
+- "Yo hablo que tú tienes dolor" → "I talk that you have pain" (NOT "I'm saying that you have pain")
+- Broken grammar → Keep broken in English
+
+Your job is to show EXACTLY what the interpreter said, errors and all."""
+        else:
+            # GROUND TRUTH MODE: Natural, fluent English
+            mode_instructions = """
+✅ GROUND TRUTH TRANSLATION MODE (for provider/patient):
+
+RULES:
+1. Produce natural, fluent, medically accurate English
+2. Fix minor grammar issues for readability
+3. Use proper medical terminology
+4. Make the translation clear and professional"""
+
         # Build prompt for GPT with MEDICAL VOCABULARY
         prompt = f"""You are a medical interpreter and language expert specializing in healthcare communication.
 
 ⚕️ CRITICAL: This is a MEDICAL conversation. The text contains medical terminology.
+
+{mode_instructions}
 
 COMMON MEDICAL TERMS YOU MUST KNOW:
 
@@ -128,6 +178,12 @@ CRITICAL RULES:
 6. For transliteration: use standard IAST/ISO 15919 for Indic languages
 7. If text is already Latin script (es, pt), set transliteration = null"""
 
+        # Build system message based on mode
+        if mode == "interpreter_eval":
+            system_message = "You are a MEDICAL language expert specializing in LITERAL, ERROR-PRESERVING translation for interpreter evaluation. DO NOT fix grammar or idioms. Translate exactly as written, preserving all errors and weird phrasing. Always respond with valid JSON. Medical accuracy is critical - if you see ઝાડા (jāḍā), it means DIARRHEA. If you see કબજિયાત (kabajiyāt), it means CONSTIPATION."
+        else:
+            system_message = "You are a MEDICAL interpreter and language expert. You specialize in healthcare communication and know medical vocabulary in Gujarati, Hindi, Spanish, Arabic, and Chinese. Always respond with valid JSON. NEVER hallucinate meanings for medical terms - if you see ઝાડા (jāḍā), it means DIARRHEA, not 'heavy' or 'loose'. If you see કબજિયાત (kabajiyāt), it means CONSTIPATION, not 'sweet' or 'kabaddi'. Medical accuracy is critical."
+
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(
@@ -141,7 +197,7 @@ CRITICAL RULES:
                         "messages": [
                             {
                                 "role": "system",
-                                "content": "You are a MEDICAL interpreter and language expert. You specialize in healthcare communication and know medical vocabulary in Gujarati, Hindi, Spanish, Arabic, and Chinese. Always respond with valid JSON. NEVER hallucinate meanings for medical terms - if you see ઝાડા (jāḍā), it means DIARRHEA, not 'heavy' or 'loose'. If you see કબજિયાત (kabajiyāt), it means CONSTIPATION, not 'sweet' or 'kabaddi'. Medical accuracy is critical."
+                                "content": system_message
                             },
                             {"role": "user", "content": prompt},
                         ],
@@ -300,6 +356,7 @@ class EnsembleTranslation:
         text: str,
         suspected_language: str,
         api_key: str,
+        mode: Literal["ground_truth", "interpreter_eval"] = "ground_truth",
     ) -> TranslationResult:
         """
         Run multiple translation strategies in parallel, pick best result.
@@ -314,6 +371,7 @@ class EnsembleTranslation:
             text: Original text to translate
             suspected_language: Language code (e.g., "gu", "hi", "es")
             api_key: OpenAI API key
+            mode: "ground_truth" (smooth) or "interpreter_eval" (literal, error-preserving)
 
         Returns:
             TranslationResult with best translation from ensemble
@@ -325,7 +383,8 @@ class EnsembleTranslation:
                 error="Empty text",
             )
 
-        print(f"\n🎭 ENSEMBLE TRANSLATION: Running 3 strategies in parallel...")
+        mode_label = "LITERAL/ERROR-PRESERVING" if mode == "interpreter_eval" else "SMOOTH/GROUND-TRUTH"
+        print(f"\n🎭 ENSEMBLE TRANSLATION ({mode_label}): Running 3 strategies in parallel...")
         print(f"   Text: {text[:100]}{'...' if len(text) > 100 else ''}")
         print(f"   Language: {suspected_language}")
 
@@ -338,12 +397,12 @@ class EnsembleTranslation:
         # Strategy C: Very conservative (temp=0.05) - Maximum precision
         service_c = TranslationService(api_key, model="gpt-4o", temperature=0.05)
 
-        # Run all three in parallel
+        # Run all three in parallel with mode parameter
         try:
             results = await asyncio.gather(
-                service_a.process_non_english(text, suspected_language),
-                service_b.process_non_english(text, suspected_language),
-                service_c.process_non_english(text, suspected_language),
+                service_a.process_non_english(text, suspected_language, mode),
+                service_b.process_non_english(text, suspected_language, mode),
+                service_c.process_non_english(text, suspected_language, mode),
                 return_exceptions=True,
             )
         except Exception as e:

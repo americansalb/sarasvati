@@ -1246,7 +1246,12 @@ async def transcribe_audio(
 
     # Add English translation for non-English segments (BEFORE creating segment for Tribunal)
     # This ensures the Tribunal has canonical English meaning and doesn't re-translate
-    english_translation = None
+    #
+    # CRITICAL: Use different translation modes based on role:
+    # - Provider/Patient: "ground_truth" mode (smooth, natural English)
+    # - Interpreter: "interpreter_eval" mode (literal, error-preserving)
+    english_translation_smooth = None
+    english_translation_literal = None
     transliteration = None
 
     if detected_language not in ["en", "unknown", "auto"] and len(text.strip()) > 0:
@@ -1254,22 +1259,45 @@ async def transcribe_audio(
         openai_key = os.getenv("OPENAI_API_KEY", "")
         if openai_key:
             try:
+                # Determine translation mode based on role
+                if role == "interpreter":
+                    # LITERAL MODE: Preserve errors for interpreter grading
+                    # Example: "Lo siento porque yo escucho" → "I'm sorry because I listen" (NOT "I'm sorry to hear that")
+                    translation_mode = "interpreter_eval"
+                    print(f"   🔍 Using LITERAL translation mode for interpreter (error-preserving)")
+                else:
+                    # GROUND TRUTH MODE: Smooth, natural English for provider/patient
+                    translation_mode = "ground_truth"
+                    print(f"   ✅ Using GROUND TRUTH translation mode for {role} (smooth)")
+
                 # ENSEMBLE MODE: Run 3 GPT-4o strategies in parallel with medical term validation
                 translation_result = await EnsembleTranslation.translate_ensemble(
                     text=text,
                     suspected_language=detected_language,
                     api_key=openai_key,
+                    mode=translation_mode,
                 )
-                english_translation = translation_result.translation
+
+                # Store in appropriate field based on mode
+                if translation_mode == "interpreter_eval":
+                    english_translation_literal = translation_result.translation
+                    print(f"   🌐 Translation (LITERAL): {text[:40]}... → {english_translation_literal[:40] if english_translation_literal else 'N/A'}...")
+                else:
+                    english_translation_smooth = translation_result.translation
+                    print(f"   🌐 Translation (SMOOTH): {text[:40]}... → {english_translation_smooth[:40] if english_translation_smooth else 'N/A'}...")
+
                 transliteration = translation_result.transliteration
-                print(f"   🌐 Translation: {text[:40]}... → {english_translation[:40] if english_translation else 'N/A'}...")
             except Exception as e:
                 print(f"   ⚠️ Translation failed: {str(e)}")
 
     segment = TranscriptSegment(
         role=role,  # type: ignore
         text=text,
-        text_english=english_translation if english_translation else text,  # Canonical English meaning
+        # Backward compatibility: populate old text_english field
+        text_english=(english_translation_literal or english_translation_smooth) if (english_translation_literal or english_translation_smooth) else text,
+        # New fields: separate smooth and literal translations
+        text_english_smooth=english_translation_smooth if english_translation_smooth else (text if detected_language in ["en", "unknown", "auto"] else None),
+        text_english_literal=english_translation_literal,
         timestamp=datetime.utcnow().timestamp(),
         duration=duration,
         confidence=1.0,
@@ -1286,6 +1314,7 @@ async def transcribe_audio(
     # Prepare text in all 3 formats for QA/UI
     # For English text: original = english, no translation needed
     # For non-English: original = native script, transliteration = Latin, english = translation
+    # IMPORTANT: Use smooth for provider/patient, literal for interpreter
     if detected_language in ["en", "unknown"]:
         text_original = text
         text_transliteration = None  # English doesn't need transliteration
@@ -1293,7 +1322,11 @@ async def transcribe_audio(
     else:
         text_original = text  # Original script (Gujarati, Hindi, etc.)
         text_transliteration = transliteration  # Latin transliteration
-        text_english = english_translation or f"[No translation: {text}]"  # English translation (always present)
+        # Use literal for interpreter (shows errors), smooth for provider/patient (natural)
+        if role == "interpreter":
+            text_english = english_translation_literal or f"[No translation: {text}]"
+        else:
+            text_english = english_translation_smooth or f"[No translation: {text}]"
 
     # Broadcast transcript to all clients
     message = build_ws_message("transcript", {
@@ -1301,10 +1334,10 @@ async def transcribe_audio(
         # NEW FIELDS (QA-friendly):
         "text_original": text_original,  # Original script
         "text_transliteration": text_transliteration,  # Latin transliteration (or null for English)
-        "text_english": text_english,  # English translation (or original if already English)
+        "text_english": text_english,  # English translation (smooth for P/P, literal for I)
         # OLD FIELDS (backwards compatibility - will deprecate):
         "text": text,  # Keep for legacy UI
-        "english_translation": english_translation,
+        "english_translation": english_translation_literal or english_translation_smooth,
         "transliteration": transliteration,
         # METADATA:
         "timestamp": segment["timestamp"],

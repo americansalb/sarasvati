@@ -322,6 +322,31 @@ ZERO TOLERANCE for:
 3. FABRICATED CLINICAL CONTENT: Adding medical info not in source → ALWAYS CRITICAL
 
 ═══════════════════════════════════════════════════════════
+LOGICAL CONSISTENCY CHECK (CRITICAL)
+═══════════════════════════════════════════════════════════
+
+⚠️ Check whether the INTERPRETER's rendition is logically possible and clinically sensible.
+
+RED FLAGS indicating distortion or incoherent output:
+- **Plural bodies**: "pain in other bodies" (a person has ONE body) → CRITICAL
+- **Broken idioms**: "I'm sorry because I listen" instead of "I'm sorry to hear that" → HIGH/CRITICAL
+- **Impossible anatomy**: Multiple heads, extra organs, etc. → CRITICAL
+- **Nonsensical phrasing**: "I talk that you have pain" → HIGH
+- **Absurd contradictions**: Saying opposite things in same sentence → HIGH/CRITICAL
+
+If the interpreter's sentence is physically impossible, medically absurd, or sounds nonsensical
+to a fluent speaker, flag it as distortion_medical or incoherent, EVEN IF keywords look similar.
+
+EXAMPLES:
+- Provider: "Do you have pain anywhere else?"
+  Interpreter: "Do you have pain in other bodies?"
+  → FLAG as CRITICAL distortion_medical (plural "bodies" is absurd)
+
+- Provider: "I'm sorry to hear that."
+  Interpreter: "I'm sorry because I listen."
+  → FLAG as HIGH distortion (broken idiom, nonsensical)
+
+═══════════════════════════════════════════════════════════
 PRIMARY EVIDENCE
 ═══════════════════════════════════════════════════════════
 
@@ -552,20 +577,22 @@ class ClinicalDebateOrchestrator:
         interpreter_segment = alignment.get("interpreter_segment")
 
         # Determine source and direction based on case type
-        # CRITICAL: Use text_english as canonical meaning (single source of truth from translation ensemble)
+        # CRITICAL: Use correct English translation mode:
+        # - Provider/Patient: text_english_smooth (natural, fluent English)
+        # - Interpreter: text_english_literal (error-preserving, literal English)
         if case_type in (TribunalCaseType.ALIGNED_OUTBOUND, TribunalCaseType.OMISSION_OUTBOUND):
             source_role = "provider"
             source_segment = provider_segment
-            # Use text_english if available (canonical translation), fallback to text
-            source_text = provider_segment.get("text_english") or provider_segment["text"] if provider_segment else ""
+            # Provider = ground truth, use smooth translation
+            source_text = provider_segment.get("text_english_smooth") or provider_segment.get("text_english") or provider_segment["text"] if provider_segment else ""
             target_role = "patient"
             direction = "Provider → Interpreter → Patient"
 
         elif case_type in (TribunalCaseType.ALIGNED_INBOUND, TribunalCaseType.OMISSION_INBOUND):
             source_role = "patient"
             source_segment = patient_segment
-            # Use text_english if available (canonical translation), fallback to text
-            source_text = patient_segment.get("text_english") or patient_segment["text"] if patient_segment else ""
+            # Patient = ground truth, use smooth translation
+            source_text = patient_segment.get("text_english_smooth") or patient_segment.get("text_english") or patient_segment["text"] if patient_segment else ""
             target_role = "provider"
             direction = "Patient → Interpreter → Provider"
 
@@ -580,13 +607,15 @@ class ClinicalDebateOrchestrator:
             # Fallback for unknown case types
             source_role = "provider"
             source_segment = provider_segment
-            # Use text_english if available (canonical translation), fallback to text
-            source_text = provider_segment.get("text_english") or provider_segment["text"] if provider_segment else ""
+            # Provider = ground truth, use smooth translation
+            source_text = provider_segment.get("text_english_smooth") or provider_segment.get("text_english") or provider_segment["text"] if provider_segment else ""
             target_role = "patient"
             direction = "Unknown case type"
 
-        # Use text_english for interpreter as well (canonical translation)
-        interpreter_text = interpreter_segment.get("text_english") or interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
+        # Interpreter uses LITERAL translation (error-preserving)
+        # This is CRITICAL: we must see the interpreter's actual errors
+        # Example: "Lo siento porque yo escucho" → "I'm sorry because I listen" (NOT "I'm sorry to hear that")
+        interpreter_text = interpreter_segment.get("text_english_literal") or interpreter_segment.get("text_english") or interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
 
         # ═══════════════════════════════════════════════════════════
         # ASR RELIABILITY CHECK: Don't judge interpreter on bad transcripts
@@ -866,35 +895,47 @@ class ClinicalDebateOrchestrator:
 
     def _deduplicate_errors(self, error_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Prevent double-tagging: If both distortion and omission are flagged,
-        keep the more specific error (distortion) and drop the generic omission.
+        Prevent double-tagging: Remove redundant error classifications.
+
+        Hierarchy (from most to least dominant):
+        1. Fabrication: Interpreter spoke without prompt → Can't also be distortion/omission
+        2. Distortion: Interpreter changed meaning → More specific than omission
+        3. Omission: Interpreter missed info → Generic, least specific
 
         Logic:
-        - If we have BOTH distortion-type AND omission-type errors, drop omissions
-        - Distortion is more specific (tells us what went wrong)
-        - Omission is generic (just says something is missing)
+        - If fabrication exists, drop ALL distortion/omission tags (can't distort/omit non-existent source)
+        - If distortion exists (but no fabrication), drop omissions (distortion is more specific)
+        - Otherwise, keep all errors
         """
         if len(error_list) <= 1:
             return error_list
 
-        # Categorize errors
+        # Categorize errors by type
+        fabrications = []
         distortions = []
         omissions = []
         others = []
 
         for err in error_list:
             error_type = err.get("type", "").lower()
-            if "distortion" in error_type or "fabrication" in error_type:
+            if "fabrication" in error_type:
+                fabrications.append(err)
+            elif "distortion" in error_type:
                 distortions.append(err)
             elif "omission" in error_type:
                 omissions.append(err)
             else:
                 others.append(err)
 
-        # If we have both distortions and omissions, drop omissions
-        # (distortion is more specific and informative)
+        # Rule 1: Fabrication is dominant - can't distort/omit what doesn't exist
+        if fabrications:
+            if distortions or omissions:
+                print(f"      🔧 DEDUPLICATION: Dropping {len(distortions)} distortion(s) and {len(omissions)} omission(s) because {len(fabrications)} fabrication(s) found (fabrication is dominant)")
+            return fabrications + others
+
+        # Rule 2: Distortion is more specific than omission
         if distortions and omissions:
-            print(f"      🔧 DEDUPLICATION: Dropping {len(omissions)} omission(s) because {len(distortions)} distortion(s) found")
+            print(f"      🔧 DEDUPLICATION: Dropping {len(omissions)} omission(s) because {len(distortions)} distortion(s) found (distortion is more specific)")
             return distortions + others
 
         # Otherwise return all errors
