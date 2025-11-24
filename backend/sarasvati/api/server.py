@@ -988,7 +988,7 @@ async def transcribe_audio(
             # CRITICAL: Language hints cause Whisper to TRANSLATE, not transcribe!
             # We must ALWAYS use "auto" to get accurate transcription in the original language
             result = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role)
-            if "error" in result:
+            if result.get("error"):  # Only raise if error is not None/empty
                 raise HTTPException(status_code=500, detail=f"ASR error: {result['error']}")
             text = result.get("text", "").strip()
             duration = result.get("duration", 0.0)
@@ -1057,14 +1057,24 @@ async def transcribe_audio(
 
     # Check for high character entropy (gibberish detection) - BUT ONLY FOR LATIN SCRIPTS
     # Indic scripts naturally have high entropy, so we skip this check for them
-    elif detected_script == "latin" and len(text) > 5:
-        # Simple entropy check: count unique characters vs length
-        unique_chars = len(set(text.replace(" ", "").lower()))
-        total_chars = len(text.replace(" ", ""))
-        entropy_ratio = unique_chars / total_chars if total_chars > 0 else 0
-        if entropy_ratio > 0.7:  # Very high entropy suggests gibberish
-            asr_reliable = False
-            print(f"   ⚠️ ASR UNRELIABLE: High character entropy detected ({entropy_ratio:.2f}) - possible gibberish")
+    elif detected_script == "latin" and len(text) > 10:
+        # Improved entropy check: Remove common valid characters before checking
+        # Spanish/Portuguese have accented chars, question marks, etc. that are valid
+        import re
+        # Keep only alphanumeric and remove spaces
+        cleaned_text = re.sub(r'[^a-zA-ZáéíóúñüÁÉÍÓÚÑÜ]', '', text.lower())
+        if len(cleaned_text) > 0:
+            unique_chars = len(set(cleaned_text))
+            total_chars = len(cleaned_text)
+            entropy_ratio = unique_chars / total_chars if total_chars > 0 else 0
+            # Raised threshold to 0.85 to avoid false positives on Spanish/Portuguese
+            # Real gibberish has 0.9+ entropy (every char is unique)
+            if entropy_ratio > 0.85 and len(cleaned_text) > 15:
+                asr_reliable = False
+                print(f"   ⚠️ ASR UNRELIABLE: High character entropy detected ({entropy_ratio:.2f}) - possible gibberish")
+            elif entropy_ratio > 0.7:
+                # Medium entropy - just log but don't mark unreliable
+                print(f"   ℹ️ Moderate character entropy ({entropy_ratio:.2f}) - text seems valid")
 
     if not asr_reliable:
         print(f"   🚨 ASR RELIABILITY WARNING: This transcript may be unreliable. Tribunal should not judge interpreter based on this segment.")
