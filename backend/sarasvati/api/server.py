@@ -21,7 +21,7 @@ from typing import Optional, Dict, Any, Set, List
 from contextlib import asynccontextmanager
 import logging
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -798,19 +798,33 @@ async def transcribe_audio(
             candidate_provider = extract_candidate(result_provider, provider_lang)
             candidate_patient = extract_candidate(result_patient, patient_lang)
 
+            # Check for errors and raise if all failed
+            errors = []
             for name, candidate in (
                 ("auto", candidate_auto),
                 ("provider", candidate_provider),
                 ("patient", candidate_patient),
             ):
                 if candidate.get("error"):
+                    error_msg = f"{name}: {candidate['error']}"
                     print(f"   ⚠️ Whisper error for {name} hint: {candidate['error']}")
+                    errors.append(error_msg)
+
+            # If all three failed, raise with details
+            if len(errors) == 3:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"All ASR attempts failed: {'; '.join(errors)}"
+                )
 
             # Debug logging: show all candidates
             print(f"   📊 Candidates:")
-            print(f"      auto: '{candidate_auto['text'][:50]}...' (lang={candidate_auto['lang']}, len={len(candidate_auto['text'])})")
-            print(f"      {provider_lang}_hint: '{candidate_provider['text'][:50]}...' (len={len(candidate_provider['text'])})")
-            print(f"      {patient_lang}_hint: '{candidate_patient['text'][:50]}...' (len={len(candidate_patient['text'])})")
+            auto_preview = candidate_auto['text'][:50] if candidate_auto['text'] else "(empty)"
+            provider_preview = candidate_provider['text'][:50] if candidate_provider['text'] else "(empty)"
+            patient_preview = candidate_patient['text'][:50] if candidate_patient['text'] else "(empty)"
+            print(f"      auto: '{auto_preview}...' (lang={candidate_auto['lang']}, len={len(candidate_auto['text'])})")
+            print(f"      {provider_lang}_hint: '{provider_preview}...' (len={len(candidate_provider['text'])})")
+            print(f"      {patient_lang}_hint: '{patient_preview}...' (len={len(candidate_patient['text'])})")
 
             # Strategy: ALWAYS use auto transcript (it's already correct!)
             # Compare it with hints to determine which language was spoken
@@ -1089,6 +1103,9 @@ async def transcribe_audio(
 
 # ===== Admin API Endpoints =====
 
+class ASRSwitchRequest(BaseModel):
+    backend: str
+
 @app.get("/admin/asr-config")
 async def get_asr_config():
     """Get current ASR backend configuration."""
@@ -1100,13 +1117,14 @@ async def get_asr_config():
 
 
 @app.post("/admin/asr-config/switch-default")
-async def switch_default_asr(backend: str):
+async def switch_default_asr(request: ASRSwitchRequest):
     """
     Switch default ASR backend between Groq and OpenAI.
 
     Args:
-        backend: "groq" or "openai" (will use openai-gpt4o-transcribe)
+        request: JSON body with "backend" field: "groq" or "openai"
     """
+    backend = request.backend
     if backend == "groq":
         asr_config.set_default("groq")
         asr_config.set_backend("provider", "en", "groq")
