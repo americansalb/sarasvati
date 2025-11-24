@@ -35,9 +35,9 @@ class TranslationResult:
 
 
 class TranslationService:
-    """OpenAI-based translation and transliteration service."""
+    """OpenAI-based translation and transliteration service with medical vocabulary."""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: str, model: str = "gpt-4o"):
         self.api_key = api_key
         self.model = model
 
@@ -48,6 +48,9 @@ class TranslationService:
     ) -> TranslationResult:
         """
         Process non-English text: detect language, transliterate, and translate.
+
+        MEDICAL CONTEXT: This is used for medical interpreter monitoring.
+        The LLM MUST know common medical vocabulary to avoid dangerous mistranslations.
 
         Args:
             text: Original text in any language/script
@@ -63,29 +66,59 @@ class TranslationService:
                 error="Empty text",
             )
 
-        # Build prompt for GPT
-        prompt = f"""You are a language expert. Analyze the following text and provide:
-1. The detected language (ISO 639-1 code: en, es, gu, hi, ar, zh, etc.)
-2. Transliteration to Latin script (if not already Latin)
-3. English translation
+        # Build prompt for GPT with MEDICAL VOCABULARY
+        prompt = f"""You are a medical interpreter and language expert specializing in healthcare communication.
 
-Text: "{text}"
+⚕️ CRITICAL: This is a MEDICAL conversation. The text contains medical terminology.
+
+COMMON MEDICAL TERMS YOU MUST KNOW:
+
+**Gujarati Medical Vocabulary:**
+- ઝાડા (jāḍā) = DIARRHEA (NOT "heavy", NOT "loose")
+- કબજિયાત (kabajiyāt) = CONSTIPATION (NOT "sweet", NOT "kabaddi")
+- દુખાવો (dukhāvo) = pain, ache
+- પેટ (peṭ) = stomach, abdomen
+- માથું (māthuṁ) = head
+- તાવ (tāv) = fever
+- ઉલટી (ulaṭī) = vomiting
+- દવા (davā) = medicine
+- ડૉક્ટર (ḍôkṭar) = doctor
+
+**Hindi Medical Vocabulary:**
+- दस्त (dast) = diarrhea
+- कब्ज (kabj) = constipation
+- दर्द (dard) = pain
+- पेट (pet) = stomach
+- सिर (sir) = head
+- बुखार (bukhār) = fever
+- उल्टी (ultī) = vomiting
+
+**Spanish Medical Vocabulary:**
+- dolor = pain
+- cabeza = head
+- estómago = stomach
+- diarrea = diarrhea
+- estreñimiento = constipation
+- náusea = nausea
+
+Text to analyze: "{text}"
 Suspected language: {suspected_language}
 
 Respond ONLY with valid JSON:
 {{
   "detected_language": "gu",
   "transliteration": "romanized version using Latin characters",
-  "translation": "English translation"
+  "translation": "English translation (MUST be medically accurate)"
 }}
 
-Important:
-- If the text is already in Latin script (English, Spanish), set transliteration = null
-- For Gujarati (gu), transliterate: નમસ્તે → namaste
-- For Hindi (hi), transliterate: नमस्ते → namaste
-- For Arabic (ar), transliterate: مرحبا → marhaba
-- Preserve meaning and tone in translation
-"""
+CRITICAL RULES:
+1. DO NOT hallucinate meanings - if unsure, preserve the original word
+2. MEDICAL TERMS: Use the vocabulary above - these are common patient complaints
+3. "ઝાડા" (jāḍā) is ALWAYS diarrhea in medical context
+4. "કબજિયાત" is ALWAYS constipation, never a food item
+5. If you see body parts (પેટ, માથું, सिर, cabeza), it's likely a symptom description
+6. For transliteration: use standard IAST/ISO 15919 for Indic languages
+7. If text is already Latin script (es, pt), set transliteration = null"""
 
         async with httpx.AsyncClient() as client:
             try:
@@ -98,7 +131,10 @@ Important:
                     json={
                         "model": self.model,
                         "messages": [
-                            {"role": "system", "content": "You are a language detection and translation expert. Always respond with valid JSON."},
+                            {
+                                "role": "system",
+                                "content": "You are a MEDICAL interpreter and language expert. You specialize in healthcare communication and know medical vocabulary in Gujarati, Hindi, Spanish, Arabic, and Chinese. Always respond with valid JSON. NEVER hallucinate meanings for medical terms - if you see ઝાડા (jāḍā), it means DIARRHEA, not 'heavy' or 'loose'. If you see કબજિયાત (kabajiyāt), it means CONSTIPATION, not 'sweet' or 'kabaddi'. Medical accuracy is critical."
+                            },
                             {"role": "user", "content": prompt},
                         ],
                         "temperature": 0.1,

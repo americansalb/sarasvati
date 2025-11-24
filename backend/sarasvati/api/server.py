@@ -1095,11 +1095,11 @@ async def transcribe_audio(
     transliteration = None
 
     if detected_language not in ["en", "unknown", "auto"] and len(text.strip()) > 0:
-        # Initialize translation service
+        # Initialize translation service with GPT-4o for medical accuracy
         openai_key = os.getenv("OPENAI_API_KEY", "")
         if openai_key:
             try:
-                translation_service = TranslationService(openai_key, model="gpt-4o-mini")
+                translation_service = TranslationService(openai_key, model="gpt-4o")
                 translation_result = await translation_service.process_non_english(text, detected_language)
                 english_translation = translation_result.translation
                 transliteration = translation_result.transliteration
