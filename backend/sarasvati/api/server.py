@@ -801,8 +801,18 @@ async def transcribe_audio(
         asr_reliable = False
         print(f"   ⚠️ ASR UNRELIABLE: Unknown or unsupported language detected: {detected_language}")
 
+    # Check for offensive/harmful content first - these MUST go to tribunal regardless of entropy
+    offensive_keywords = ["retard", "stupid", "idiot", "dumb", "fat", "gordo", "ugly", "feo",
+                         "estúpido", "idiota", "tonto", "pendejo", "imbécil"]
+    has_offensive_content = any(keyword in text.lower() for keyword in offensive_keywords)
+
+    if has_offensive_content:
+        # Override ASR unreliable - tribunal MUST review offensive statements
+        asr_reliable = True
+        print(f"   ⚠️ OFFENSIVE CONTENT DETECTED: Forcing tribunal review regardless of entropy")
+
     # Check for high character entropy (gibberish detection)
-    if len(text) > 5:
+    elif len(text) > 5:
         # Simple entropy check: count unique characters vs length
         unique_chars = len(set(text.replace(" ", "").lower()))
         total_chars = len(text.replace(" ", ""))

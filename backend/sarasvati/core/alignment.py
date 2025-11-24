@@ -678,21 +678,23 @@ class BatchAligner:
             )
 
             if alignment:
-                # CRITICAL FIX: Only send to tribunal if MATCHED or TIMED OUT
+                # CRITICAL FIX: Only send to tribunal if MATCHED or TIMED OUT *AND* attempted multiple times
                 # Don't judge prematurely while waiting for interpreter response
                 if alignment["is_matched"]:
                     # Match found - send to tribunal for quality review
                     entry["is_processed"] = True
                     alignments.append(alignment)
-                elif time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
-                    # Timeout omission - interpreter never responded
-                    print(f"      ⏰ TIMEOUT OMISSION (OUTBOUND): Provider spoke {time_in_buffer:.1f}s ago, no interpreter response")
+                elif time_in_buffer >= OMISSION_TIMEOUT_SECONDS and entry["alignment_attempts"] >= 2:
+                    # Timeout omission - interpreter had multiple chances but never responded
+                    print(f"      ⏰ TIMEOUT OMISSION (OUTBOUND): Provider spoke {time_in_buffer:.1f}s ago ({entry['alignment_attempts']} attempts), no interpreter response")
                     print(f"         P: '{provider_segment['text'][:60]}...'")
                     entry["is_processed"] = True
                     alignments.append(alignment)
                 else:
                     # Still waiting for interpreter - don't judge yet
                     entry["alignment_attempts"] += 1
+                    if time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
+                        print(f"      ⏳ WAITING: Provider spoke {time_in_buffer:.1f}s ago, but only {entry['alignment_attempts']} attempts - giving interpreter more time")
 
         # ===== INBOUND LEG: Patient → Interpreter → Provider =====
         unprocessed_patient = [
@@ -713,21 +715,23 @@ class BatchAligner:
             )
 
             if alignment:
-                # CRITICAL FIX: Only send to tribunal if MATCHED or TIMED OUT
+                # CRITICAL FIX: Only send to tribunal if MATCHED or TIMED OUT *AND* attempted multiple times
                 # Don't judge prematurely while waiting for interpreter response
                 if alignment["is_matched"]:
                     # Match found - send to tribunal for quality review
                     entry["is_processed"] = True
                     alignments.append(alignment)
-                elif time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
-                    # Timeout omission - interpreter never relayed patient's message
-                    print(f"      ⏰ TIMEOUT OMISSION (INBOUND): Patient spoke {time_in_buffer:.1f}s ago, interpreter didn't relay to provider")
+                elif time_in_buffer >= OMISSION_TIMEOUT_SECONDS and entry["alignment_attempts"] >= 2:
+                    # Timeout omission - interpreter had multiple chances but never relayed patient's message
+                    print(f"      ⏰ TIMEOUT OMISSION (INBOUND): Patient spoke {time_in_buffer:.1f}s ago ({entry['alignment_attempts']} attempts), interpreter didn't relay to provider")
                     print(f"         Pt: '{patient_segment['text'][:60]}...'")
                     entry["is_processed"] = True
                     alignments.append(alignment)
                 else:
                     # Still waiting for interpreter - don't judge yet
                     entry["alignment_attempts"] += 1
+                    if time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
+                        print(f"      ⏳ WAITING: Patient spoke {time_in_buffer:.1f}s ago, but only {entry['alignment_attempts']} attempts - giving interpreter more time")
 
         # ===== FABRICATION DETECTION: Interpreter-only segments =====
         # After aligning both outbound and inbound, check for interpreter segments
