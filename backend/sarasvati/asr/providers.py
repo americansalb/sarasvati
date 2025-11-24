@@ -8,6 +8,10 @@ Supports multiple ASR backends:
 - OpenAI Whisper-1 (legacy)
 
 Each provider implements the ASRProvider interface.
+
+GUJARATI MEDICAL VOCABULARY:
+For Gujarati scenarios, we inject medical terminology hints to guide ASR
+phoneme resolution and reduce hallucinations.
 """
 
 from abc import ABC, abstractmethod
@@ -23,6 +27,53 @@ ASRBackend = Literal[
     "openai-whisper1",
     "ensemble",  # Run multiple models in parallel
 ]
+
+
+# Gujarati Medical Glossary for ASR Biasing
+# These terms are injected as "prompt" hints to help ASR resolve common medical words correctly
+GUJARATI_MEDICAL_TERMS = """
+Common Gujarati medical terms:
+તબિયત (tabiyat) - health, condition
+દવા (dava) - medicine, medication
+પેટ (pet) - stomach, abdomen
+દુખાવો (dukhavo) - pain, ache
+માથું (mathun) - head
+બે વખત (be vakhat) - twice, two times
+ત્રણ વખત (tran vakhat) - three times
+દરરોજ (dar roj) - daily, every day
+સવારે (savare) - morning
+સાંજે (sanje) - evening
+ઝાડા (jada) - diarrhea
+કબજિયાત (kabajiyat) - constipation
+તાવ (tav) - fever
+ઉલટી (ulti) - vomiting, nausea
+ખાંસી (khansi) - cough
+શ્વાસ (shwas) - breath, breathing
+લોહી (lohi) - blood
+BP (બી.પી.) - blood pressure
+ડાયાબિટીસ (diabetes) - diabetes
+"""
+
+# Hindi Medical Terms (for fallback/mixed scenarios)
+HINDI_MEDICAL_TERMS = """
+Common Hindi medical terms:
+तबीयत (tabiyat) - health
+दवा (dava) - medicine
+पेट (pet) - stomach
+दर्द (dard) - pain
+सिर (sir) - head
+दो बार (do baar) - twice
+तीन बार (teen baar) - three times
+रोज (roz) - daily
+सुबह (subah) - morning
+शाम (shaam) - evening
+दस्त (dast) - diarrhea
+कब्ज (kabj) - constipation
+बुखार (bukhar) - fever
+उल्टी (ulti) - vomiting
+खांसी (khansi) - cough
+सांस (saans) - breath
+"""
 
 
 class ASRResult:
@@ -82,10 +133,19 @@ class GroqProvider(ASRProvider):
         content_type: str,
         language: Optional[str] = None,
     ) -> ASRResult:
-        """Transcribe using Groq Whisper Large V3."""
+        """Transcribe using Groq Whisper Large V3 with medical vocabulary hints."""
         whisper_data: dict = {"model": "whisper-large-v3", "response_format": "json"}
+
+        # Add language hint if provided
         if language and language != "auto":
             whisper_data["language"] = language
+
+        # Add medical glossary as prompt hint for better Gujarati/Hindi recognition
+        # Whisper's "prompt" parameter biases the model toward these terms
+        if language in ["gu", "gujarati"]:
+            whisper_data["prompt"] = GUJARATI_MEDICAL_TERMS
+        elif language in ["hi", "hindi"]:
+            whisper_data["prompt"] = HINDI_MEDICAL_TERMS
 
         async with httpx.AsyncClient() as client:
             try:
@@ -135,17 +195,26 @@ class OpenAIProvider(ASRProvider):
         content_type: str,
         language: Optional[str] = None,
     ) -> ASRResult:
-        """Transcribe using OpenAI Audio API with medical context."""
-        # OpenAI Audio API format
-        data: dict = {
-            "model": self.model,
-            # Medical context prompt for better accuracy
-            "prompt": (
+        """Transcribe using OpenAI Audio API with medical context and language-specific glossary."""
+        # Build prompt based on language to guide ASR toward correct medical terms
+        if language in ["gu", "gujarati"]:
+            prompt_text = GUJARATI_MEDICAL_TERMS
+        elif language in ["hi", "hindi"]:
+            prompt_text = HINDI_MEDICAL_TERMS
+        else:
+            # Generic medical context for other languages
+            prompt_text = (
                 "This is a medical interview between a provider and a patient, "
                 "with a professional interpreter. Transcribe accurately, "
                 "preserving medical terminology and non-English words exactly."
-            ),
+            )
+
+        # OpenAI Audio API format
+        data: dict = {
+            "model": self.model,
+            "prompt": prompt_text,  # Language-specific medical vocabulary hints
         }
+
         if language and language != "auto":
             data["language"] = language
 

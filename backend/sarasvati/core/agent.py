@@ -361,13 +361,42 @@ OTHER ERRORS:
 - role_violation: Interpreter gave own opinion, advice, or overstepped role (HIGH)
 - incoherent: Nonsensical, gibberish, or incomprehensible output (HIGH or CRITICAL)
 
+═══════════════════════════════════════════════════════════
+CULTURAL EQUIVALENTS & FUNCTIONAL TRANSLATION (CRITICAL)
+═══════════════════════════════════════════════════════════
+
+DO NOT flag "distortion" when the interpreter uses a CULTURALLY APPROPRIATE FUNCTIONAL EQUIVALENT
+that preserves the MEDICAL MEANING and CLINICAL OUTCOME.
+
+ACCEPTABLE FUNCTIONAL EQUIVALENTS (not distortion):
+- "compliant with medication" → "taking medicine regularly / on time"
+  Example: "Have you been compliant with it?" → "તમે દવા લો છો ટાઇમસર?" (Are you taking medicine on time?)
+  → This is ACCEPTABLE, NOT distortion
+
+- "diabetes medication" → "sugar medicine" (common cultural term)
+- "high blood pressure" → "BP medicine" or "બી.પી." (widely understood)
+- "twice daily" → "morning and evening" (functional equivalent)
+
+ONLY flag distortion when there is a change in:
+1. Drug/medicine name (e.g., "insulin" → "paracetamol")
+2. Dose (e.g., "one pill" → "three pills")
+3. Frequency (e.g., "twice" → "once", "morning" → "evening")
+4. Body part (e.g., "head" → "stomach")
+5. Negation (e.g., "no pain" → "has pain", "don't take" → "take")
+6. Laterality (e.g., "left arm" → "right arm")
+
 SEVERITY CALIBRATION (strictly enforce):
 - CRITICAL: Medical fabrications, dangerous distortions, could cause physical harm
   MANDATORY CRITICAL: fabrication_medical, fabrication_diagnosis, fabrication_treatment,
-                      wrong medication/dosage, flipped "do not" to "do", fabricated diagnosis
+                      wrong medication/dosage, flipped "do not" to "do", fabricated diagnosis,
+                      wrong body part, wrong negation
 - HIGH: Serious emotional harm, major misunderstanding, omitted key symptoms, incoherent gibberish
 - MEDIUM: Meaningful distortion, partial omission of non-critical info
-- LOW: Minor paraphrasing, acceptable simplification, preserved overall meaning
+- LOW: Minor paraphrasing, acceptable simplification, preserved overall meaning, functional equivalents
+
+═══════════════════════════════════════════════════════════
+OUTPUT FORMAT & CONSTRAINTS
+═══════════════════════════════════════════════════════════
 
 Return ONLY valid JSON:
 {{
@@ -380,10 +409,17 @@ Return ONLY valid JSON:
       "type": "fabrication_medical|fabrication_diagnosis|fabrication_treatment|fabrication|omission_critical|omission|distortion_medical|distortion|role_violation|incoherent",
       "description": "Specific description of what the INTERPRETER got wrong (focus on clinical accuracy only)",
       "interpreter_said": "exact quote from interpreter or MISSING for omissions",
-      "should_have_said": "what the correct interpretation would be"
+      "should_have_said": "what the correct interpretation would be (ONE SENTENCE ONLY, no repetition)"
     }}
   ]
 }}
+
+CRITICAL: "should_have_said" MUST be:
+1. A SINGLE, complete sentence
+2. In the target language (not source language)
+3. Based on the GROUND TRUTH source text
+4. NO REPETITION - if you find yourself repeating phrases, STOP and simplify
+5. Focus on the KEY CLINICAL FACTS only (drug, dose, frequency, body part, negation)
 
 If no errors: return {{"verdict": "NO_ERRORS", "reasoning": "...", "override_notes": null, "errors": []}}"""
 
@@ -394,8 +430,10 @@ If no errors: return {{"verdict": "NO_ERRORS", "reasoning": "...", "override_not
                     {"role": "system", "content": "You are a Senior Medical Judge. Raw evidence is primary. Junior analysts (Node A/B) may be wrong. Override them if needed."},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.1,
+                temperature=0.1,  # Low temperature for consistent decisions
                 max_tokens=2000,
+                frequency_penalty=0.3,  # Penalize repetition
+                presence_penalty=0.1,  # Encourage variety
             )
 
             content = response.choices[0].message.content
