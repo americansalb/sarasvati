@@ -716,22 +716,30 @@ def get_expected_scripts(language: str) -> list[str]:
     return script_map.get(language, ["unknown"])
 
 
-async def call_whisper(client: httpx.AsyncClient, audio_data: bytes, filename: str, content_type: str, language: str, api_key: str) -> dict:
-    """Helper to call Whisper API with a specific language hint."""
-    whisper_data: dict = {"model": "whisper-large-v3", "response_format": "json"}
-    if language and language != "auto":
-        whisper_data["language"] = language
+async def call_whisper(client: httpx.AsyncClient, audio_data: bytes, filename: str, content_type: str, language: str, api_key: str, role: str = "provider") -> dict:
+    """
+    Helper to call ASR API (OpenAI or Groq) with pluggable backend.
 
-    response = await client.post(
-        "https://api.groq.com/openai/v1/audio/transcriptions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        files={"file": (filename, audio_data, content_type)},
-        data=whisper_data,
-        timeout=30.0,
-    )
-    if response.status_code != 200:
-        return {"text": "", "duration": 0.0, "error": response.text}
-    return response.json()
+    DEPRECATED: This is a compatibility wrapper. Uses the new ASR provider system.
+    """
+    # Get appropriate backend for this role/language
+    backend_name = asr_config.get_backend(role, language or "auto")
+
+    # Get OpenAI key if needed
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    groq_key = api_key  # Passed in parameter
+
+    # Create provider and transcribe
+    provider = ASRProviderFactory.create(backend_name, groq_key, openai_key)
+    result = await provider.transcribe(audio_data, filename, content_type, language)
+
+    # Convert ASRResult to dict for backwards compatibility
+    return {
+        "text": result.text,
+        "duration": result.duration,
+        "language": result.language,
+        "error": result.error,
+    }
 
 
 @app.post("/transcribe", response_model=TranscriptionResponse)
@@ -743,16 +751,20 @@ async def transcribe_audio(
     patient_lang: str = Form(default="auto"),
 ) -> TranscriptionResponse:
     """
-    Transcribe audio using Groq Whisper API.
+    Transcribe audio using pluggable ASR backend (OpenAI or Groq).
     Accepts audio file, role (provider/interpreter/patient), and language hints.
-    For interpreter: runs Whisper with both languages plus an auto-detect pass and
+    For interpreter: runs ASR with both languages plus an auto-detect pass and
     chooses the transcript that matches the detected language when possible.
+
+    Uses OpenAI gpt-4o-transcribe by default (configurable via asr_config).
     """
     global engine, session_active
 
-    groq_api_key = os.getenv("GROQ_API_KEY")
+    # Get API keys - OpenAI is primary, Groq is fallback
+    groq_api_key = os.getenv("GROQ_API_KEY", "")
     if not groq_api_key:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+        # Allow empty Groq key if OpenAI is configured
+        groq_api_key = ""
 
     # Read audio file
     audio_data = await audio.read()
@@ -769,9 +781,9 @@ async def transcribe_audio(
             print(f"🔄 Interpreter dual-language detection: trying {provider_lang} and {patient_lang}")
 
             result_auto, result_provider, result_patient = await asyncio.gather(
-                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key),
-                call_whisper(client, audio_data, filename, content_type, provider_lang, groq_api_key),
-                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key),
+                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role),
+                call_whisper(client, audio_data, filename, content_type, provider_lang, groq_api_key, role),
+                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key, role),
             )
 
             def extract_candidate(result: dict, fallback_lang: str) -> dict:
@@ -856,8 +868,8 @@ async def transcribe_audio(
             print(f"🔄 Patient dual-language detection: trying auto and {patient_lang}")
 
             result_auto, result_patient = await asyncio.gather(
-                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key),
-                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key),
+                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role),
+                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key, role),
             )
 
             candidate_auto = {
@@ -909,7 +921,7 @@ async def transcribe_audio(
             print(f"🔄 Patient language auto-detection: trying common languages")
 
             # Try auto first, then common non-English languages if auto looks wrong
-            result_auto = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key)
+            result_auto = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role)
             auto_text = result_auto.get("text", "").strip()
             auto_lang = result_auto.get("language", "unknown")
             auto_script = detect_script(auto_text)
@@ -922,9 +934,9 @@ async def transcribe_audio(
                 print(f"   ⚠️ Auto gave suspicious script ({auto_script}), trying Gujarati/Hindi hints")
 
                 result_gu, result_hi, result_ar = await asyncio.gather(
-                    call_whisper(client, audio_data, filename, content_type, "gu", groq_api_key),
-                    call_whisper(client, audio_data, filename, content_type, "hi", groq_api_key),
-                    call_whisper(client, audio_data, filename, content_type, "ar", groq_api_key),
+                    call_whisper(client, audio_data, filename, content_type, "gu", groq_api_key, role),
+                    call_whisper(client, audio_data, filename, content_type, "hi", groq_api_key, role),
+                    call_whisper(client, audio_data, filename, content_type, "ar", groq_api_key, role),
                 )
 
                 candidates = [
@@ -961,9 +973,9 @@ async def transcribe_audio(
             # For provider or when languages are same: ALWAYS use auto-detect
             # CRITICAL: Language hints cause Whisper to TRANSLATE, not transcribe!
             # We must ALWAYS use "auto" to get accurate transcription in the original language
-            result = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key)
+            result = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role)
             if "error" in result:
-                raise HTTPException(status_code=500, detail=f"Groq API error: {result['error']}")
+                raise HTTPException(status_code=500, detail=f"ASR error: {result['error']}")
             text = result.get("text", "").strip()
             duration = result.get("duration", 0.0)
             detected_language = result.get("language", "auto")
