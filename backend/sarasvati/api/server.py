@@ -36,7 +36,7 @@ from ..core.state import (
     create_initial_state,
 )
 from ..core.graph import SarasvatiEngine, create_engine
-from ..asr.providers import ASRProviderFactory, asr_config, ASRBackend
+from ..asr.providers import ASRProviderFactory, asr_config, ASRBackend, EnsembleASR
 from ..asr.translation import TranslationService
 
 logger = logging.getLogger(__name__)
@@ -718,22 +718,44 @@ def get_expected_scripts(language: str) -> list[str]:
     return script_map.get(language, ["unknown"])
 
 
-async def call_whisper(client: httpx.AsyncClient, audio_data: bytes, filename: str, content_type: str, language: str, api_key: str, role: str = "provider") -> dict:
+async def call_whisper(
+    client: httpx.AsyncClient,
+    audio_data: bytes,
+    filename: str,
+    content_type: str,
+    language: str,
+    api_key: str,
+    role: str = "provider",
+    expected_scripts: Optional[list[str]] = None,
+) -> dict:
     """
-    Helper to call ASR API (OpenAI or Groq) with pluggable backend.
+    Call ASR API with multi-model ensemble support.
 
-    DEPRECATED: This is a compatibility wrapper. Uses the new ASR provider system.
+    Modes:
+    - "ensemble" (default): Run both Groq + OpenAI in parallel, pick best
+    - "groq": Use only Groq Whisper Large V3
+    - "openai": Use only OpenAI Whisper-1
     """
-    # Get appropriate backend for this role/language
     backend_name = asr_config.get_backend(role, language or "auto")
 
-    # Get OpenAI key if needed
+    groq_key = api_key
     openai_key = os.getenv("OPENAI_API_KEY", "")
-    groq_key = api_key  # Passed in parameter
 
-    # Create provider and transcribe
-    provider = ASRProviderFactory.create(backend_name, groq_key, openai_key)
-    result = await provider.transcribe(audio_data, filename, content_type, language)
+    # ENSEMBLE MODE: Run both providers in parallel
+    if backend_name == "ensemble":
+        result = await EnsembleASR.transcribe_ensemble(
+            audio_data,
+            filename,
+            content_type,
+            language,
+            groq_key,
+            openai_key,
+            expected_scripts=expected_scripts,
+        )
+    else:
+        # Single provider mode
+        provider = ASRProviderFactory.create(backend_name, groq_key, openai_key)
+        result = await provider.transcribe(audio_data, filename, content_type, language)
 
     # Convert ASRResult to dict for backwards compatibility
     return {
@@ -741,6 +763,7 @@ async def call_whisper(client: httpx.AsyncClient, audio_data: bytes, filename: s
         "duration": result.duration,
         "language": result.language,
         "error": result.error,
+        "provider": result.provider,  # Track which provider/ensemble was used
     }
 
 
@@ -782,10 +805,13 @@ async def transcribe_audio(
             # We use hints only to detect which language was spoken, not to get the transcript.
             print(f"🔄 Interpreter dual-language detection: trying {provider_lang} and {patient_lang}")
 
+            # Prepare expected scripts for ensemble validation
+            expected_scripts_list = get_expected_scripts(provider_lang) + get_expected_scripts(patient_lang)
+
             result_auto, result_provider, result_patient = await asyncio.gather(
-                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role),
-                call_whisper(client, audio_data, filename, content_type, provider_lang, groq_api_key, role),
-                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key, role),
+                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role, expected_scripts_list),
+                call_whisper(client, audio_data, filename, content_type, provider_lang, groq_api_key, role, expected_scripts_list),
+                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key, role, expected_scripts_list),
             )
 
             def extract_candidate(result: dict, fallback_lang: str) -> dict:
@@ -883,9 +909,12 @@ async def transcribe_audio(
             # This helps with Gujarati, Hindi, Arabic, Chinese, etc.
             print(f"🔄 Patient dual-language detection: trying auto and {patient_lang}")
 
+            # Prepare expected scripts for ensemble validation
+            expected_scripts_list = get_expected_scripts(patient_lang)
+
             result_auto, result_patient = await asyncio.gather(
-                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role),
-                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key, role),
+                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role, expected_scripts_list),
+                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key, role, expected_scripts_list),
             )
 
             candidate_auto = {
@@ -937,7 +966,8 @@ async def transcribe_audio(
             print(f"🔄 Patient language auto-detection: trying common languages")
 
             # Try auto first, then common non-English languages if auto looks wrong
-            result_auto = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role)
+            # For auto-detect, we don't know expected scripts yet, so pass None
+            result_auto = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role, None)
             auto_text = result_auto.get("text", "").strip()
             auto_lang = result_auto.get("language", "unknown")
             auto_script = detect_script(auto_text)
@@ -989,7 +1019,8 @@ async def transcribe_audio(
             # For provider or when languages are same: ALWAYS use auto-detect
             # CRITICAL: Language hints cause Whisper to TRANSLATE, not transcribe!
             # We must ALWAYS use "auto" to get accurate transcription in the original language
-            result = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role)
+            # For provider (usually English), don't pass expected_scripts (not needed for Latin script)
+            result = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role, None)
             if result.get("error"):  # Only raise if error is not None/empty
                 raise HTTPException(status_code=500, detail=f"ASR error: {result['error']}")
             text = result.get("text", "").strip()
@@ -1142,34 +1173,56 @@ async def get_asr_config():
     """Get current ASR backend configuration."""
     return {
         "current_config": asr_config.get_all(),
-        "available_backends": ["groq", "openai-gpt4o-transcribe", "openai-whisper1"],
-        "note": "openai-gpt4o-transcribe and openai-whisper1 both use whisper-1 model currently",
+        "current_mode": asr_config.get_mode(),
+        "available_modes": ["ensemble", "groq", "openai"],
+        "note": "ENSEMBLE mode (default) runs both Groq + OpenAI in parallel and picks the best result using consensus logic",
     }
 
 
 @app.post("/admin/asr-config/switch-default")
 async def switch_default_asr(request: ASRSwitchRequest):
     """
-    Switch default ASR backend between Groq and OpenAI.
+    Switch ASR mode.
 
-    Args:
-        request: JSON body with "backend" field: "groq" or "openai"
+    Modes:
+    - "ensemble" (default): Run both Groq + OpenAI in parallel, pick best (tribunal pattern)
+    - "groq": Use only Groq Whisper Large V3
+    - "openai": Use only OpenAI Whisper-1
     """
     backend = request.backend
-    if backend == "groq":
+
+    if backend == "ensemble":
+        asr_config.set_default("ensemble")
+        asr_config.set_backend("provider", "en", "ensemble")
+        asr_config.set_backend("patient", "auto", "ensemble")
+        asr_config.set_backend("interpreter", "auto", "ensemble")
+        return {
+            "status": "success",
+            "message": "Switched to ENSEMBLE mode (Groq + OpenAI in parallel)",
+            "config": asr_config.get_all()
+        }
+    elif backend == "groq":
         asr_config.set_default("groq")
         asr_config.set_backend("provider", "en", "groq")
         asr_config.set_backend("patient", "auto", "groq")
         asr_config.set_backend("interpreter", "auto", "groq")
-        return {"status": "success", "message": "Switched to Groq Whisper Large V3", "config": asr_config.get_all()}
+        return {
+            "status": "success",
+            "message": "Switched to Groq Whisper Large V3 only",
+            "config": asr_config.get_all()
+        }
     elif backend == "openai":
         asr_config.set_default("openai-gpt4o-transcribe")
         asr_config.set_backend("provider", "en", "openai-gpt4o-transcribe")
         asr_config.set_backend("patient", "auto", "openai-gpt4o-transcribe")
         asr_config.set_backend("interpreter", "auto", "openai-gpt4o-transcribe")
-        return {"status": "success", "message": "Switched to OpenAI Whisper-1", "config": asr_config.get_all()}
+        return {
+            "status": "success",
+            "message": "Switched to OpenAI Whisper-1 only",
+            "config": asr_config.get_all()
+        }
     else:
-        raise HTTPException(status_code=400, detail=f"Invalid backend: {backend}. Use 'groq' or 'openai'")
+        raise HTTPException(status_code=400, detail=f"Invalid backend: {backend}. Use 'ensemble', 'groq', or 'openai'")
 
 
 @app.post("/admin/asr-config/update")

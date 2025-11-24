@@ -29,7 +29,7 @@ export default function DashboardPage() {
   const [manualText, setManualText] = useState("");
   const [providerLang, setProviderLang] = useState("en");
   const [patientLang, setPatientLang] = useState("es"); // Default Spanish for testing (change to "gu" for Gujarati, etc.)
-  const [asrBackend, setAsrBackend] = useState<"groq" | "openai">("openai");
+  const [asrBackend, setAsrBackend] = useState<"ensemble" | "groq" | "openai">("ensemble");
   const [asrBackendLoading, setAsrBackendLoading] = useState(false);
 
   const LANGUAGES = [
@@ -53,8 +53,15 @@ export default function DashboardPage() {
         const response = await fetch(`${httpUrl}/admin/asr-config`);
         if (response.ok) {
           const data = await response.json();
-          const defaultBackend = data.current_config?.default || "openai-gpt4o-transcribe";
-          setAsrBackend(defaultBackend.startsWith("openai") ? "openai" : "groq");
+          const mode = data.current_mode || data.current_config?.mode || "ensemble";
+          // Map mode to frontend state
+          if (mode === "ensemble") {
+            setAsrBackend("ensemble");
+          } else if (mode === "groq" || mode.startsWith("groq")) {
+            setAsrBackend("groq");
+          } else {
+            setAsrBackend("openai");
+          }
         }
       } catch (error) {
         console.error("Failed to fetch ASR config:", error);
@@ -64,7 +71,7 @@ export default function DashboardPage() {
   }, []);
 
   // Switch ASR backend
-  const handleSwitchAsrBackend = async (backend: "groq" | "openai") => {
+  const handleSwitchAsrBackend = async (backend: "ensemble" | "groq" | "openai") => {
     setAsrBackendLoading(true);
     try {
       const httpUrl = BACKEND_URL.replace("ws://", "http://").replace("wss://", "https://");
@@ -228,46 +235,67 @@ export default function DashboardPage() {
           <div className="mb-4">
             <label className="block text-sm text-gray-400 mb-2 flex items-center gap-2">
               <Settings size={16} />
-              ASR Backend (Speech Recognition Engine)
+              ASR Mode (Speech Recognition)
             </label>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                onClick={() => handleSwitchAsrBackend("ensemble")}
+                disabled={asrBackendLoading || asrBackend === "ensemble"}
+                className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
+                  asrBackend === "ensemble"
+                    ? "bg-purple-600 text-white ring-2 ring-purple-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {asrBackend === "ensemble" && "✓ "}Ensemble
+              </button>
               <button
                 onClick={() => handleSwitchAsrBackend("groq")}
                 disabled={asrBackendLoading || asrBackend === "groq"}
-                className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors ${
+                className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
                   asrBackend === "groq"
                     ? "bg-emerald-600 text-white ring-2 ring-emerald-400"
                     : "bg-gray-700 text-gray-300 hover:bg-gray-600"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
-                {asrBackend === "groq" && "✓ "}Groq Whisper Large V3
+                {asrBackend === "groq" && "✓ "}Groq
               </button>
               <button
                 onClick={() => handleSwitchAsrBackend("openai")}
                 disabled={asrBackendLoading || asrBackend === "openai"}
-                className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors ${
+                className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
                   asrBackend === "openai"
                     ? "bg-blue-600 text-white ring-2 ring-blue-400"
                     : "bg-gray-700 text-gray-300 hover:bg-gray-600"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
-                {asrBackend === "openai" && "✓ "}OpenAI Whisper-1
+                {asrBackend === "openai" && "✓ "}OpenAI
               </button>
             </div>
             {asrBackendLoading && (
-              <p className="text-xs text-gray-500 mt-1 animate-pulse">Switching backend...</p>
+              <p className="text-xs text-gray-500 mt-1 animate-pulse">Switching mode...</p>
             )}
             <p className="text-xs text-gray-500 mt-2">
-              Current: <span className="font-semibold text-gray-300">
-                {asrBackend === "groq" ? "Groq Whisper Large V3" : "OpenAI Whisper-1 (with medical context)"}
-              </span>
+              {asrBackend === "ensemble" ? (
+                <span>
+                  <span className="font-semibold text-purple-300">🤝 Ensemble Mode</span>: Runs both Groq + OpenAI in parallel, picks best result (tribunal pattern)
+                </span>
+              ) : asrBackend === "groq" ? (
+                <span className="font-semibold text-emerald-300">Groq Whisper Large V3 only</span>
+              ) : (
+                <span className="font-semibold text-blue-300">OpenAI Whisper-1 only</span>
+              )}
             </p>
           </div>
 
           {/* Microphone Recording */}
           <div className="mb-6">
             <label className="block text-sm text-gray-400 mb-2">
-              Voice Input ({asrBackend === "groq" ? "Groq Whisper" : "OpenAI Whisper"})
+              Voice Input ({
+                asrBackend === "ensemble" ? "Ensemble (Groq + OpenAI)" :
+                asrBackend === "groq" ? "Groq Whisper" :
+                "OpenAI Whisper"
+              })
             </label>
             <button
               onClick={handleToggleRecording}
