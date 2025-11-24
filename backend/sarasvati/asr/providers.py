@@ -16,7 +16,13 @@ import httpx
 import os
 
 
-ASRBackend = Literal["groq", "openai-gpt4o-transcribe", "openai-gpt4o-mini-transcribe", "openai-whisper1"]
+ASRBackend = Literal[
+    "groq",
+    "openai-gpt4o-transcribe",
+    "openai-gpt4o-mini-transcribe",
+    "openai-whisper1",
+    "ensemble",  # Run multiple models in parallel
+]
 
 
 class ASRResult:
@@ -195,13 +201,18 @@ class ASRProviderFactory:
         """
         if backend == "groq":
             return GroqProvider(groq_key)
-        elif backend in ["openai-gpt4o-transcribe", "openai-gpt4o-mini-transcribe", "openai-whisper1"]:
-            # All OpenAI transcriptions use whisper-1 model for now
-            # gpt-4o-audio models are for Realtime API, not transcriptions API
+        elif backend == "openai-gpt4o-transcribe":
+            # Use gpt-4o-transcribe for high-quality transcription (better for Gujarati, etc.)
+            return OpenAIProvider(openai_key, model="gpt-4o-transcribe")
+        elif backend == "openai-gpt4o-mini-transcribe":
+            # Use gpt-4o-mini-transcribe for cheaper transcription
+            return OpenAIProvider(openai_key, model="gpt-4o-mini-transcribe")
+        elif backend == "openai-whisper1":
+            # Legacy whisper-1 model
             return OpenAIProvider(openai_key, model="whisper-1")
         else:
-            # Default to OpenAI
-            return OpenAIProvider(openai_key, model="whisper-1")
+            # Default to gpt-4o-transcribe for best quality
+            return OpenAIProvider(openai_key, model="gpt-4o-transcribe")
 
 
 class EnsembleASR:
@@ -223,21 +234,25 @@ class EnsembleASR:
         groq_key: str,
         openai_key: str,
         expected_scripts: Optional[list[str]] = None,
+        openai_model: str = "gpt-4o-transcribe",  # Default to best quality
     ) -> ASRResult:
         """
         Run both Groq and OpenAI in parallel, pick the best result.
 
         Consensus strategies:
         1. Exact agreement → high confidence
-        2. High similarity (>80%) → use Groq (larger model)
+        2. High similarity (>80%) → use best model
         3. Script validation → pick one with correct script
         4. Length check → avoid empty results
-        5. Default → Groq (Whisper Large V3 > V1)
+        5. Default → Prefer model with better quality for language
+
+        Args:
+            openai_model: OpenAI model to use ("gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1")
         """
         import asyncio
 
         groq_provider = GroqProvider(groq_key)
-        openai_provider = OpenAIProvider(openai_key, model="whisper-1")
+        openai_provider = OpenAIProvider(openai_key, model=openai_model)
 
         # Run both in parallel
         groq_result, openai_result = await asyncio.gather(
@@ -367,28 +382,74 @@ class EnsembleASR:
 
 class ASRConfig:
     """
-    ASR configuration manager.
+    ASR configuration manager with per-language and per-role support.
 
-    Now supports ENSEMBLE mode (default): runs both Groq + OpenAI in parallel.
+    Supports:
+    - Global default
+    - Per-language overrides (e.g., gu → openai-gpt4o-transcribe)
+    - Per-role overrides (e.g., patient_gu → openai-gpt4o-transcribe)
+    - Ensemble mode (runs multiple models in parallel)
+
+    Format: {role}_{language} → backend
+    Example: "patient_gu" → "openai-gpt4o-transcribe"
     """
 
     def __init__(self):
-        # Default: ENSEMBLE mode (run both, pick best)
+        # Default configuration
         self.config = {
-            "mode": "ensemble",  # "ensemble" | "groq" | "openai"
+            # Global mode
+            "mode": "ensemble",  # "ensemble" | specific backend
             "default": "ensemble",
-            "provider_en": "ensemble",
-            "patient_auto": "ensemble",
-            "interpreter_auto": "ensemble",
+
+            # Per-language defaults (applies to all roles)
+            # For high-quality languages, use ensemble (Groq + OpenAI gpt-4o-transcribe)
+            # This enables the debate + referee pattern for best accuracy
+            "gu": "ensemble",  # Gujarati → Ensemble (Groq + OpenAI gpt-4o-transcribe)
+            "hi": "ensemble",  # Hindi → Ensemble
+            "es": "ensemble",  # Spanish → Ensemble
+            "en": "ensemble",  # English → Ensemble
+            "ar": "ensemble",  # Arabic → Ensemble
+            "zh": "ensemble",  # Chinese → Ensemble
+            "auto": "ensemble",  # Auto-detect → Ensemble
+
+            # Per-role defaults (overrides language defaults if specified)
+            "provider": "ensemble",  # Provider (usually English) → Ensemble
+            "patient": None,  # Patient → Use language default
+            "interpreter": None,  # Interpreter → Use language default
+
+            # Specific overrides (highest priority)
+            # Format: "{role}_{language}" → backend
+            # Example: "patient_gu" → "openai-gpt4o-transcribe" (single model, no ensemble)
+            # Or: "provider_en" → "groq" (use only Groq for English provider)
         }
 
     def get_backend(self, role: str, language: str) -> str:
-        """Get ASR backend. Can return 'ensemble'."""
+        """
+        Get ASR backend for a specific role and language.
+
+        Priority order:
+        1. Specific override: {role}_{language} (e.g., "patient_gu")
+        2. Per-role default: {role} (e.g., "patient")
+        3. Per-language default: {language} (e.g., "gu")
+        4. Global default
+
+        Returns:
+            Backend name (can be "ensemble" or specific backend)
+        """
+        # Priority 1: Specific override
         key = f"{role}_{language}"
-        if key in self.config:
+        if key in self.config and self.config[key] is not None:
             return self.config[key]
-        if role in self.config:
+
+        # Priority 2: Per-role default
+        if role in self.config and self.config[role] is not None:
             return self.config[role]
+
+        # Priority 3: Per-language default
+        if language in self.config and self.config[language] is not None:
+            return self.config[language]
+
+        # Priority 4: Global default
         return self.config.get("default", "ensemble")
 
     def set_backend(self, role: str, language: str, backend: str) -> None:

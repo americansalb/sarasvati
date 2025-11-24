@@ -107,8 +107,31 @@ DEFAULT_CONFIG = GraphConfig(
 
 # ===== Pydantic Models (Request/Response) =====
 
+class RoleLanguageConfig(BaseModel):
+    """Language configuration for a specific role."""
+    language: str  # ISO 639-1 code (e.g., "en", "gu", "es")
+    script: Optional[str] = None  # Expected script (e.g., "gujarati", "devanagari")
+
+
+class InterpreterModeConfig(BaseModel):
+    """Configuration for interpreter direction-specific behavior."""
+    direction: str  # "provider_to_patient" or "patient_to_provider"
+    language: str  # Expected language for this direction
+
+
+class ScenarioMetadata(BaseModel):
+    """Metadata about the scenario being run."""
+    scenario_id: Optional[str] = None  # e.g., "gujarati_body_pain_01"
+    scenario_name: Optional[str] = None  # e.g., "Gujarati Patient - Abdominal Pain"
+    provider_language: str = "en"  # Provider language (default: English)
+    patient_language: str = "auto"  # Patient language (default: auto-detect)
+    interpreter_modes: Optional[list[InterpreterModeConfig]] = None  # Interpreter direction config
+    # Future: difficulty, expected_errors, learning_objectives, etc.
+
+
 class SessionStartRequest(BaseModel):
     session_id: Optional[str] = None
+    scenario: Optional[ScenarioMetadata] = None  # Scenario configuration
 
 
 class SessionStartResponse(BaseModel):
@@ -224,6 +247,7 @@ engine: Optional[SarasvatiEngine] = None
 session_active = False
 session_id: Optional[str] = None
 session_start_time: Optional[datetime] = None
+current_scenario: Optional[ScenarioMetadata] = None  # Current scenario metadata
 
 # Background task for processing
 _processing_task: Optional[asyncio.Task] = None
@@ -550,12 +574,17 @@ async def health_check() -> HealthResponse:
 @app.post("/session/start", response_model=SessionStartResponse)
 async def start_session(request: SessionStartRequest) -> SessionStartResponse:
     """
-    Start a new monitoring session.
+    Start a new monitoring session with optional scenario metadata.
 
     Creates a new session and initializes a FRESH engine.
     CRITICAL: Each session gets its own engine to prevent state leakage.
+
+    Scenario metadata enables:
+    - Role-specific language constraints (provider=en, patient=gu)
+    - ASR model selection based on language
+    - Language validation and error detection
     """
-    global session_active, session_id, session_start_time, _processing_task, engine
+    global session_active, session_id, session_start_time, _processing_task, engine, current_scenario
 
     if session_active:
         raise HTTPException(status_code=409, detail="Session already active")
@@ -564,6 +593,21 @@ async def start_session(request: SessionStartRequest) -> SessionStartResponse:
     session_id = request.session_id or f"session_{uuid.uuid4().hex[:8]}"
     session_start_time = datetime.utcnow()
     session_active = True
+
+    # Store scenario metadata
+    current_scenario = request.scenario
+    if current_scenario:
+        print(f"\n📋 SCENARIO CONFIGURATION:")
+        print(f"   ID: {current_scenario.scenario_id or 'N/A'}")
+        print(f"   Name: {current_scenario.scenario_name or 'N/A'}")
+        print(f"   Provider language: {current_scenario.provider_language}")
+        print(f"   Patient language: {current_scenario.patient_language}")
+        if current_scenario.interpreter_modes:
+            print(f"   Interpreter modes:")
+            for mode in current_scenario.interpreter_modes:
+                print(f"      {mode.direction} → {mode.language}")
+    else:
+        print(f"⚠️ No scenario metadata provided - using defaults")
 
     # CRITICAL FIX: Create a fresh engine for each session to prevent state leakage
     # The old engine's buffers/state would carry over otherwise
@@ -576,7 +620,10 @@ async def start_session(request: SessionStartRequest) -> SessionStartResponse:
     _processing_task = asyncio.create_task(emit_error_loop())
 
     # Broadcast session start
-    message = build_ws_message("session_start", {"session_id": session_id})
+    message = build_ws_message("session_start", {
+        "session_id": session_id,
+        "scenario": current_scenario.dict() if current_scenario else None,
+    })
     await manager.broadcast(message)
 
     return SessionStartResponse(
@@ -593,7 +640,7 @@ async def stop_session() -> SessionStopResponse:
 
     Returns session statistics.
     """
-    global session_active, session_id, session_start_time, _processing_task, engine
+    global session_active, session_id, session_start_time, _processing_task, engine, current_scenario
 
     if not session_active:
         raise HTTPException(status_code=409, detail="No active session")
@@ -630,6 +677,7 @@ async def stop_session() -> SessionStopResponse:
     session_active = False
     session_id = None
     session_start_time = None
+    current_scenario = None  # Clear scenario metadata
 
     return SessionStopResponse(
         session_id=current_session_id or "unknown",
@@ -734,12 +782,24 @@ async def call_whisper(
     Modes:
     - "ensemble" (default): Run both Groq + OpenAI in parallel, pick best
     - "groq": Use only Groq Whisper Large V3
-    - "openai": Use only OpenAI Whisper-1
+    - "openai-gpt4o-transcribe": Use only OpenAI gpt-4o-transcribe
+    - "openai-gpt4o-mini-transcribe": Use only OpenAI gpt-4o-mini-transcribe
+    - "openai-whisper1": Use only OpenAI whisper-1
     """
     backend_name = asr_config.get_backend(role, language or "auto")
 
     groq_key = api_key
     openai_key = os.getenv("OPENAI_API_KEY", "")
+
+    # Determine which OpenAI model to use in ensemble mode
+    # For high-quality languages (Gujarati, Hindi), use gpt-4o-transcribe
+    openai_model = "gpt-4o-transcribe"  # Default to best quality
+    if language in ["gu", "hi", "ar", "zh"]:
+        # Use highest quality for complex scripts
+        openai_model = "gpt-4o-transcribe"
+    elif language in ["es", "en"]:
+        # Ensemble mode with good quality (could use mini for cost savings later)
+        openai_model = "gpt-4o-transcribe"
 
     # ENSEMBLE MODE: Run both providers in parallel
     if backend_name == "ensemble":
@@ -751,6 +811,7 @@ async def call_whisper(
             groq_key,
             openai_key,
             expected_scripts=expected_scripts,
+            openai_model=openai_model,  # Pass model selection
         )
     else:
         # Single provider mode
