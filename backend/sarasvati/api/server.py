@@ -647,6 +647,73 @@ class TranscriptionResponse(BaseModel):
     detected_language: str = "auto"
 
 
+def detect_script(text: str) -> str:
+    """
+    Detect the writing script used in text.
+    Returns: 'latin', 'gujarati', 'devanagari', 'arabic', 'chinese', 'sinhala', 'thai', 'unknown'
+    """
+    if not text:
+        return "unknown"
+
+    # Count characters in each Unicode block
+    char_counts = {
+        "latin": 0,
+        "gujarati": 0,
+        "devanagari": 0,
+        "arabic": 0,
+        "chinese": 0,
+        "sinhala": 0,
+        "thai": 0,
+    }
+
+    for char in text:
+        code_point = ord(char)
+        if 0x0041 <= code_point <= 0x007A or 0x0041 <= code_point <= 0x005A:  # Latin A-Z, a-z
+            char_counts["latin"] += 1
+        elif 0x0A80 <= code_point <= 0x0AFF:  # Gujarati Unicode block
+            char_counts["gujarati"] += 1
+        elif 0x0900 <= code_point <= 0x097F:  # Devanagari Unicode block
+            char_counts["devanagari"] += 1
+        elif 0x0600 <= code_point <= 0x06FF or 0x0750 <= code_point <= 0x077F:  # Arabic
+            char_counts["arabic"] += 1
+        elif 0x4E00 <= code_point <= 0x9FFF:  # CJK Unified Ideographs
+            char_counts["chinese"] += 1
+        elif 0x0D80 <= code_point <= 0x0DFF:  # Sinhala
+            char_counts["sinhala"] += 1
+        elif 0x0E00 <= code_point <= 0x0E7F:  # Thai
+            char_counts["thai"] += 1
+
+    # Return script with highest count (if > 30% of non-space chars)
+    total_chars = sum(char_counts.values())
+    if total_chars == 0:
+        return "unknown"
+
+    for script, count in char_counts.items():
+        if count / total_chars > 0.3:
+            return script
+
+    return "unknown"
+
+
+def get_expected_scripts(language: str) -> list[str]:
+    """
+    Return expected writing scripts for a given language.
+    Handles languages that can be written in multiple scripts.
+    """
+    script_map = {
+        "en": ["latin"],
+        "es": ["latin"],
+        "fr": ["latin"],
+        "de": ["latin"],
+        "pt": ["latin"],
+        "gu": ["gujarati", "devanagari"],  # Gujarati can be written in both
+        "hi": ["devanagari"],
+        "ar": ["arabic"],
+        "zh": ["chinese"],
+    }
+    return script_map.get(language, ["unknown"])
+
+
 async def call_whisper(client: httpx.AsyncClient, audio_data: bytes, filename: str, content_type: str, language: str, api_key: str) -> dict:
     """Helper to call Whisper API with a specific language hint."""
     whisper_data: dict = {"model": "whisper-large-v3", "response_format": "json"}
@@ -781,8 +848,115 @@ async def transcribe_audio(
 
             if not text:
                 raise HTTPException(status_code=500, detail="Failed to transcribe interpreter audio")
+        elif role == "patient" and patient_lang != "auto" and patient_lang != provider_lang:
+            # For patient in non-English scenarios: Use dual-language detection
+            # This helps with Gujarati, Hindi, Arabic, Chinese, etc.
+            print(f"🔄 Patient dual-language detection: trying auto and {patient_lang}")
+
+            result_auto, result_patient = await asyncio.gather(
+                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key),
+                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key),
+            )
+
+            candidate_auto = {
+                "text": result_auto.get("text", "").strip(),
+                "duration": result_auto.get("duration", 0.0),
+                "lang": result_auto.get("language", "unknown"),
+            }
+            candidate_patient = {
+                "text": result_patient.get("text", "").strip(),
+                "duration": result_patient.get("duration", 0.0),
+                "lang": patient_lang,
+            }
+
+            print(f"   📊 Candidates:")
+            print(f"      auto: '{candidate_auto['text'][:50]}...' (lang={candidate_auto['lang']}, len={len(candidate_auto['text'])})")
+            print(f"      {patient_lang}_hint: '{candidate_patient['text'][:50]}...' (len={len(candidate_patient['text'])})")
+
+            # Use patient hint if auto gives gibberish or wrong script
+            auto_text = candidate_auto["text"]
+            patient_text = candidate_patient["text"]
+
+            # Detect if auto transcript contains valid patient language script
+            has_valid_script = detect_script(auto_text) in get_expected_scripts(patient_lang)
+
+            if has_valid_script or candidate_auto["lang"] == patient_lang:
+                # Auto is good - use it
+                text = auto_text
+                duration = candidate_auto["duration"]
+                detected_language = patient_lang
+                print(f"   ✅ Using auto transcript (detected {patient_lang} script)")
+            elif patient_text and len(patient_text) > 0:
+                # Auto failed, use patient hint
+                text = patient_text
+                duration = candidate_patient["duration"]
+                detected_language = patient_lang
+                print(f"   ✅ Using {patient_lang} hint transcript (auto gave wrong script)")
+            else:
+                # Both failed, fallback to auto
+                text = auto_text
+                duration = candidate_auto["duration"]
+                detected_language = candidate_auto["lang"]
+                print(f"   ⚠️ Both transcripts questionable, using auto")
+
+            if not text:
+                raise HTTPException(status_code=500, detail="Failed to transcribe patient audio")
+        elif role == "patient" and patient_lang == "auto":
+            # Patient language not specified - try to auto-detect with multi-language hints
+            # This helps when frontend doesn't know patient language yet
+            print(f"🔄 Patient language auto-detection: trying common languages")
+
+            # Try auto first, then common non-English languages if auto looks wrong
+            result_auto = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key)
+            auto_text = result_auto.get("text", "").strip()
+            auto_lang = result_auto.get("language", "unknown")
+            auto_script = detect_script(auto_text)
+
+            print(f"   📊 Auto result: '{auto_text[:50]}...' (lang={auto_lang}, script={auto_script})")
+
+            # If auto gives wrong script (Sinhala, Thai when we expect Gujarati/Hindi/Arabic),
+            # try common Indic languages
+            if auto_script in ["sinhala", "thai"] or (auto_lang == "unknown" and len(auto_text) > 0):
+                print(f"   ⚠️ Auto gave suspicious script ({auto_script}), trying Gujarati/Hindi hints")
+
+                result_gu, result_hi, result_ar = await asyncio.gather(
+                    call_whisper(client, audio_data, filename, content_type, "gu", groq_api_key),
+                    call_whisper(client, audio_data, filename, content_type, "hi", groq_api_key),
+                    call_whisper(client, audio_data, filename, content_type, "ar", groq_api_key),
+                )
+
+                candidates = [
+                    ("gu", result_gu.get("text", "").strip(), detect_script(result_gu.get("text", ""))),
+                    ("hi", result_hi.get("text", "").strip(), detect_script(result_hi.get("text", ""))),
+                    ("ar", result_ar.get("text", "").strip(), detect_script(result_ar.get("text", ""))),
+                ]
+
+                # Pick the one with correct script
+                for lang_code, candidate_text, candidate_script in candidates:
+                    expected = get_expected_scripts(lang_code)
+                    print(f"      {lang_code}_hint: '{candidate_text[:40]}...' (script={candidate_script})")
+                    if candidate_script in expected and len(candidate_text) > 0:
+                        text = candidate_text
+                        detected_language = lang_code
+                        duration = result_auto.get("duration", 0.0)
+                        print(f"   ✅ Using {lang_code} hint (valid {candidate_script} script)")
+                        break
+                else:
+                    # No good candidate, use auto
+                    text = auto_text
+                    detected_language = auto_lang
+                    duration = result_auto.get("duration", 0.0)
+                    print(f"   ⚠️ No valid Indic script found, using auto")
+            else:
+                # Auto is reasonable
+                text = auto_text
+                detected_language = auto_lang
+                duration = result_auto.get("duration", 0.0)
+
+            if not text:
+                raise HTTPException(status_code=500, detail="Failed to transcribe patient audio")
         else:
-            # For provider/patient or when languages are same: ALWAYS use auto-detect
+            # For provider or when languages are same: ALWAYS use auto-detect
             # CRITICAL: Language hints cause Whisper to TRANSLATE, not transcribe!
             # We must ALWAYS use "auto" to get accurate transcription in the original language
             result = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key)
@@ -795,13 +969,24 @@ async def transcribe_audio(
     # Create transcript segment with unique ID for error mapping
     segment_id = f"seg_{uuid.uuid4().hex[:12]}"
 
+    # ═══════════════════════════════════════════════════════════
     # ASR RELIABILITY CHECK: Detect when transcription is likely unreliable
+    # ═══════════════════════════════════════════════════════════
     asr_reliable = True
-    if detected_language == "unknown" or detected_language not in ["en", "es", "gu", "hi", "pt", "zh", "ar", "fr", "de", "auto"]:
-        asr_reliable = False
-        print(f"   ⚠️ ASR UNRELIABLE: Unknown or unsupported language detected: {detected_language}")
 
-    # Check for offensive/harmful content first - these MUST go to tribunal regardless of entropy
+    # Detect script in the transcript
+    detected_script = detect_script(text)
+    print(f"   📝 Detected script: {detected_script}")
+
+    # For patient/interpreter, check if script matches expected language
+    expected_scripts: list[str] = []
+    if role == "patient" and patient_lang != "auto":
+        expected_scripts = get_expected_scripts(patient_lang)
+    elif role == "interpreter" and patient_lang != "auto":
+        # Interpreter can use both provider and patient scripts
+        expected_scripts = get_expected_scripts(provider_lang) + get_expected_scripts(patient_lang)
+
+    # Check for offensive/harmful content first - these MUST go to tribunal regardless of script/entropy
     offensive_keywords = ["retard", "stupid", "idiot", "dumb", "fat", "gordo", "ugly", "feo",
                          "estúpido", "idiota", "tonto", "pendejo", "imbécil"]
     has_offensive_content = any(keyword in text.lower() for keyword in offensive_keywords)
@@ -809,10 +994,42 @@ async def transcribe_audio(
     if has_offensive_content:
         # Override ASR unreliable - tribunal MUST review offensive statements
         asr_reliable = True
-        print(f"   ⚠️ OFFENSIVE CONTENT DETECTED: Forcing tribunal review regardless of entropy")
+        detected_language = provider_lang  # Assume provider language for offensive content
+        print(f"   ⚠️ OFFENSIVE CONTENT DETECTED: Forcing tribunal review regardless of script/entropy")
 
-    # Check for high character entropy (gibberish detection)
-    elif len(text) > 5:
+    # Check if script matches expected language (Indic scripts are valid, not gibberish!)
+    elif detected_script in expected_scripts and detected_script in ["gujarati", "devanagari", "arabic", "chinese"]:
+        # Valid Indic/non-Latin script detected - mark as reliable even if Whisper says unknown
+        asr_reliable = True
+        # Override language if Whisper said unknown but we detected valid script
+        if detected_language == "unknown" or detected_language == "auto":
+            if role == "patient" and patient_lang != "auto":
+                detected_language = patient_lang
+                print(f"   ✅ Valid {detected_script} script detected for {patient_lang} - marking as reliable")
+            elif role == "interpreter":
+                # Guess based on script
+                if detected_script in ["gujarati", "devanagari"] and patient_lang in ["gu", "hi"]:
+                    detected_language = patient_lang
+                    print(f"   ✅ Valid {detected_script} script detected - marking as {patient_lang}")
+
+    # Check for unknown language with wrong script
+    elif detected_language == "unknown" or detected_language not in ["en", "es", "gu", "hi", "pt", "zh", "ar", "fr", "de", "auto"]:
+        # Check if script is completely wrong (e.g., Sinhala or Thai when expecting Gujarati)
+        if detected_script in ["sinhala", "thai"] and expected_scripts and detected_script not in expected_scripts:
+            asr_reliable = False
+            print(f"   ⚠️ ASR UNRELIABLE: Wrong script {detected_script} (expected {expected_scripts}), likely Whisper hallucination")
+        elif len(text) < 5:
+            # Very short unknown language - probably noise
+            asr_reliable = False
+            print(f"   ⚠️ ASR UNRELIABLE: Unknown language with very short text ({len(text)} chars)")
+        else:
+            # Unknown language but reasonable length - might be valid
+            # Only mark unreliable if we have strong evidence
+            print(f"   ⚠️ Unknown language detected: {detected_language}, but text seems reasonable")
+
+    # Check for high character entropy (gibberish detection) - BUT ONLY FOR LATIN SCRIPTS
+    # Indic scripts naturally have high entropy, so we skip this check for them
+    elif detected_script == "latin" and len(text) > 5:
         # Simple entropy check: count unique characters vs length
         unique_chars = len(set(text.replace(" ", "").lower()))
         total_chars = len(text.replace(" ", ""))
