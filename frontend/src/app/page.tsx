@@ -7,9 +7,9 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useSarasvatiSimple } from "@/hooks/useSarasvatiSimple";
-import { Wifi, WifiOff, Mic, MicOff, Send, AlertTriangle } from "lucide-react";
+import { Wifi, WifiOff, Mic, MicOff, Send, AlertTriangle, Settings } from "lucide-react";
 import { StreamRole } from "@/types/sarasvati";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -29,6 +29,8 @@ export default function DashboardPage() {
   const [manualText, setManualText] = useState("");
   const [providerLang, setProviderLang] = useState("en");
   const [patientLang, setPatientLang] = useState("gu"); // Default Gujarati for testing
+  const [asrBackend, setAsrBackend] = useState<"groq" | "openai">("openai");
+  const [asrBackendLoading, setAsrBackendLoading] = useState(false);
 
   const LANGUAGES = [
     { code: "en", name: "English" },
@@ -42,6 +44,47 @@ export default function DashboardPage() {
     { code: "de", name: "German" },
     { code: "auto", name: "Auto-detect" },
   ];
+
+  // Fetch current ASR backend configuration
+  useEffect(() => {
+    const fetchAsrConfig = async () => {
+      try {
+        const httpUrl = BACKEND_URL.replace("ws://", "http://").replace("wss://", "https://");
+        const response = await fetch(`${httpUrl}/admin/asr-config`);
+        if (response.ok) {
+          const data = await response.json();
+          const defaultBackend = data.current_config?.default || "openai-gpt4o-transcribe";
+          setAsrBackend(defaultBackend.startsWith("openai") ? "openai" : "groq");
+        }
+      } catch (error) {
+        console.error("Failed to fetch ASR config:", error);
+      }
+    };
+    fetchAsrConfig();
+  }, []);
+
+  // Switch ASR backend
+  const handleSwitchAsrBackend = async (backend: "groq" | "openai") => {
+    setAsrBackendLoading(true);
+    try {
+      const httpUrl = BACKEND_URL.replace("ws://", "http://").replace("wss://", "https://");
+      const response = await fetch(`${httpUrl}/admin/asr-config/switch-default`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backend }),
+      });
+      if (response.ok) {
+        setAsrBackend(backend);
+        console.log(`Switched ASR backend to ${backend}`);
+      } else {
+        console.error("Failed to switch ASR backend:", await response.text());
+      }
+    } catch (error) {
+      console.error("Error switching ASR backend:", error);
+    } finally {
+      setAsrBackendLoading(false);
+    }
+  };
 
   const handleSendManual = () => {
     if (manualText.trim()) {
@@ -178,9 +221,51 @@ export default function DashboardPage() {
             </div>
           </div>
 
+          {/* ASR Backend Selector */}
+          <div className="mb-4">
+            <label className="block text-sm text-gray-400 mb-2 flex items-center gap-2">
+              <Settings size={16} />
+              ASR Backend (Speech Recognition Engine)
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleSwitchAsrBackend("groq")}
+                disabled={asrBackendLoading || asrBackend === "groq"}
+                className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors ${
+                  asrBackend === "groq"
+                    ? "bg-emerald-600 text-white ring-2 ring-emerald-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {asrBackend === "groq" && "✓ "}Groq Whisper Large V3
+              </button>
+              <button
+                onClick={() => handleSwitchAsrBackend("openai")}
+                disabled={asrBackendLoading || asrBackend === "openai"}
+                className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors ${
+                  asrBackend === "openai"
+                    ? "bg-blue-600 text-white ring-2 ring-blue-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {asrBackend === "openai" && "✓ "}OpenAI Whisper-1
+              </button>
+            </div>
+            {asrBackendLoading && (
+              <p className="text-xs text-gray-500 mt-1 animate-pulse">Switching backend...</p>
+            )}
+            <p className="text-xs text-gray-500 mt-2">
+              Current: <span className="font-semibold text-gray-300">
+                {asrBackend === "groq" ? "Groq Whisper Large V3" : "OpenAI Whisper-1 (with medical context)"}
+              </span>
+            </p>
+          </div>
+
           {/* Microphone Recording */}
           <div className="mb-6">
-            <label className="block text-sm text-gray-400 mb-2">Voice Input (Groq Whisper)</label>
+            <label className="block text-sm text-gray-400 mb-2">
+              Voice Input ({asrBackend === "groq" ? "Groq Whisper" : "OpenAI Whisper"})
+            </label>
             <button
               onClick={handleToggleRecording}
               disabled={!connectionState.websocketConnected}
