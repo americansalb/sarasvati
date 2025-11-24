@@ -255,6 +255,13 @@ _processing_task: Optional[asyncio.Task] = None
 # Session lock to prevent race conditions on start/stop
 _session_lock = asyncio.Lock()
 
+# Turn/State Management (prevent ghost recordings)
+from collections import deque
+from time import time as get_time
+_turn_history: deque = deque(maxlen=10)  # Track last 10 turns with timestamps
+_last_turn_role: Optional[str] = None
+_last_turn_time: float = 0.0
+
 
 # ===== Schema Converters (Match Phase 4 exactly) =====
 
@@ -641,6 +648,7 @@ async def stop_session() -> SessionStopResponse:
     Returns session statistics.
     """
     global session_active, session_id, session_start_time, _processing_task, engine, current_scenario
+    global _turn_history, _last_turn_role, _last_turn_time
 
     if not session_active:
         raise HTTPException(status_code=409, detail="No active session")
@@ -678,6 +686,11 @@ async def stop_session() -> SessionStopResponse:
     session_id = None
     session_start_time = None
     current_scenario = None  # Clear scenario metadata
+
+    # Reset turn tracking
+    _turn_history.clear()
+    _last_turn_role = None
+    _last_turn_time = 0.0
 
     return SessionStopResponse(
         session_id=current_session_id or "unknown",
@@ -850,6 +863,26 @@ async def transcribe_audio(
     - Interpreter: Dual-language detection (provider_lang + patient_lang)
     """
     global engine, session_active, current_scenario
+    global _turn_history, _last_turn_role, _last_turn_time
+
+    # TURN VALIDATION: Check for suspicious rapid-fire recordings from same role
+    current_time = get_time()
+    if _last_turn_role == role and (current_time - _last_turn_time) < 2.0:
+        # Same role recording within 2 seconds - check recent history
+        recent_same_role = sum(1 for r, t in _turn_history if r == role and (current_time - t) < 10.0)
+        if recent_same_role >= 3:
+            print(f"⚠️ TURN ANOMALY: {role} has recorded {recent_same_role+1} times in 10s - marking as non-gradable")
+            # Still process ASR but tag segment as non-gradable
+            segment_is_suspect = True
+        else:
+            segment_is_suspect = False
+    else:
+        segment_is_suspect = False
+
+    # Update turn tracking
+    _turn_history.append((role, current_time))
+    _last_turn_role = role
+    _last_turn_time = current_time
 
     # ROLE-BASED LANGUAGE ENFORCEMENT using scenario metadata
     if current_scenario:
