@@ -116,9 +116,9 @@ class GroqProvider(ASRProvider):
 
 
 class OpenAIProvider(ASRProvider):
-    """OpenAI ASR provider (supports gpt-4o-audio-preview, gpt-4o-mini-audio-preview, whisper-1)."""
+    """OpenAI ASR provider (whisper-1 for /v1/audio/transcriptions)."""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o-audio-preview"):
+    def __init__(self, api_key: str, model: str = "whisper-1"):
         super().__init__(api_key)
         self.model = model
 
@@ -195,15 +195,13 @@ class ASRProviderFactory:
         """
         if backend == "groq":
             return GroqProvider(groq_key)
-        elif backend == "openai-gpt4o-transcribe":
-            return OpenAIProvider(openai_key, model="gpt-4o-audio-preview")
-        elif backend == "openai-gpt4o-mini-transcribe":
-            return OpenAIProvider(openai_key, model="gpt-4o-mini-audio-preview")
-        elif backend == "openai-whisper1":
+        elif backend in ["openai-gpt4o-transcribe", "openai-gpt4o-mini-transcribe", "openai-whisper1"]:
+            # All OpenAI transcriptions use whisper-1 model for now
+            # gpt-4o-audio models are for Realtime API, not transcriptions API
             return OpenAIProvider(openai_key, model="whisper-1")
         else:
-            # Default to Groq
-            return GroqProvider(groq_key)
+            # Default to OpenAI
+            return OpenAIProvider(openai_key, model="whisper-1")
 
 
 class ASRConfig:
