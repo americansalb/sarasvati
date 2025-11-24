@@ -737,11 +737,13 @@ class BatchAligner:
         # After aligning both outbound and inbound, check for interpreter segments
         # that don't match EITHER provider or patient (potential fabrications)
 
-        # Track which interpreter segments were matched
+        # Track which interpreter segments were matched (from ALL matched pairs, not just this cycle)
         matched_interpreter_timestamps = set()
-        for alignment in alignments:
-            if alignment["interpreter_segment"]:
-                matched_interpreter_timestamps.add(alignment["interpreter_segment"]["timestamp"])
+
+        # CRITICAL FIX: Check against ALL matched pairs in state, not just current cycle
+        for matched_pair in state["matched_pairs"]:
+            if matched_pair.get("interpreter_segment"):
+                matched_interpreter_timestamps.add(matched_pair["interpreter_segment"]["timestamp"])
 
         # Check for unmatched interpreter segments (fabrications)
         for entry in interpreter_snapshot:
