@@ -18,6 +18,9 @@ export interface TranscriptSegment {
   is_final: boolean;
   speaker_id?: string;
   segment_id?: string;  // Unique ID for error-transcript mapping
+  detected_language?: string;
+  english_translation?: string;  // English translation for non-English text (for QA monitors)
+  transliteration?: string;  // Romanized version of non-Latin scripts
 }
 
 export interface MedicalEntity {

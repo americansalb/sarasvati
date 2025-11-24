@@ -417,9 +417,9 @@ export default function DashboardPage() {
             <p className="text-gray-500 italic">No transcripts yet. Connect and start speaking or typing.</p>
           ) : (
             sessionState.transcripts.map((t, idx) => (
-              <div key={idx} className="flex gap-3">
+              <div key={idx} className="flex gap-3 py-2">
                 <span
-                  className={`text-xs px-2 py-1 rounded capitalize ${
+                  className={`text-xs px-2 py-1 rounded capitalize self-start ${
                     t.role === "provider"
                       ? "bg-blue-700"
                       : t.role === "interpreter"
@@ -429,7 +429,24 @@ export default function DashboardPage() {
                 >
                   {t.role}
                 </span>
-                <span className="text-gray-300">{t.text}</span>
+                <div className="flex flex-col gap-1">
+                  <span className="text-gray-300">{t.text}</span>
+                  {t.transliteration && t.transliteration !== t.text && (
+                    <span className="text-gray-500 text-sm italic">
+                      Transliteration: {t.transliteration}
+                    </span>
+                  )}
+                  {t.english_translation && (
+                    <span className="text-cyan-400 text-sm">
+                      🌐 English: {t.english_translation}
+                    </span>
+                  )}
+                  {t.detected_language && t.detected_language !== "en" && t.detected_language !== "unknown" && (
+                    <span className="text-gray-600 text-xs">
+                      [{t.detected_language}]
+                    </span>
+                  )}
+                </div>
               </div>
             ))
           )}

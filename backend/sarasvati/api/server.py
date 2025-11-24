@@ -647,6 +647,8 @@ class TranscriptionResponse(BaseModel):
     role: str
     duration: float
     detected_language: str = "auto"
+    english_translation: Optional[str] = None
+    transliteration: Optional[str] = None
 
 
 def detect_script(text: str) -> str:
@@ -1095,6 +1097,23 @@ async def transcribe_audio(
     if session_active and engine:
         await engine.ingest_transcript(segment)
 
+    # Add English translation for non-English segments (for QA monitors)
+    english_translation = None
+    transliteration = None
+
+    if detected_language not in ["en", "unknown", "auto"] and len(text.strip()) > 0:
+        # Initialize translation service
+        openai_key = os.getenv("OPENAI_API_KEY", "")
+        if openai_key:
+            try:
+                translation_service = TranslationService(openai_key, model="gpt-4o-mini")
+                translation_result = await translation_service.process_non_english(text, detected_language)
+                english_translation = translation_result.translation
+                transliteration = translation_result.transliteration
+                print(f"   🌐 Translation: {text[:40]}... → {english_translation[:40] if english_translation else 'N/A'}...")
+            except Exception as e:
+                print(f"   ⚠️ Translation failed: {str(e)}")
+
     # Broadcast transcript to all clients
     message = build_ws_message("transcript", {
         "role": role,
@@ -1105,10 +1124,19 @@ async def transcribe_audio(
         "is_final": True,
         "detected_language": detected_language,
         "segment_id": segment_id,
+        "english_translation": english_translation,
+        "transliteration": transliteration,
     })
     await manager.broadcast(message)
 
-    return TranscriptionResponse(text=text, role=role, duration=duration, detected_language=detected_language)
+    return TranscriptionResponse(
+        text=text,
+        role=role,
+        duration=duration,
+        detected_language=detected_language,
+        english_translation=english_translation,
+        transliteration=transliteration
+    )
 
 
 # ===== Admin API Endpoints =====
