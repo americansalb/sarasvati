@@ -558,17 +558,18 @@ class ClinicalDebateOrchestrator:
 
         source_unreliable = is_asr_unreliable(source_segment)
         interpreter_unreliable = is_asr_unreliable(interpreter_segment)
-        patient_unreliable = is_asr_unreliable(patient_segment)
 
-        if source_unreliable or interpreter_unreliable or patient_unreliable:
+        # FIXED: Only check source and interpreter segments for this tribunal case
+        # Don't redundantly check patient_segment (triadic context is separate)
+        if source_unreliable or interpreter_unreliable:
             # ASR failed - emit system error, don't judge interpreter
             unreliable_segments = []
             if source_unreliable:
-                unreliable_segments.append(f"{source_role} (lang={source_segment.get('detected_language', 'unknown')})")
+                source_lang = source_segment.get('detected_language', 'unknown') if source_segment else 'unknown'
+                unreliable_segments.append(f"{source_role} segment (lang={source_lang})")
             if interpreter_unreliable:
-                unreliable_segments.append(f"interpreter (lang={interpreter_segment.get('detected_language', 'unknown')})")
-            if patient_unreliable:
-                unreliable_segments.append(f"patient (lang={patient_segment.get('detected_language', 'unknown')})")
+                interp_lang = interpreter_segment.get('detected_language', 'unknown') if interpreter_segment else 'unknown'
+                unreliable_segments.append(f"interpreter segment (lang={interp_lang})")
 
             asr_error = ClinicalError(
                 error_id=f"err_{datetime.utcnow().timestamp()}_asr",
@@ -576,7 +577,7 @@ class ClinicalDebateOrchestrator:
                 error_type="asr_unreliable",
                 provider_entity=None,
                 interpreter_entity=None,
-                description=f"ASR could not reliably transcribe {', '.join(unreliable_segments)}. Interpreter judgment not possible for this segment.",
+                description=f"ASR transcription unreliable for {', '.join(unreliable_segments)}. Cannot judge interpreter on corrupted data.",
                 arbiter_reasoning="ASR transcription failed or produced gibberish. Cannot judge interpreter performance on corrupted data.",
                 confidence=0.3,
                 detected_at=datetime.utcnow(),
