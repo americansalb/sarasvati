@@ -72,30 +72,39 @@ function ErrorCard({ error }: { error: ClinicalError }) {
   const Icon = config.icon;
   const timestamp = new Date(error.detected_at);
 
+  // Detect system errors (prefixed with "system_") - these are NOT interpreter errors
+  const isSystemError = error.error_type?.startsWith("system_");
+
   return (
     <div
       className={clsx(
         "error-card rounded-lg border-l-4 p-4 transition-all",
-        config.bgColor,
-        config.borderColor,
+        isSystemError ? "bg-gray-800/50 border-gray-600" : config.bgColor,
+        isSystemError ? "" : config.borderColor,
         "hover:shadow-lg"
       )}
     >
       {/* Header */}
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-start gap-3 flex-1">
-          <Icon className={clsx("w-5 h-5 mt-0.5", config.color)} />
+          <Icon className={clsx("w-5 h-5 mt-0.5", isSystemError ? "text-gray-400" : config.color)} />
 
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-1">
-              <span
-                className={clsx(
-                  "px-2 py-0.5 rounded text-xs font-bold uppercase",
-                  config.color
-                )}
-              >
-                {config.label}
-              </span>
+              {isSystemError ? (
+                <span className="px-2 py-0.5 rounded text-xs font-bold uppercase bg-gray-700 text-gray-300 border border-gray-600">
+                  🔧 SYSTEM DIAGNOSTIC
+                </span>
+              ) : (
+                <span
+                  className={clsx(
+                    "px-2 py-0.5 rounded text-xs font-bold uppercase",
+                    config.color
+                  )}
+                >
+                  {config.label}
+                </span>
+              )}
               <span className="text-xs text-gray-500">
                 {error.error_type.replace(/_/g, " ")}
               </span>
@@ -110,6 +119,12 @@ function ErrorCard({ error }: { error: ClinicalError }) {
             <p className="text-sm text-gray-200 font-medium">
               {error.description}
             </p>
+
+            {isSystemError && (
+              <p className="text-xs text-yellow-400 mt-2 font-semibold">
+                ⚠️ This is a backend issue, NOT an interpreter error. Do not count toward interpreter QA metrics.
+              </p>
+            )}
           </div>
         </div>
 
@@ -243,8 +258,12 @@ export function ArbiterLog({
   onClearErrors,
   className = "",
 }: ArbiterLogProps) {
-  // Count by severity
-  const severityCounts = errors.reduce(
+  // Separate system errors from interpreter errors
+  const interpreterErrors = errors.filter(e => !e.error_type?.startsWith("system_"));
+  const systemErrors = errors.filter(e => e.error_type?.startsWith("system_"));
+
+  // Count by severity (interpreter errors only - exclude system diagnostics)
+  const severityCounts = interpreterErrors.reduce(
     (acc, error) => {
       acc[error.severity] = (acc[error.severity] || 0) + 1;
       return acc;
@@ -263,6 +282,11 @@ export function ArbiterLog({
           </h2>
           <p className="text-sm text-gray-400 mt-1">
             Real-time clinical error detection
+            {systemErrors.length > 0 && (
+              <span className="ml-2 text-yellow-400">
+                ({systemErrors.length} system diagnostic{systemErrors.length !== 1 ? "s" : ""})
+              </span>
+            )}
           </p>
         </div>
 

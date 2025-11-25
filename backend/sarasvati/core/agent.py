@@ -603,18 +603,36 @@ class ClinicalDebateOrchestrator:
         if case_type in (TribunalCaseType.ALIGNED_OUTBOUND, TribunalCaseType.OMISSION_OUTBOUND):
             source_role = "provider"
             source_segment = provider_segment
-            # Provider = ground truth, use smooth translation
-            source_text = provider_segment.get("text_english_smooth") or provider_segment.get("text_english") or provider_segment["text"] if provider_segment else ""
             target_role = "patient"
             direction = "Provider → Interpreter → Patient"
+
+            # Provider = ground truth, use smooth translation (explicit precedence)
+            if provider_segment:
+                source_text = (
+                    provider_segment.get("text_english_smooth")
+                    or provider_segment.get("text_english")  # backwards compat
+                    or provider_segment.get("text")
+                    or ""
+                )
+            else:
+                source_text = ""
 
         elif case_type in (TribunalCaseType.ALIGNED_INBOUND, TribunalCaseType.OMISSION_INBOUND):
             source_role = "patient"
             source_segment = patient_segment
-            # Patient = ground truth, use smooth translation
-            source_text = patient_segment.get("text_english_smooth") or patient_segment.get("text_english") or patient_segment["text"] if patient_segment else ""
             target_role = "provider"
             direction = "Patient → Interpreter → Provider"
+
+            # Patient = ground truth, use smooth translation (explicit precedence)
+            if patient_segment:
+                source_text = (
+                    patient_segment.get("text_english_smooth")
+                    or patient_segment.get("text_english")  # backwards compat
+                    or patient_segment.get("text")
+                    or ""
+                )
+            else:
+                source_text = ""
 
         elif case_type == TribunalCaseType.FABRICATION:
             source_role = "none"
@@ -627,15 +645,34 @@ class ClinicalDebateOrchestrator:
             # Fallback for unknown case types
             source_role = "provider"
             source_segment = provider_segment
-            # Provider = ground truth, use smooth translation
-            source_text = provider_segment.get("text_english_smooth") or provider_segment.get("text_english") or provider_segment["text"] if provider_segment else ""
             target_role = "patient"
             direction = "Unknown case type"
+
+            # Provider = ground truth, use smooth translation (explicit precedence)
+            if provider_segment:
+                source_text = (
+                    provider_segment.get("text_english_smooth")
+                    or provider_segment.get("text_english")  # backwards compat
+                    or provider_segment.get("text")
+                    or ""
+                )
+            else:
+                source_text = ""
 
         # Interpreter uses LITERAL translation (error-preserving)
         # This is CRITICAL: we must see the interpreter's actual errors
         # Example: "Lo siento porque yo escucho" → "I'm sorry because I listen" (NOT "I'm sorry to hear that")
-        interpreter_text = interpreter_segment.get("text_english_literal") or interpreter_segment.get("text_english") or interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
+        # FIXED: Explicit precedence to avoid operator precedence bugs
+        if interpreter_segment:
+            interpreter_text = (
+                interpreter_segment.get("text_english_literal")  # Priority 1: literal for interpreter eval
+                or interpreter_segment.get("text_english_smooth")  # Priority 2: smooth if literal not available
+                or interpreter_segment.get("text_english")  # Priority 3: backwards compat
+                or interpreter_segment.get("text")  # Priority 4: raw text
+                or "[NO INTERPRETATION]"
+            )
+        else:
+            interpreter_text = "[NO INTERPRETATION]"
 
         # ═══════════════════════════════════════════════════════════
         # ALIGNMENT SANITY CHECK: ALIGNED cases must have valid source
@@ -645,22 +682,27 @@ class ClinicalDebateOrchestrator:
         if case_type in (TribunalCaseType.ALIGNED_OUTBOUND, TribunalCaseType.ALIGNED_INBOUND):
             if not source_segment or not source_text or not source_text.strip():
                 print(f"🚨 TRIBUNAL BUG: {case_type} case with NO_SOURCE segment")
-                print(f"   Source segment: {source_segment is not None}")
+                print(f"   Source segment exists: {source_segment is not None}")
                 print(f"   Source text: '{source_text[:50] if source_text else 'EMPTY'}...'")
-                print(f"   This is an alignment layer bug - returning NO_ERRORS to avoid false positives")
+                print(f"   Segment IDs for debugging:")
+                print(f"     provider_segment_id: {provider_segment.get('segment_id') if provider_segment else None}")
+                print(f"     patient_segment_id: {patient_segment.get('segment_id') if patient_segment else None}")
+                print(f"     interpreter_segment_id: {interpreter_segment.get('segment_id') if interpreter_segment else None}")
+                print(f"   This is an alignment layer bug - returning system diagnostic (NOT interpreter error)")
 
                 processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
 
-                # Return system error, not interpreter error
+                # Return system diagnostic error (prefixed with "system_" for UI filtering)
+                # This is NOT an interpreter error - it's a backend alignment bug
                 system_error = ClinicalError(
                     error_id=f"err_{datetime.utcnow().timestamp()}_alignment_bug",
                     severity=ErrorSeverity.MEDIUM,
-                    error_type="system_error",
+                    error_type="system_alignment_bug",  # system_ prefix excludes from interpreter metrics
                     provider_entity=None,
                     interpreter_entity=None,
-                    description=f"Alignment bug: {case_type} case created without valid source segment",
-                    arbiter_reasoning="System error: Alignment layer created ALIGNED case without source text. This is not an interpreter error.",
-                    confidence=0.9,
+                    description=f"Backend alignment bug: {case_type} case created without valid source segment. This is NOT an interpreter error - do not count toward interpreter QA metrics.",
+                    arbiter_reasoning="System diagnostic: Alignment layer created ALIGNED case without source text. This indicates a bug in the Temporal-Semantic Buffer or DTW alignment, not interpreter performance.",
+                    confidence=0.95,
                     detected_at=datetime.utcnow(),
                     alignment_info=alignment,
                     is_system_error=True,
@@ -672,8 +714,8 @@ class ClinicalDebateOrchestrator:
 
                 return AgentDebateResult(
                     extractor_entities=[],
-                    monitor_findings=[f"System bug: {case_type} with no source text"],
-                    arbiter_decision="Alignment layer bug - no source segment for ALIGNED case",
+                    monitor_findings=[f"System diagnostic: {case_type} with no source text (alignment layer bug)"],
+                    arbiter_decision="Alignment layer bug - no source segment for ALIGNED case. Not grading interpreter.",
                     detected_errors=[system_error],
                     processing_time_ms=processing_time,
                 )
