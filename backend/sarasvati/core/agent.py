@@ -496,31 +496,110 @@ If no errors: return {{"verdict": "NO_ERRORS", "reasoning": "...", "override_not
 
             content = response.choices[0].message.content
 
-            # Parse JSON from response
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group())
-                reasoning = parsed.get("reasoning", "No reasoning provided")
-                if parsed.get("override_notes"):
-                    reasoning += f" [OVERRIDE: {parsed['override_notes']}]"
+            # ═══════════════════════════════════════════════════════════
+            # ROBUST JSON EXTRACTION
+            # ═══════════════════════════════════════════════════════════
+            # The Arbiter sometimes returns valid JSON followed by extra text, causing
+            # "Extra data: line X column Y" errors. We need to extract ONLY the first
+            # complete JSON object, ignoring any trailing content.
 
-                # ENFORCE SEVERITY CALIBRATION: Medical fabrications MUST be CRITICAL
-                errors = parsed.get("errors", [])
-                for error in errors:
-                    error_type = error.get("type", "").lower()
+            # Try to find the first complete JSON object by matching braces
+            def extract_first_json(text: str) -> Optional[str]:
+                """Extract the first complete JSON object from text, handling nested braces."""
+                first_brace = text.find('{')
+                if first_brace == -1:
+                    return None
 
-                    # Force CRITICAL for medical fabrications
-                    if error_type in ["fabrication_medical", "fabrication_diagnosis", "fabrication_treatment"]:
-                        if error.get("severity") != "critical":
-                            print(f"⚠️ SEVERITY OVERRIDE: {error_type} changed from {error.get('severity')} to CRITICAL")
-                            error["severity"] = "critical"
+                brace_count = 0
+                in_string = False
+                escape_next = False
 
-                return (reasoning, errors)
+                for i in range(first_brace, len(text)):
+                    char = text[i]
+
+                    # Handle escape sequences in strings
+                    if escape_next:
+                        escape_next = False
+                        continue
+
+                    if char == '\\':
+                        escape_next = True
+                        continue
+
+                    # Track string boundaries (ignore braces inside strings)
+                    if char == '"':
+                        in_string = not in_string
+                        continue
+
+                    if not in_string:
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            # Found the closing brace for the first complete JSON object
+                            if brace_count == 0:
+                                return text[first_brace:i+1]
+
+                return None  # No complete JSON object found
+
+            json_str = extract_first_json(content)
+
+            if json_str:
+                try:
+                    parsed = json.loads(json_str)
+
+                    # Log if there was extra data after the JSON (for debugging)
+                    remaining = content[content.find(json_str) + len(json_str):].strip()
+                    if remaining:
+                        print(f"⚠️ ARBITER WARNING: Extra content after JSON (length={len(remaining)})")
+                        print(f"   First 100 chars: {remaining[:100]}")
+
+                    reasoning = parsed.get("reasoning", "No reasoning provided")
+                    if parsed.get("override_notes"):
+                        reasoning += f" [OVERRIDE: {parsed['override_notes']}]"
+
+                    # ENFORCE SEVERITY CALIBRATION: Medical fabrications MUST be CRITICAL
+                    errors = parsed.get("errors", [])
+                    for error in errors:
+                        error_type = error.get("type", "").lower()
+
+                        # Force CRITICAL for medical fabrications
+                        if error_type in ["fabrication_medical", "fabrication_diagnosis", "fabrication_treatment"]:
+                            if error.get("severity") != "critical":
+                                print(f"⚠️ SEVERITY OVERRIDE: {error_type} changed from {error.get('severity')} to CRITICAL")
+                                error["severity"] = "critical"
+
+                    return (reasoning, errors)
+
+                except json.JSONDecodeError as json_err:
+                    # Still failed to parse - log full details
+                    print(f"🚨 ARBITER JSON PARSE ERROR: {json_err}")
+                    print(f"   Attempted to parse: {json_str[:200]}...")
+                    print(f"   Full response length: {len(content)}")
+                    print(f"   Full response:\n{content}")
+                    return (
+                        f"Failed to parse arbiter JSON: {json_err}",
+                        [{"severity": "high", "type": "system_error", "description": f"Arbiter JSON parse error: {json_err}"}]
+                    )
             else:
-                return ("Failed to parse arbiter response", [])
+                # No JSON object found at all
+                print(f"🚨 ARBITER NO JSON FOUND in response:")
+                print(f"   Response length: {len(content)}")
+                print(f"   Response: {content[:500]}...")
+                return (
+                    "No JSON found in arbiter response",
+                    [{"severity": "high", "type": "system_error", "description": "Arbiter returned no JSON"}]
+                )
 
         except Exception as e:
-            return (f"Arbiter error: {e}", [{"severity": "high", "type": "system_error", "description": f"Arbiter failed: {e}"}])
+            # Catch all other errors (API errors, timeout, etc.)
+            print(f"🚨 ARBITER EXCEPTION: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            return (
+                f"Arbiter error: {e}",
+                [{"severity": "high", "type": "system_error", "description": f"Arbiter failed: {e}"}]
+            )
 
 
 class ClinicalDebateOrchestrator:
@@ -780,6 +859,24 @@ class ClinicalDebateOrchestrator:
             return self._handle_omission(alignment, start_time, source_role, source_text, case_type)
 
         # ═══════════════════════════════════════════════════════════
+        # TRIBUNAL CASE LOGGING (for debugging)
+        # ═══════════════════════════════════════════════════════════
+        print(f"\n{'='*70}")
+        print(f"⚖️  TRIBUNAL CASE: {case_type}")
+        print(f"{'='*70}")
+        print(f"📋 Direction: {direction}")
+        print(f"🎯 Source Role: {source_role} → Target Role: {target_role}")
+        print(f"\n💬 SOURCE TEXT ({source_role}):")
+        print(f"   {source_text[:200] if source_text else '[NONE]'}{'...' if source_text and len(source_text) > 200 else ''}")
+        print(f"\n🔄 INTERPRETER TEXT:")
+        print(f"   {interpreter_text[:200] if interpreter_text else '[NONE]'}{'...' if interpreter_text and len(interpreter_text) > 200 else ''}")
+        print(f"\n📊 Segment IDs:")
+        print(f"   Provider: {provider_segment.get('segment_id') if provider_segment else 'N/A'}")
+        print(f"   Patient: {patient_segment.get('segment_id') if patient_segment else 'N/A'}")
+        print(f"   Interpreter: {interpreter_segment.get('segment_id') if interpreter_segment else 'N/A'}")
+        print(f"{'='*70}\n")
+
+        # ═══════════════════════════════════════════════════════════
         # TRIBUNAL EXECUTION WITH ERROR HANDLING
         # Wrap in try/except so tribunal failures don't kill the whole cycle
         # ═══════════════════════════════════════════════════════════
@@ -822,6 +919,17 @@ class ClinicalDebateOrchestrator:
                 target_role=target_role,
                 case_type=case_type,
             )
+
+            # Log Arbiter results for debugging
+            print(f"\n⚖️  ARBITER RESULT:")
+            print(f"   Reasoning: {arbiter_reasoning[:150]}...")
+            print(f"   Errors detected: {len(error_list)}")
+            if error_list:
+                for idx, err in enumerate(error_list):
+                    print(f"   [{idx+1}] {err.get('severity', '?').upper()}: {err.get('type', '?')} - {err.get('description', '?')[:80]}...")
+            else:
+                print(f"   ✅ No errors detected")
+            print()
 
             # ═══════════════════════════════════════════════════════════
             # DEDUPLICATION: Prevent double-tagging same issue
