@@ -91,8 +91,32 @@ class NodeAExtractor:
         Returns:
             Tuple of (structured_json, extractor_notes)
         """
-        source_text = source_segment["text"] if source_segment else "[NO SOURCE]"
-        interpreter_text = interpreter_segment["text"] if interpreter_segment else "[NO INTERPRETATION]"
+        # ═══════════════════════════════════════════════════════════
+        # CRITICAL: Use English translations, not raw text
+        # ═══════════════════════════════════════════════════════════
+        # Source (provider/patient) uses SMOOTH translation (ground truth)
+        # Interpreter uses LITERAL translation (error-preserving)
+        # This matches the orchestrator's logic in run_debate()
+        if source_segment:
+            source_text = (
+                source_segment.get("text_english_smooth")  # Natural English for provider/patient
+                or source_segment.get("text_english")      # Backwards compat
+                or source_segment.get("text")              # Fallback to raw
+                or "[NO SOURCE]"
+            )
+        else:
+            source_text = "[NO SOURCE]"
+
+        if interpreter_segment:
+            interpreter_text = (
+                interpreter_segment.get("text_english_literal")  # Error-preserving for interpreter
+                or interpreter_segment.get("text_english_smooth") # Fallback if literal not available
+                or interpreter_segment.get("text_english")        # Backwards compat
+                or interpreter_segment.get("text")                # Fallback to raw
+                or "[NO INTERPRETATION]"
+            )
+        else:
+            interpreter_text = "[NO INTERPRETATION]"
 
         # Build context string
         patient_context = f'\nPATIENT CONTEXT:\n"{patient_text}"\n' if patient_text else ""
@@ -903,6 +927,23 @@ class ClinicalDebateOrchestrator:
             (extractor_json, extractor_notes), monitor_report = await asyncio.gather(
                 extractor_task, monitor_task
             )
+
+            # ═══════════════════════════════════════════════════════════
+            # DEBATE OUTPUT LOGGING (Node A and Node B results)
+            # ═══════════════════════════════════════════════════════════
+            print(f"\n🔬 NODE A (EXTRACTOR) OUTPUT:")
+            print(f"   Verdict: {extractor_notes}")
+            if isinstance(extractor_json, dict) and "interpreter_errors" in extractor_json:
+                errors = extractor_json.get("interpreter_errors", [])
+                if errors:
+                    print(f"   Errors found: {len(errors)}")
+                    for idx, err in enumerate(errors):
+                        print(f"     [{idx+1}] {err.get('severity', '?').upper()}: {err.get('type', '?')} - {err.get('description', '?')[:80]}")
+                else:
+                    print(f"   ✅ No errors detected by Extractor")
+            print(f"\n👁️  NODE B (MONITOR) OUTPUT:")
+            print(f"   {monitor_report[:300]}{'...' if len(monitor_report) > 300 else ''}")
+            print()
 
             # ═══════════════════════════════════════════════════════════
             # SEQUENTIAL: Node C (Arbiter) sees everything
