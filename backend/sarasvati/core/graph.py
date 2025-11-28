@@ -63,10 +63,10 @@ class SarasvatiGraph:
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
-            # 3 UNIQUE MODELS - ALL CHEAP!
+            # 3 UNIQUE MODELS - EQUAL CAPABILITY, ALL CHEAP!
             model_a=config["groq_model_extractor"],  # Llama 8B (Groq) - FREE
             model_b="gpt-4o-mini",                    # GPT-4o-mini (OpenAI) - $0.15/1M
-            model_c=config["groq_model_arbiter"],    # Llama 70B (Groq) - FREE
+            model_c="gpt-3.5-turbo",                  # GPT-3.5-turbo (OpenAI) - $0.50/1M
         )
 
         # Build the graph

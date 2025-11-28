@@ -3,14 +3,14 @@ SARASVATI Independent Tribunal System
 ======================================
 The "Trisul Protocol" - Three UNIQUE agents in CONSENSUS DEBATE.
 
-Architecture (3 UNIQUE MODELS - all CHEAP!):
-- Agent A: Llama 3.1 8B (Groq) - FREE, fast extraction
-- Agent B: GPT-4o-mini (OpenAI) - $0.15/1M tokens, different architecture
-- Agent C: Llama 3.3 70B (Groq) - FREE, best reasoning
+Architecture (3 UNIQUE MODELS - EQUAL capability, all CHEAP!):
+- Agent A: Llama 3.1 8B (Groq) - FREE, Meta architecture
+- Agent B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI newest efficient
+- Agent C: GPT-3.5-turbo (OpenAI) - $0.50/1M, OpenAI older (different training)
 
-Diversity comes from:
-- Different SIZES: 8B vs 70B think very differently
-- Different PROVIDERS: Groq vs OpenAI = different training data
+All 3 are "efficient tier" models with EQUAL capability but DIFFERENT:
+- Different training data (Meta vs OpenAI 2024 vs OpenAI 2022)
+- Different architectures (Llama vs GPT-4 family vs GPT-3.5 family)
 
 DEBATE FLOW (not hierarchical - true consensus):
 1. ROUND 1 - Independent Analysis:
@@ -28,7 +28,7 @@ DEBATE FLOW (not hierarchical - true consensus):
    - If all disagree → continue debate (max 3 rounds)
    - Final verdict = majority or "needs human review"
 
-Providers: Groq (FREE) + OpenAI (cheap GPT-4o-mini)
+Providers: Groq (FREE) + OpenAI (cheap)
 """
 
 import os
@@ -65,19 +65,19 @@ from .state import (
 
 
 # ===== Default Models (can be overridden via env) =====
-# ALL CHEAP MODELS - Groq is free, GPT-4o-mini is $0.15/1M tokens
+# ALL CHEAP MODELS - ALL EQUAL CAPABILITY (small/efficient tier)
 #
-# 3 UNIQUE MODELS (all cheap!):
-# - Node A: Llama 3.1 8B (Groq) - FREE, fast extraction
-# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M tokens, different architecture
-# - Node C: Llama 3.3 70B (Groq) - FREE, best reasoning on Groq
+# 3 UNIQUE MODELS - EQUAL but DIFFERENT:
+# - Node A: Llama 3.1 8B (Groq) - FREE, Meta architecture
+# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI architecture
+# - Node C: GPT-3.5-turbo (OpenAI) - $0.50/1M, older OpenAI (different training)
 #
-# Different sizes (8B vs 70B) + different provider (OpenAI) = diversity!
+# All 3 are "efficient tier" models with similar capability but different training!
 
 DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (Groq) - FREE
 DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"            # Node B: Groq fallback
 DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: GPT-4o-mini - CHEAP
-DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"         # Node C: Llama 70B (Groq) - FREE
+DEFAULT_MODEL_ARBITER = "gpt-3.5-turbo"                   # Node C: GPT-3.5-turbo (OpenAI) - different training
 
 # Future Claude integration (disabled by default - expensive)
 DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
@@ -1149,14 +1149,24 @@ class ClinicalDebateOrchestrator:
             )
             print(f"⚠️ TRIBUNAL: Agent B falling back to Groq (no OpenAI key)")
 
-        # Agent C: Llama 70B (via Groq) - FREE, best reasoning on Groq
-        self.agent_c = DebateAgent(
-            name="Agent-C (Llama-70B)",
-            client=self.groq_client,
-            model=model_c,  # llama-3.3-70b-versatile
-            provider="groq"
-        )
-        print(f"✅ TRIBUNAL: Agent C using Groq ({model_c}) - FREE")
+        # Agent C: GPT-3.5-turbo (via OpenAI) - different training from GPT-4o-mini
+        if self.openai_client:
+            self.agent_c = DebateAgent(
+                name="Agent-C (GPT-3.5)",
+                client=self.openai_client,
+                model=model_c,  # gpt-3.5-turbo
+                provider="openai"
+            )
+            print(f"✅ TRIBUNAL: Agent C using OpenAI ({model_c})")
+        else:
+            # Fallback to Groq Llama 8B if no OpenAI (equal to Node A)
+            self.agent_c = DebateAgent(
+                name="Agent-C (Llama-fallback)",
+                client=self.groq_client,
+                model="llama-3.1-8b-instant",
+                provider="groq"
+            )
+            print(f"⚠️ TRIBUNAL: Agent C falling back to Groq (no OpenAI key)")
 
         self.agents = [self.agent_a, self.agent_b, self.agent_c]
 
