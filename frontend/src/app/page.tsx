@@ -7,9 +7,9 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useSarasvatiSimple } from "@/hooks/useSarasvatiSimple";
-import { Wifi, WifiOff, Mic, MicOff, Send, AlertTriangle } from "lucide-react";
+import { Wifi, WifiOff, Mic, MicOff, Send, AlertTriangle, Settings } from "lucide-react";
 import { StreamRole } from "@/types/sarasvati";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -28,7 +28,9 @@ export default function DashboardPage() {
   const [selectedRole, setSelectedRole] = useState<StreamRole>("provider");
   const [manualText, setManualText] = useState("");
   const [providerLang, setProviderLang] = useState("en");
-  const [patientLang, setPatientLang] = useState("gu"); // Default Gujarati for testing
+  const [patientLang, setPatientLang] = useState("es"); // Default Spanish for testing (change to "gu" for Gujarati, etc.)
+  const [asrBackend, setAsrBackend] = useState<"ensemble" | "groq" | "openai">("ensemble");
+  const [asrBackendLoading, setAsrBackendLoading] = useState(false);
 
   const LANGUAGES = [
     { code: "en", name: "English" },
@@ -42,6 +44,54 @@ export default function DashboardPage() {
     { code: "de", name: "German" },
     { code: "auto", name: "Auto-detect" },
   ];
+
+  // Fetch current ASR backend configuration
+  useEffect(() => {
+    const fetchAsrConfig = async () => {
+      try {
+        const httpUrl = BACKEND_URL.replace("ws://", "http://").replace("wss://", "https://");
+        const response = await fetch(`${httpUrl}/admin/asr-config`);
+        if (response.ok) {
+          const data = await response.json();
+          const mode = data.current_mode || data.current_config?.mode || "ensemble";
+          // Map mode to frontend state
+          if (mode === "ensemble") {
+            setAsrBackend("ensemble");
+          } else if (mode === "groq" || mode.startsWith("groq")) {
+            setAsrBackend("groq");
+          } else {
+            setAsrBackend("openai");
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch ASR config:", error);
+      }
+    };
+    fetchAsrConfig();
+  }, []);
+
+  // Switch ASR backend
+  const handleSwitchAsrBackend = async (backend: "ensemble" | "groq" | "openai") => {
+    setAsrBackendLoading(true);
+    try {
+      const httpUrl = BACKEND_URL.replace("ws://", "http://").replace("wss://", "https://");
+      const response = await fetch(`${httpUrl}/admin/asr-config/switch-default`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backend }),
+      });
+      if (response.ok) {
+        setAsrBackend(backend);
+        console.log(`Switched ASR backend to ${backend}`);
+      } else {
+        console.error("Failed to switch ASR backend:", await response.text());
+      }
+    } catch (error) {
+      console.error("Error switching ASR backend:", error);
+    } finally {
+      setAsrBackendLoading(false);
+    }
+  };
 
   const handleSendManual = () => {
     if (manualText.trim()) {
@@ -177,10 +227,76 @@ export default function DashboardPage() {
               </select>
             </div>
           </div>
+          <p className="text-xs text-yellow-500 mb-4">
+            ⚠️ Keep language settings consistent during a session. Changing mid-session may cause incorrect transcriptions.
+          </p>
+
+          {/* ASR Backend Selector */}
+          <div className="mb-4">
+            <label className="block text-sm text-gray-400 mb-2 flex items-center gap-2">
+              <Settings size={16} />
+              ASR Mode (Speech Recognition)
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                onClick={() => handleSwitchAsrBackend("ensemble")}
+                disabled={asrBackendLoading || asrBackend === "ensemble"}
+                className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
+                  asrBackend === "ensemble"
+                    ? "bg-purple-600 text-white ring-2 ring-purple-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {asrBackend === "ensemble" && "✓ "}Ensemble
+              </button>
+              <button
+                onClick={() => handleSwitchAsrBackend("groq")}
+                disabled={asrBackendLoading || asrBackend === "groq"}
+                className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
+                  asrBackend === "groq"
+                    ? "bg-emerald-600 text-white ring-2 ring-emerald-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {asrBackend === "groq" && "✓ "}Groq
+              </button>
+              <button
+                onClick={() => handleSwitchAsrBackend("openai")}
+                disabled={asrBackendLoading || asrBackend === "openai"}
+                className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
+                  asrBackend === "openai"
+                    ? "bg-blue-600 text-white ring-2 ring-blue-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {asrBackend === "openai" && "✓ "}OpenAI
+              </button>
+            </div>
+            {asrBackendLoading && (
+              <p className="text-xs text-gray-500 mt-1 animate-pulse">Switching mode...</p>
+            )}
+            <p className="text-xs text-gray-500 mt-2">
+              {asrBackend === "ensemble" ? (
+                <span>
+                  <span className="font-semibold text-purple-300">🤝 Ensemble Mode</span>: Runs both Groq + OpenAI in parallel, picks best result (tribunal pattern)
+                </span>
+              ) : asrBackend === "groq" ? (
+                <span className="font-semibold text-emerald-300">Groq Whisper Large V3 only</span>
+              ) : (
+                <span className="font-semibold text-blue-300">OpenAI Whisper-1 only</span>
+              )}
+            </p>
+          </div>
 
           {/* Microphone Recording */}
           <div className="mb-6">
-            <label className="block text-sm text-gray-400 mb-2">Voice Input (Groq Whisper)</label>
+            <label className="block text-sm text-gray-400 mb-2">
+              Voice Input ({
+                asrBackend === "ensemble" ? "Ensemble (Groq + OpenAI)" :
+                asrBackend === "groq" ? "Groq Whisper" :
+                "OpenAI Whisper"
+              })
+            </label>
             <button
               onClick={handleToggleRecording}
               disabled={!connectionState.websocketConnected}
@@ -232,16 +348,30 @@ export default function DashboardPage() {
         <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
             <AlertTriangle className="text-yellow-500" size={20} />
-            Detected Errors ({sessionState.errors.length})
+            Clinical Errors ({
+              // Count unique clinical errors only (de-duplicated by error_id)
+              new Set(
+                sessionState.errors
+                  .filter(e => !e.is_system_error)
+                  .map(e => e.error_id)
+              ).size
+            })
           </h2>
 
           <div className="space-y-3 max-h-96 overflow-y-auto">
-            {sessionState.errors.length === 0 ? (
-              <p className="text-gray-500 italic">No errors detected yet</p>
+            {sessionState.errors.filter(e => !e.is_system_error).length === 0 ? (
+              <p className="text-gray-500 italic">No clinical errors detected yet</p>
             ) : (
-              sessionState.errors.map((error, idx) => (
+              // De-duplicate errors by error_id (some errors are broadcast multiple times during processing)
+              Array.from(
+                new Map(
+                  sessionState.errors
+                    .filter(e => !e.is_system_error)
+                    .map(error => [error.error_id, error])
+                ).values()
+              ).map((error) => (
                 <div
-                  key={idx}
+                  key={error.error_id}
                   className={`p-4 rounded-lg border ${
                     error.severity === "critical"
                       ? "bg-red-900/50 border-red-700"
@@ -251,7 +381,19 @@ export default function DashboardPage() {
                   }`}
                 >
                   <div className="flex justify-between items-start mb-2">
-                    <span className="font-semibold text-white">{error.error_type}</span>
+                    <div className="flex flex-col gap-1">
+                      <span className="font-semibold text-white">
+                        {error.error_type}
+                        {error.case_type && (
+                          <span className="text-xs text-gray-400 ml-2">({error.case_type})</span>
+                        )}
+                      </span>
+                      {typeof error.confidence === "number" && !Number.isNaN(error.confidence) && (
+                        <span className="text-xs text-gray-400">
+                          Confidence: {(error.confidence * 100).toFixed(0)}%
+                        </span>
+                      )}
+                    </div>
                     <span
                       className={`text-xs px-2 py-1 rounded ${
                         error.severity === "critical"
@@ -264,12 +406,32 @@ export default function DashboardPage() {
                       {error.severity}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-300">{error.description}</p>
+                  <p className="text-sm text-gray-300 mb-2">{error.description}</p>
+                  {error.arbiter_reasoning && (
+                    <p className="text-xs text-blue-300 mb-2 italic">
+                      Arbiter: {error.arbiter_reasoning}
+                    </p>
+                  )}
+                  {error.source_quote && (
+                    <p className="text-xs text-green-400 mb-1">
+                      {error.source_role === "provider" ? "Provider" : "Patient"}: "{error.source_quote}"
+                    </p>
+                  )}
+                  {error.interpreter_quote && (
+                    <p className="text-xs text-purple-400 mb-1">
+                      Interpreter said: "{error.interpreter_quote}"
+                    </p>
+                  )}
+                  {error.ideal_interpretation && (
+                    <p className="text-xs text-cyan-400 mb-1">
+                      Should have said: "{error.ideal_interpretation}"
+                    </p>
+                  )}
                   {error.provider_entity && (
-                    <p className="text-xs text-gray-500 mt-2">Provider: "{error.provider_entity.text}"</p>
+                    <p className="text-xs text-gray-500">Provider entity: "{error.provider_entity.text}"</p>
                   )}
                   {error.interpreter_entity && (
-                    <p className="text-xs text-gray-500">Interpreter: "{error.interpreter_entity.text}"</p>
+                    <p className="text-xs text-gray-500">Interpreter entity: "{error.interpreter_entity.text}"</p>
                   )}
                 </div>
               ))
@@ -286,9 +448,9 @@ export default function DashboardPage() {
             <p className="text-gray-500 italic">No transcripts yet. Connect and start speaking or typing.</p>
           ) : (
             sessionState.transcripts.map((t, idx) => (
-              <div key={idx} className="flex gap-3">
+              <div key={idx} className="flex gap-3 py-2">
                 <span
-                  className={`text-xs px-2 py-1 rounded capitalize ${
+                  className={`text-xs px-2 py-1 rounded capitalize self-start ${
                     t.role === "provider"
                       ? "bg-blue-700"
                       : t.role === "interpreter"
@@ -298,7 +460,24 @@ export default function DashboardPage() {
                 >
                   {t.role}
                 </span>
-                <span className="text-gray-300">{t.text}</span>
+                <div className="flex flex-col gap-1">
+                  <span className="text-gray-300">{t.text}</span>
+                  {t.transliteration && t.transliteration !== t.text && (
+                    <span className="text-gray-500 text-sm italic">
+                      Transliteration: {t.transliteration}
+                    </span>
+                  )}
+                  {t.english_translation && (
+                    <span className="text-cyan-400 text-sm">
+                      🌐 English: {t.english_translation}
+                    </span>
+                  )}
+                  {t.detected_language && t.detected_language !== "en" && t.detected_language !== "unknown" && (
+                    <span className="text-gray-600 text-xs">
+                      [{t.detected_language}]
+                    </span>
+                  )}
+                </div>
               </div>
             ))
           )}

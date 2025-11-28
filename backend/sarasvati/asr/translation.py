@@ -1,0 +1,541 @@
+"""
+Translation and Transliteration Service
+
+Uses OpenAI GPT models to:
+1. Detect language (confirm ASR detection)
+2. Transliterate non-Latin scripts to Latin (e.g., ગુજરાતી → gujarātī)
+3. Translate to English for teaching/assessment
+
+Example:
+    Original: "નમસ્તે, તમે કેમ છો?"
+    Transliteration: "namaste, tame kem cho?"
+    Translation: "Hello, how are you?"
+
+TRANSLATION MODES:
+1. "ground_truth" (default): Smooth, natural English translation for provider/patient
+   - Fixes grammar and idioms
+   - Makes output fluent and readable
+   - Example: "Lo siento escuchar eso" → "I'm sorry to hear that"
+
+2. "interpreter_eval": Literal, error-preserving translation for interpreter grading
+   - Preserves errors, weird phrasing, and ungrammatical structures
+   - Does NOT fix or improve the original
+   - Example: "Lo siento porque yo escucho" → "I'm sorry because I listen"
+   - Example: "Dolor en otros cuerpos" → "Pain in other bodies" (NOT "pain in other parts of your body")
+
+ENSEMBLE MODE:
+- Runs multiple translation strategies in parallel (different temperatures/prompts)
+- Uses consensus logic to pick most medically accurate translation
+- Validates critical medical terms (ઝાડા=diarrhea, કબજિયાત=constipation)
+"""
+
+from typing import Optional, List, Literal
+import httpx
+import json
+import asyncio
+from difflib import SequenceMatcher
+
+
+class TranslationResult:
+    """Result of translation/transliteration."""
+    def __init__(
+        self,
+        original: str,
+        detected_language: str,
+        transliteration: Optional[str] = None,
+        translation: Optional[str] = None,
+        error: Optional[str] = None,
+    ):
+        self.original = original
+        self.detected_language = detected_language
+        self.transliteration = transliteration
+        self.translation = translation
+        self.error = error
+
+
+class TranslationService:
+    """OpenAI-based translation and transliteration service with medical vocabulary."""
+
+    def __init__(self, api_key: str, model: str = "gpt-4o", temperature: float = 0.1):
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
+
+    async def process_non_english(
+        self,
+        text: str,
+        suspected_language: str = "unknown",
+        mode: Literal["ground_truth", "interpreter_eval"] = "ground_truth",
+    ) -> TranslationResult:
+        """
+        Process non-English text: detect language, transliterate, and translate.
+
+        MEDICAL CONTEXT: This is used for medical interpreter monitoring.
+        The LLM MUST know common medical vocabulary to avoid dangerous mistranslations.
+
+        Args:
+            text: Original text in any language/script
+            suspected_language: Hint from ASR (e.g., "gu", "es", "hi")
+            mode: "ground_truth" (smooth) or "interpreter_eval" (literal, error-preserving)
+
+        Returns:
+            TranslationResult with transliteration and translation
+        """
+        if not text or len(text.strip()) == 0:
+            return TranslationResult(
+                original=text,
+                detected_language="unknown",
+                error="Empty text",
+            )
+
+        # Build mode-specific prompt
+        if mode == "interpreter_eval":
+            # LITERAL MODE: Preserve errors for interpreter grading
+            mode_instructions = """
+🔍 LITERAL TRANSLATION MODE (for interpreter evaluation):
+
+⚠️ CRITICAL: DO NOT fix or improve the text. Translate LITERALLY.
+
+RULES:
+1. Preserve ALL errors - grammatical, idiomatic, logical
+2. If the text is ungrammatical in the source language, keep it ungrammatical in English
+3. If idioms are used incorrectly, translate them literally (wrong)
+4. If the sentence is nonsensical or absurd, keep it nonsensical in English
+5. DO NOT add words, remove words, or fix phrasing
+6. DO NOT interpret what the speaker "meant to say"
+
+EXAMPLES OF LITERAL TRANSLATION:
+- "Lo siento porque yo escucho" → "I'm sorry because I listen" (NOT "I'm sorry to hear that")
+- "¿Tienes dolor en otros cuerpos?" → "Do you have pain in other bodies?" (NOT "in other parts of your body")
+- "Yo hablo que tú tienes dolor" → "I talk that you have pain" (NOT "I'm saying that you have pain")
+- Broken grammar → Keep broken in English
+
+Your job is to show EXACTLY what the interpreter said, errors and all."""
+        else:
+            # GROUND TRUTH MODE: Natural, fluent English
+            mode_instructions = """
+✅ GROUND TRUTH TRANSLATION MODE (for provider/patient):
+
+RULES:
+1. Produce natural, fluent, medically accurate English
+2. Fix minor grammar issues for readability
+3. Use proper medical terminology
+4. Make the translation clear and professional"""
+
+        # Build prompt for GPT with MEDICAL VOCABULARY
+        prompt = f"""You are a medical interpreter and language expert specializing in healthcare communication.
+
+⚕️ CRITICAL: This is a MEDICAL conversation. The text contains medical terminology.
+
+{mode_instructions}
+
+COMMON MEDICAL TERMS YOU MUST KNOW:
+
+**Gujarati Medical Vocabulary:**
+- ઝાડા (jāḍā) = DIARRHEA (NOT "heavy", NOT "loose")
+- કબજિયાત (kabajiyāt) = CONSTIPATION (NOT "sweet", NOT "kabaddi")
+- દુખાવો (dukhāvo) = pain, ache
+- પેટ (peṭ) = stomach, abdomen
+- માથું (māthuṁ) = head
+- તાવ (tāv) = fever
+- ઉલટી (ulaṭī) = vomiting
+- દવા (davā) = medicine
+- ડૉક્ટર (ḍôkṭar) = doctor
+
+**Hindi Medical Vocabulary:**
+- दस्त (dast) = diarrhea
+- कब्ज (kabj) = constipation
+- दर्द (dard) = pain
+- पेट (pet) = stomach
+- सिर (sir) = head
+- बुखार (bukhār) = fever
+- उल्टी (ultī) = vomiting
+
+**Spanish Medical Vocabulary:**
+- dolor = pain
+- cabeza = head
+- estómago = stomach
+- diarrea = diarrhea
+- estreñimiento = constipation
+- náusea = nausea
+
+Text to analyze: "{text}"
+Suspected language: {suspected_language}
+
+Respond ONLY with valid JSON:
+{{
+  "detected_language": "gu",
+  "transliteration": "romanized version using Latin characters",
+  "translation": "English translation (MUST be medically accurate)"
+}}
+
+CRITICAL RULES:
+1. DO NOT hallucinate meanings - if unsure, preserve the original word
+2. MEDICAL TERMS: Use the vocabulary above - these are common patient complaints
+3. "ઝાડા" (jāḍā) is ALWAYS diarrhea in medical context
+4. "કબજિયાત" is ALWAYS constipation, never a food item
+5. If you see body parts (પેટ, માથું, सिर, cabeza), it's likely a symptom description
+6. For transliteration: use standard IAST/ISO 15919 for Indic languages
+7. If text is already Latin script (es, pt), set transliteration = null"""
+
+        # Build system message based on mode
+        if mode == "interpreter_eval":
+            system_message = "You are a MEDICAL language expert specializing in LITERAL, ERROR-PRESERVING translation for interpreter evaluation. DO NOT fix grammar or idioms. Translate exactly as written, preserving all errors and weird phrasing. Always respond with valid JSON. Medical accuracy is critical - if you see ઝાડા (jāḍā), it means DIARRHEA. If you see કબજિયાત (kabajiyāt), it means CONSTIPATION."
+        else:
+            system_message = "You are a MEDICAL interpreter and language expert. You specialize in healthcare communication and know medical vocabulary in Gujarati, Hindi, Spanish, Arabic, and Chinese. Always respond with valid JSON. NEVER hallucinate meanings for medical terms - if you see ઝાડા (jāḍā), it means DIARRHEA, not 'heavy' or 'loose'. If you see કબજિયાત (kabajiyāt), it means CONSTIPATION, not 'sweet' or 'kabaddi'. Medical accuracy is critical."
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": system_message
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": self.temperature,
+                        "max_tokens": 500,
+                    },
+                    timeout=30.0,
+                )
+
+                if response.status_code != 200:
+                    return TranslationResult(
+                        original=text,
+                        detected_language=suspected_language,
+                        error=f"OpenAI API error: {response.text}",
+                    )
+
+                result = response.json()
+                content = result["choices"][0]["message"]["content"].strip()
+
+                # Clean markdown fences if present (GPT sometimes returns ```json ... ```)
+                if content.startswith("```"):
+                    # Remove opening fence (```json or ```JSON or just ```)
+                    content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                    # Remove closing fence
+                    if content.endswith("```"):
+                        content = content[:-3].strip()
+
+                content = content.strip()
+
+                # Parse JSON response
+                try:
+                    parsed = json.loads(content)
+                    return TranslationResult(
+                        original=text,
+                        detected_language=parsed.get("detected_language", suspected_language),
+                        transliteration=parsed.get("transliteration"),
+                        translation=parsed.get("translation"),
+                    )
+                except json.JSONDecodeError as e:
+                    # Fallback: try to extract from text
+                    return TranslationResult(
+                        original=text,
+                        detected_language=suspected_language,
+                        error=f"Failed to parse GPT response: {content[:200]}",
+                    )
+
+            except Exception as e:
+                return TranslationResult(
+                    original=text,
+                    detected_language=suspected_language,
+                    error=f"Translation service exception: {str(e)}",
+                )
+
+    async def transliterate_only(self, text: str, language: str) -> Optional[str]:
+        """
+        Quick transliteration without translation (for UI display).
+
+        Args:
+            text: Text in non-Latin script
+            language: Language code (e.g., "gu", "hi", "ar")
+
+        Returns:
+            Transliterated text in Latin script, or None if error
+        """
+        result = await self.process_non_english(text, language)
+        return result.transliteration
+
+    async def translate_only(self, text: str, language: str) -> Optional[str]:
+        """
+        Quick translation to English without transliteration.
+
+        Args:
+            text: Text in any language
+            language: Language code
+
+        Returns:
+            English translation, or None if error
+        """
+        result = await self.process_non_english(text, language)
+        return result.translation
+
+
+class EnsembleTranslation:
+    """
+    Multi-strategy translation using tribunal pattern.
+
+    Runs multiple GPT-4o translation attempts with different configurations:
+    - Strategy A: Conservative (temp=0.1, medical dictionary emphasis)
+    - Strategy B: Moderate (temp=0.3, balanced)
+    - Strategy C: Medical validator (temp=0.1, critical term checking)
+
+    Picks best translation using consensus logic focused on medical accuracy.
+    """
+
+    # Critical medical terms that MUST be translated correctly
+    CRITICAL_MEDICAL_TERMS = {
+        "gu": {
+            "ઝાડા": "diarrhea",
+            "કબજિયાત": "constipation",
+            "દુખાવો": "pain",
+            "તાવ": "fever",
+            "ઉલટી": "vomiting",
+        },
+        "hi": {
+            "दस्त": "diarrhea",
+            "कब्ज": "constipation",
+            "दर्द": "pain",
+            "बुखार": "fever",
+            "उल्टी": "vomiting",
+        },
+        "es": {
+            "diarrea": "diarrhea",
+            "estreñimiento": "constipation",
+            "dolor": "pain",
+            "fiebre": "fever",
+            "náusea": "nausea",
+        },
+    }
+
+    @staticmethod
+    def similarity(text1: str, text2: str) -> float:
+        """Calculate similarity ratio between two strings."""
+        return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
+
+    @staticmethod
+    def validate_medical_terms(
+        original: str, translation: str, language: str
+    ) -> tuple[bool, int]:
+        """
+        Check if critical medical terms are translated correctly.
+
+        Returns:
+            (is_valid, num_critical_terms_found)
+        """
+        if language not in EnsembleTranslation.CRITICAL_MEDICAL_TERMS:
+            return True, 0  # No validation rules for this language
+
+        terms = EnsembleTranslation.CRITICAL_MEDICAL_TERMS[language]
+        found_terms = 0
+
+        for original_term, expected_english in terms.items():
+            if original_term in original:
+                found_terms += 1
+                # Check if expected English term appears in translation
+                if expected_english.lower() not in translation.lower():
+                    print(f"   ⚠️  Medical term validation FAILED: '{original_term}' should be '{expected_english}' but not found in: {translation[:50]}...")
+                    return False, found_terms
+
+        if found_terms > 0:
+            print(f"   ✅ Medical term validation PASSED: {found_terms} critical terms correctly translated")
+
+        return True, found_terms
+
+    @staticmethod
+    async def translate_ensemble(
+        text: str,
+        suspected_language: str,
+        api_key: str,
+        mode: Literal["ground_truth", "interpreter_eval"] = "ground_truth",
+    ) -> TranslationResult:
+        """
+        Run multiple translation strategies in parallel, pick best result.
+
+        Consensus strategies:
+        1. Medical term validation: Reject translations with wrong medical terms
+        2. Exact agreement: If 2+ strategies agree exactly, high confidence
+        3. Similarity scoring: Pick most common translation pattern
+        4. Fallback: Conservative strategy (lowest temperature)
+
+        Args:
+            text: Original text to translate
+            suspected_language: Language code (e.g., "gu", "hi", "es")
+            api_key: OpenAI API key
+            mode: "ground_truth" (smooth) or "interpreter_eval" (literal, error-preserving)
+
+        Returns:
+            TranslationResult with best translation from ensemble
+        """
+        if not text or len(text.strip()) == 0:
+            return TranslationResult(
+                original=text,
+                detected_language="unknown",
+                error="Empty text",
+            )
+
+        mode_label = "LITERAL/ERROR-PRESERVING" if mode == "interpreter_eval" else "SMOOTH/GROUND-TRUTH"
+        print(f"\n🎭 ENSEMBLE TRANSLATION ({mode_label}): Running 3 strategies in parallel...")
+        print(f"   Text: {text[:100]}{'...' if len(text) > 100 else ''}")
+        print(f"   Language: {suspected_language}")
+
+        # Strategy A: Conservative (temp=0.1) - Most deterministic
+        service_a = TranslationService(api_key, model="gpt-4o", temperature=0.1)
+
+        # Strategy B: Moderate (temp=0.3) - Slightly more flexible
+        service_b = TranslationService(api_key, model="gpt-4o", temperature=0.3)
+
+        # Strategy C: Very conservative (temp=0.05) - Maximum precision
+        service_c = TranslationService(api_key, model="gpt-4o", temperature=0.05)
+
+        # Run all three in parallel with mode parameter
+        try:
+            results = await asyncio.gather(
+                service_a.process_non_english(text, suspected_language, mode),
+                service_b.process_non_english(text, suspected_language, mode),
+                service_c.process_non_english(text, suspected_language, mode),
+                return_exceptions=True,
+            )
+        except Exception as e:
+            print(f"   ❌ Ensemble translation failed: {e}")
+            return TranslationResult(
+                original=text,
+                detected_language=suspected_language,
+                error=f"Ensemble translation exception: {str(e)}",
+            )
+
+        # Filter out exceptions
+        valid_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"   ⚠️  Strategy {chr(65+i)} failed: {result}")
+                continue
+            if result.error:
+                print(f"   ⚠️  Strategy {chr(65+i)} error: {result.error}")
+                continue
+            valid_results.append((chr(65+i), result))
+
+        if not valid_results:
+            print(f"   ⚠️ All 3 strategies failed - using emergency fallback")
+            # HARD FALLBACK: Simple GPT-4o call for plain English only
+            # This ensures we NEVER return N/A to the UI
+            try:
+                async with httpx.AsyncClient() as client:
+                    fallback_response = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": "gpt-4o",
+                            "messages": [
+                                {
+                                    "role": "system",
+                                    "content": "You are a medical interpreter. Translate the following text to English. Return ONLY the English translation, no JSON, no formatting, no explanations."
+                                },
+                                {
+                                    "role": "user",
+                                    "content": f"Translate to English: {text}"
+                                },
+                            ],
+                            "temperature": 0.1,
+                            "max_tokens": 200,
+                        },
+                        timeout=30.0,
+                    )
+
+                    if fallback_response.status_code == 200:
+                        fallback_result = fallback_response.json()
+                        english_text = fallback_result["choices"][0]["message"]["content"].strip()
+                        print(f"   🆘 FALLBACK SUCCESS: {english_text[:60]}...")
+                        return TranslationResult(
+                            original=text,
+                            detected_language=suspected_language,
+                            translation=english_text,
+                            transliteration=None,  # No transliteration in fallback
+                        )
+                    else:
+                        print(f"   ❌ Fallback also failed: {fallback_response.status_code}")
+            except Exception as fallback_error:
+                print(f"   ❌ Fallback exception: {fallback_error}")
+
+            # Absolute worst case - return original text as "translation"
+            print(f"   ⚠️ WORST CASE: Returning original text as translation")
+            return TranslationResult(
+                original=text,
+                detected_language=suspected_language,
+                translation=f"[Translation failed: {text}]",
+                error="All ensemble strategies + fallback failed",
+            )
+
+        print(f"   ✓ Got {len(valid_results)} valid translations")
+
+        # Step 1: Validate medical terms
+        validated_results = []
+        for strategy_name, result in valid_results:
+            if result.translation:
+                is_valid, num_terms = EnsembleTranslation.validate_medical_terms(
+                    text, result.translation, suspected_language
+                )
+                if is_valid:
+                    validated_results.append((strategy_name, result, num_terms))
+                    print(f"   Strategy {strategy_name}: ✅ Medical validation passed ({num_terms} terms)")
+                else:
+                    print(f"   Strategy {strategy_name}: ❌ Medical validation FAILED - rejecting")
+
+        # If medical validation filtered out all results, use unvalidated
+        if not validated_results:
+            print("   ⚠️  No translations passed medical validation, using all results")
+            validated_results = [(name, result, 0) for name, result in valid_results]
+
+        # Step 2: Check for exact agreement
+        translations = [result.translation for _, result, _ in validated_results if result.translation]
+        if len(translations) >= 2:
+            for i in range(len(translations)):
+                matches = sum(1 for t in translations if t.lower().strip() == translations[i].lower().strip())
+                if matches >= 2:
+                    print(f"   ✅ CONSENSUS: {matches} strategies agree exactly!")
+                    best_result = validated_results[i][1]
+                    best_result.detected_language = f"{best_result.detected_language}-ensemble-consensus"
+                    return best_result
+
+        # Step 3: Similarity scoring - pick one closest to others
+        best_idx = 0
+        best_score = 0.0
+        for i, (name_i, result_i, terms_i) in enumerate(validated_results):
+            if not result_i.translation:
+                continue
+
+            # Calculate average similarity to all other translations
+            similarity_sum = 0.0
+            for j, (name_j, result_j, terms_j) in enumerate(validated_results):
+                if i != j and result_j.translation:
+                    sim = EnsembleTranslation.similarity(result_i.translation, result_j.translation)
+                    similarity_sum += sim
+
+            avg_similarity = similarity_sum / max(len(validated_results) - 1, 1)
+
+            # Bonus for having critical medical terms
+            score = avg_similarity + (terms_i * 0.1)
+
+            print(f"   Strategy {name_i}: similarity={avg_similarity:.2f}, terms={terms_i}, score={score:.2f}")
+
+            if score > best_score:
+                best_score = score
+                best_idx = i
+
+        best_strategy, best_result, _ = validated_results[best_idx]
+        print(f"   🏆 WINNER: Strategy {best_strategy} (score={best_score:.2f})")
+
+        best_result.detected_language = f"{best_result.detected_language}-ensemble-best"
+        return best_result

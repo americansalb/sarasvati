@@ -31,6 +31,7 @@ from .state import (
     BufferEntry,
     StreamRole,
     SarasvatiState,
+    TribunalCaseType,
 )
 
 
@@ -130,6 +131,132 @@ class AlignmentEngine:
             interpreter_buffer,
         )
 
+    async def align_patient_to_interpreter(
+        self,
+        patient_segment: TranscriptSegment,
+        interpreter_buffer: List[BufferEntry],
+        state: SarasvatiState,
+    ) -> Optional[AlignmentMatch]:
+        """
+        Align patient segment to interpreter (INBOUND leg).
+
+        Patient speaks (Spanish) → Interpreter relays back to provider (English).
+
+        This is the mirror of align_segments but for the inbound direction.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._align_patient_to_interpreter_sync,
+            patient_segment,
+            interpreter_buffer,
+        )
+
+    def _align_patient_to_interpreter_sync(
+        self,
+        patient_segment: TranscriptSegment,
+        interpreter_buffer: List[BufferEntry],
+    ) -> Optional[AlignmentMatch]:
+        """
+        Synchronous inbound alignment: Patient → Interpreter → Provider.
+
+        Similar logic to _align_segments_sync but:
+        - Source is patient_segment
+        - Looking for interpreter response AFTER patient spoke
+        - Case types are ALIGNED_INBOUND / OMISSION_INBOUND
+        """
+        search_start = patient_segment["timestamp"]
+        search_end = search_start + self.config.window_size_seconds
+
+        candidate_segments = self._get_candidates_in_window(
+            interpreter_buffer,
+            search_start,
+            search_end,
+        )
+
+        if not candidate_segments:
+            # Patient spoke, no interpreter response → OMISSION_INBOUND
+            return AlignmentMatch(
+                provider_segment=None,  # Not outbound
+                interpreter_segment=None,  # No interpreter response
+                patient_segment=patient_segment,
+                similarity_score=0.0,
+                combined_score=0.0,
+                time_delta=0.0,
+                is_matched=False,
+                dtw_distance=float("inf"),
+                case_type=TribunalCaseType.OMISSION_INBOUND,  # Patient spoke, interpreter didn't relay
+            )
+
+        patient_embedding = self._get_embedding(patient_segment["text"])
+
+        best_match: Optional[Tuple[TranscriptSegment, float, float, float, float]] = None
+        best_combined_score = -1.0
+
+        FABRICATION_THRESHOLD = 0.10  # Same as outbound
+        MATCH_THRESHOLD = self.config.min_similarity_threshold  # 0.40
+
+        for candidate in candidate_segments:
+            interpreter_embedding = self._get_embedding(candidate["text"])
+            raw_similarity = float(np.dot(patient_embedding, interpreter_embedding))
+            time_delta = candidate["timestamp"] - patient_segment["timestamp"]
+            time_penalty = min(time_delta / 30.0, 1.0) * 0.2
+            combined_score = raw_similarity - time_penalty
+
+            dtw_dist = abs(time_delta)  # Simplified DTW
+
+            if combined_score > best_combined_score:
+                best_combined_score = combined_score
+                best_match = (candidate, raw_similarity, time_delta, combined_score, dtw_dist)
+
+        if best_match and best_combined_score >= MATCH_THRESHOLD:
+            interpreter_seg, raw_similarity, time_delta, combined_score, dtw_dist = best_match
+            print(f"      ✅ INBOUND MATCH: score={combined_score:.3f}, delta={time_delta:.1f}s")
+            print(f"         Pt: '{patient_segment['text'][:50]}...'")
+            print(f"         I: '{interpreter_seg['text'][:50]}...'")
+
+            return AlignmentMatch(
+                provider_segment=None,  # Inbound leg, no provider in this pair
+                interpreter_segment=interpreter_seg,
+                patient_segment=patient_segment,
+                similarity_score=float(raw_similarity),
+                combined_score=float(combined_score),
+                time_delta=float(time_delta),
+                is_matched=True,
+                dtw_distance=float(dtw_dist),
+                case_type=TribunalCaseType.ALIGNED_INBOUND,  # Patient → Interpreter matched
+            )
+        elif best_match and best_combined_score >= FABRICATION_THRESHOLD:
+            interpreter_seg, raw_similarity, time_delta, combined_score, dtw_dist = best_match
+            print(f"      ⚠️ SUSPICIOUS INBOUND: score={combined_score:.3f} (low match)")
+            print(f"         Pt: '{patient_segment['text'][:50]}...'")
+            print(f"         I: '{interpreter_seg['text'][:50]}...'")
+
+            return AlignmentMatch(
+                provider_segment=None,
+                interpreter_segment=interpreter_seg,
+                patient_segment=patient_segment,
+                similarity_score=float(raw_similarity),
+                combined_score=float(combined_score),
+                time_delta=float(time_delta),
+                is_matched=True,  # Flag for review
+                dtw_distance=float(dtw_dist),
+                case_type=TribunalCaseType.ALIGNED_INBOUND,  # Still inbound, just suspicious
+            )
+        else:
+            # No match in window → OMISSION_INBOUND
+            return AlignmentMatch(
+                provider_segment=None,
+                interpreter_segment=None,
+                patient_segment=patient_segment,
+                similarity_score=0.0,
+                combined_score=0.0,
+                time_delta=0.0,
+                is_matched=False,
+                dtw_distance=float("inf"),
+                case_type=TribunalCaseType.OMISSION_INBOUND,
+            )
+
     def _align_segments_sync(
         self,
         provider_segment: TranscriptSegment,
@@ -217,25 +344,72 @@ class AlignmentEngine:
                 combined_score *= 0.3  # Severe penalty for negation errors
                 raw_similarity *= 0.3  # Also penalize raw for consistency
 
+            print(f"      ✅ MATCH FOUND: sim={raw_similarity:.3f}, combined={combined_score:.3f}, delta={time_delta:.1f}s")
+            print(f"         P: '{provider_segment['text'][:50]}...'")
+            print(f"         I: '{interpreter_seg['text'][:50]}...'")
+
             return AlignmentMatch(
                 provider_segment=provider_segment,
                 interpreter_segment=interpreter_seg,
+                patient_segment=None,  # TODO: Add patient context
                 similarity_score=float(raw_similarity),      # Convert numpy to Python float
                 combined_score=float(combined_score),        # Convert numpy to Python float
                 time_delta=float(time_delta),
                 is_matched=True,
                 dtw_distance=float(dtw_dist),
+                case_type=TribunalCaseType.ALIGNED_OUTBOUND,  # Provider → Interpreter match
             )
 
-        # No match found in window
+        # No match found in window OR suspiciously low match (possible fabrication)
+        # CRITICAL: If interpreter spoke around the right time but with very low similarity,
+        # this could be a COMPLETE FABRICATION - tribunal must review it!
+        if best_match:
+            interpreter_seg, raw_similarity, time_delta, combined_score, dtw_dist = best_match
+
+            # Suspicious fabrication detection: score 0.10-0.39 (something said, but unrelated)
+            # Below 0.10: probably different conversation window, truly unmatched
+            # Above 0.40: normal match threshold
+            FABRICATION_THRESHOLD = 0.10
+
+            if combined_score >= FABRICATION_THRESHOLD:
+                # SUSPICIOUS: Interpreter spoke around the right time, but content is very different
+                # This could be fabrication, omission, or severe mistranslation
+                # Mark as MATCHED so tribunal reviews it!
+                print(f"      ⚠️ SUSPICIOUS FABRICATION: score={combined_score:.3f} (too low for match, too high for coincidence)")
+                print(f"         P: '{provider_segment['text'][:50]}...'")
+                print(f"         I: '{interpreter_seg['text'][:50]}...'")
+                print(f"         → Flagging for tribunal review as potential fabrication/omission")
+
+                return AlignmentMatch(
+                    provider_segment=provider_segment,
+                    interpreter_segment=interpreter_seg,
+                    patient_segment=None,  # TODO: Add patient context
+                    similarity_score=float(raw_similarity),
+                    combined_score=float(combined_score),
+                    time_delta=float(time_delta),
+                    is_matched=True,  # Mark as matched so tribunal sees it!
+                    dtw_distance=float(dtw_dist),
+                    case_type=TribunalCaseType.ALIGNED_OUTBOUND,  # Still outbound, just suspicious
+                )
+            else:
+                # Very low score: probably unrelated, truly missed
+                print(f"      ❌ NO MATCH: best_score={combined_score:.3f} < fabrication_threshold={FABRICATION_THRESHOLD}")
+                print(f"         P: '{provider_segment['text'][:50]}...'")
+                print(f"         I: '{interpreter_seg['text'][:50]}...' (likely unrelated)")
+        else:
+            print(f"      ❌ NO MATCH: No candidates in window for P: '{provider_segment['text'][:50]}...'")
+
+        # True no-match: no interpreter segment in time window → OMISSION
         return AlignmentMatch(
             provider_segment=provider_segment,
-            interpreter_segment=None,
+            interpreter_segment=None,  # No interpreter response
+            patient_segment=None,  # TODO: Add patient context
             similarity_score=0.0,
             combined_score=0.0,
             time_delta=0.0,
-            is_matched=False,
+            is_matched=False,  # Will trigger omission review in tribunal
             dtw_distance=float("inf"),
+            case_type=TribunalCaseType.OMISSION_OUTBOUND,  # Provider spoke, interpreter didn't
         )
 
     def _get_candidates_in_window(
@@ -465,31 +639,38 @@ class BatchAligner:
         state: SarasvatiState,
     ) -> List[AlignmentMatch]:
         """
-        Process a batch of provider segments against interpreter buffer.
+        Process BIDIRECTIONAL alignment: Provider → Interpreter AND Patient → Interpreter.
 
         This is called when buffer size exceeds threshold or on a timer.
+
+        Implements timeout-based omission detection in BOTH directions:
+        - OUTBOUND: Provider speaks but interpreter doesn't render it
+        - INBOUND: Patient speaks but interpreter doesn't relay it back to provider
 
         Args:
             state: Current graph state with buffers
 
         Returns:
-            List of alignment matches found
+            List of alignment matches found (includes timed-out omissions)
         """
         alignments: List[AlignmentMatch] = []
-
-        # Get unprocessed provider entries
-        unprocessed = [
-            entry for entry in state["provider_buffer"]
-            if not entry["is_processed"]
-        ]
+        now = datetime.utcnow()
+        OMISSION_TIMEOUT_SECONDS = 20.0  # Per Shiva's guidance
 
         # CRITICAL: snapshot interpreter buffer once per batch
         interpreter_snapshot = list(state["interpreter_buffer"])
 
-        for entry in unprocessed:
-            provider_segment = entry["segment"]
+        # ===== OUTBOUND LEG: Provider → Interpreter → Patient =====
+        unprocessed_provider = [
+            entry for entry in state["provider_buffer"]
+            if not entry["is_processed"]
+        ]
 
-            # Try to align this segment against the snapshot
+        for entry in unprocessed_provider:
+            provider_segment = entry["segment"]
+            time_in_buffer = (now - entry["buffered_at"]).total_seconds()
+
+            # Try to align this provider segment to interpreter
             alignment = await self.engine.align_segments(
                 provider_segment,
                 interpreter_snapshot,
@@ -497,18 +678,109 @@ class BatchAligner:
             )
 
             if alignment:
-                alignments.append(alignment)
-
-                # Mark as processed if match found
+                # CRITICAL FIX: Only send to tribunal if MATCHED or TIMED OUT *AND* attempted multiple times
+                # Don't judge prematurely while waiting for interpreter response
                 if alignment["is_matched"]:
+                    # Match found - send to tribunal for quality review
                     entry["is_processed"] = True
+                    alignments.append(alignment)
+                elif time_in_buffer >= OMISSION_TIMEOUT_SECONDS and entry["alignment_attempts"] >= 2:
+                    # Timeout omission - interpreter had multiple chances but never responded
+                    print(f"      ⏰ TIMEOUT OMISSION (OUTBOUND): Provider spoke {time_in_buffer:.1f}s ago ({entry['alignment_attempts']} attempts), no interpreter response")
+                    print(f"         P: '{provider_segment['text'][:60]}...'")
+                    entry["is_processed"] = True
+                    alignments.append(alignment)
                 else:
-                    # Increment attempt counter
+                    # Still waiting for interpreter - don't judge yet
                     entry["alignment_attempts"] += 1
+                    if time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
+                        print(f"      ⏳ WAITING: Provider spoke {time_in_buffer:.1f}s ago, but only {entry['alignment_attempts']} attempts - giving interpreter more time")
 
-                    # If too many attempts, mark as processed anyway (timeout)
-                    if entry["alignment_attempts"] >= 5:
-                        entry["is_processed"] = True
+        # ===== INBOUND LEG: Patient → Interpreter → Provider =====
+        unprocessed_patient = [
+            entry for entry in state["patient_buffer"]
+            if not entry["is_processed"]
+        ]
+
+        for entry in unprocessed_patient:
+            patient_segment = entry["segment"]
+            time_in_buffer = (now - entry["buffered_at"]).total_seconds()
+
+            # Try to align this patient segment to interpreter
+            # For inbound, we're looking for interpreter speaking to provider (English usually)
+            alignment = await self.engine.align_patient_to_interpreter(
+                patient_segment,
+                interpreter_snapshot,
+                state,
+            )
+
+            if alignment:
+                # CRITICAL FIX: Only send to tribunal if MATCHED or TIMED OUT *AND* attempted multiple times
+                # Don't judge prematurely while waiting for interpreter response
+                if alignment["is_matched"]:
+                    # Match found - send to tribunal for quality review
+                    entry["is_processed"] = True
+                    alignments.append(alignment)
+                elif time_in_buffer >= OMISSION_TIMEOUT_SECONDS and entry["alignment_attempts"] >= 2:
+                    # Timeout omission - interpreter had multiple chances but never relayed patient's message
+                    print(f"      ⏰ TIMEOUT OMISSION (INBOUND): Patient spoke {time_in_buffer:.1f}s ago ({entry['alignment_attempts']} attempts), interpreter didn't relay to provider")
+                    print(f"         Pt: '{patient_segment['text'][:60]}...'")
+                    entry["is_processed"] = True
+                    alignments.append(alignment)
+                else:
+                    # Still waiting for interpreter - don't judge yet
+                    entry["alignment_attempts"] += 1
+                    if time_in_buffer >= OMISSION_TIMEOUT_SECONDS:
+                        print(f"      ⏳ WAITING: Patient spoke {time_in_buffer:.1f}s ago, but only {entry['alignment_attempts']} attempts - giving interpreter more time")
+
+        # ===== FABRICATION DETECTION: Interpreter-only segments =====
+        # After aligning both outbound and inbound, check for interpreter segments
+        # that don't match EITHER provider or patient (potential fabrications)
+
+        # Track which interpreter segments were matched (from ALL matched pairs, not just this cycle)
+        matched_interpreter_timestamps = set()
+
+        # CRITICAL FIX: Check against ALL matched pairs in state, not just current cycle
+        for matched_pair in state["matched_pairs"]:
+            if matched_pair.get("interpreter_segment"):
+                matched_interpreter_timestamps.add(matched_pair["interpreter_segment"]["timestamp"])
+
+        # Check for unmatched interpreter segments (fabrications)
+        for entry in interpreter_snapshot:
+            interpreter_seg = entry["segment"]
+            time_in_buffer = (now - entry["buffered_at"]).total_seconds()
+
+            # Skip if already matched OR too recent (give it time to match)
+            if (interpreter_seg["timestamp"] in matched_interpreter_timestamps or
+                time_in_buffer < 5.0):  # Wait 5 seconds before flagging as fabrication
+                continue
+
+            # Unmatched interpreter segment after timeout → potential FABRICATION
+            # Check if it contains clinically significant content (not just "uh huh", "ok", etc.)
+            text_lower = interpreter_seg["text"].lower().strip()
+            filler_phrases = {"uh huh", "ok", "okay", "yes", "no", "mmm", "hmm", "si", "gracias", "thank you"}
+
+            # Skip filler phrases (not clinically significant)
+            if text_lower in filler_phrases or len(text_lower) < 3:
+                continue
+
+            print(f"      🚨 FABRICATION DETECTED: Interpreter spoke without provider or patient prompt")
+            print(f"         I: '{interpreter_seg['text'][:60]}...'")
+            print(f"         → This segment doesn't match any recent provider or patient utterance")
+
+            # Create a FABRICATION case
+            fabrication_case = AlignmentMatch(
+                provider_segment=None,  # No provider prompt
+                interpreter_segment=interpreter_seg,
+                patient_segment=None,  # No patient prompt
+                similarity_score=0.0,
+                combined_score=0.0,
+                time_delta=time_in_buffer,
+                is_matched=True,  # Flag for tribunal review (paradoxically, fabrications ARE "matched" for review)
+                dtw_distance=float("inf"),
+                case_type=TribunalCaseType.FABRICATION,  # Interpreter spoke unprompted
+            )
+            alignments.append(fabrication_case)
 
         return alignments
 

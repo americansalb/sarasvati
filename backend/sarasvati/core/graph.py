@@ -192,23 +192,26 @@ class SarasvatiGraph:
         """
         Node 3: Verify interpretation quality (Combined Extract+Monitor+Arbiter).
 
-        Runs the three-agent debate system on aligned segments.
+        Runs the three-agent debate system on ALL tribunal cases.
 
-        CRITICAL FIX: Only process NEW alignments (not already verified).
+        CRITICAL ARCHITECTURAL CHANGE (per Shiva's guidance):
+        - EVERY utterance goes to tribunal review
+        - Alignment determines TYPE of review (not WHETHER it happens)
+        - Case types: ALIGNED_OUTBOUND, ALIGNED_INBOUND, OMISSION_OUTBOUND,
+          OMISSION_INBOUND, FABRICATION
+
+        CRITICAL FIX: Only process NEW cases (not already verified).
         Update last_verified_count after processing to prevent infinite loops.
         """
-        # Get only matched pairs
-        matched_pairs = [
-            match for match in state["matched_pairs"]
-            if match["is_matched"]
-        ]
+        # Get ALL cases (matched and unmatched) - tribunal reviews everything
+        all_cases = state["matched_pairs"]
 
-        # Get only NEW unverified alignments (since last verification)
+        # Get only NEW unverified cases (since last verification)
         last_verified = state["last_verified_count"]
-        new_alignments = matched_pairs[last_verified:]
+        new_cases = all_cases[last_verified:]
 
-        if not new_alignments:
-            print(f"   📭 No new alignments to verify (matched_pairs={len(matched_pairs)}, last_verified={last_verified})")
+        if not new_cases:
+            print(f"   📭 No new cases to verify (total_cases={len(all_cases)}, last_verified={last_verified})")
             return state
 
         # Get most recent patient text for triadic validation (Trisul Protocol)
@@ -217,12 +220,16 @@ class SarasvatiGraph:
             # Get most recent patient segment
             patient_text = state["patient_buffer"][-1]["segment"]["text"]
 
-        print(f"   ⚖️  Running tribunal on {len(new_alignments)} new alignments. Patient context: {patient_text[:50] if patient_text else 'NONE'}...")
+        print(f"   ⚖️  Running tribunal on {len(new_cases)} new cases. Patient context: {patient_text[:50] if patient_text else 'NONE'}...")
 
-        # Run debate for each NEW alignment
-        for alignment in new_alignments:
-            print(f"      🔍 Debating: P='{alignment['provider_segment']['text'][:40]}...' vs I='{alignment['interpreter_segment']['text'][:40] if alignment['interpreter_segment'] else 'NONE'}...'")
-            debate_result = await self.debate_orchestrator.run_debate(alignment, patient_text)
+        # Run debate for each NEW case (matched, omission, or fabrication)
+        for case in new_cases:
+            case_type = case.get("case_type", "unknown")
+            provider_text = case['provider_segment']['text'][:40] if case['provider_segment'] else 'NONE'
+            interp_text = case['interpreter_segment']['text'][:40] if case['interpreter_segment'] else 'NONE'
+
+            print(f"      🔍 [{case_type}] P='{provider_text}...' vs I='{interp_text}...'")
+            debate_result = await self.debate_orchestrator.run_debate(case, patient_text)
 
             # Store result
             state["last_debate_result"] = debate_result
@@ -240,8 +247,8 @@ class SarasvatiGraph:
             else:
                 print(f"      ✅ No errors detected")
 
-        # Update last_verified_count to current matched count
-        state["last_verified_count"] = len(matched_pairs)
+        # Update last_verified_count to current total case count
+        state["last_verified_count"] = len(all_cases)
 
         # Update stats
         state["processing_stats"]["errors_detected"] = len(state["detected_errors"])
@@ -261,6 +268,10 @@ class SarasvatiGraph:
         errors_to_report = state["detected_errors"]
 
         if errors_to_report:
+            # Separate clinical errors from system/ASR errors
+            clinical_errors = [e for e in errors_to_report if not e.get("is_system_error", False)]
+            system_errors = [e for e in errors_to_report if e.get("is_system_error", False)]
+
             # In production, this would:
             # 1. Push to Redis pub/sub
             # 2. Send to WebSocket connections
@@ -268,10 +279,13 @@ class SarasvatiGraph:
             # 4. Trigger alerts for CRITICAL errors
 
             print(f"\n{'='*60}")
-            print(f"🚨 CLINICAL ERRORS DETECTED: {len(errors_to_report)}")
+            print(f"🚨 CLINICAL ERRORS DETECTED: {len(clinical_errors)}")
+            if system_errors:
+                print(f"🛠️  SYSTEM / ASR ISSUES: {len(system_errors)}")
             print(f"{'='*60}")
 
-            for error in errors_to_report:
+            # Display clinical errors in detail
+            for error in clinical_errors:
                 severity_emoji = {
                     "critical": "🔴",
                     "high": "🟠",
@@ -284,6 +298,15 @@ class SarasvatiGraph:
                 print(f"   Description: {error['description']}")
                 print(f"   Confidence: {error['confidence']:.2f}")
                 print(f"   Detected at: {error['detected_at']}")
+
+            # Display system errors (ASR issues) separately with less detail
+            if system_errors:
+                print(f"\n{'─'*60}")
+                print(f"🛠️  SYSTEM / ASR ISSUES ({len(system_errors)}):")
+                print(f"{'─'*60}")
+                for error in system_errors:
+                    print(f"\n🟡 [{error['severity'].upper()}] {error['error_type']}")
+                    print(f"   Description: {error['description'][:100]}...")
 
             print(f"\n{'='*60}\n")
 
@@ -448,6 +471,8 @@ class SarasvatiEngine:
         """
         Stop the current session and return stats.
 
+        CRITICAL: Clears ALL buffers and state to prevent leaks into next session.
+
         Returns:
             Session statistics and detected errors
         """
@@ -473,6 +498,19 @@ class SarasvatiEngine:
         print(f"   Duration: {stats['duration_seconds']:.1f}s")
         print(f"   Errors detected: {stats['errors_detected']}")
         print(f"   Critical errors: {stats['critical_errors']}")
+
+        # CRITICAL FIX: Clear ALL buffers and state to prevent session leaks
+        # Old segments must not appear in next session
+        print(f"   🧹 Clearing buffers: P={len(self.state['provider_buffer'])}, I={len(self.state['interpreter_buffer'])}, Pt={len(self.state['patient_buffer'])}")
+        self.state["provider_buffer"].clear()
+        self.state["interpreter_buffer"].clear()
+        self.state["patient_buffer"].clear()
+        self.state["matched_pairs"].clear()
+        self.state["detected_errors"].clear()
+        self.state["error_flags"].clear()
+        self.state["last_verified_count"] = 0
+        self.state["last_debate_result"] = None
+        print(f"   ✅ All buffers cleared, ready for fresh session")
 
         return stats
 

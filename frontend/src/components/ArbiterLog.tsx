@@ -72,30 +72,39 @@ function ErrorCard({ error }: { error: ClinicalError }) {
   const Icon = config.icon;
   const timestamp = new Date(error.detected_at);
 
+  // Detect system errors (prefixed with "system_") - these are NOT interpreter errors
+  const isSystemError = error.error_type?.startsWith("system_");
+
   return (
     <div
       className={clsx(
         "error-card rounded-lg border-l-4 p-4 transition-all",
-        config.bgColor,
-        config.borderColor,
+        isSystemError ? "bg-gray-800/50 border-gray-600" : config.bgColor,
+        isSystemError ? "" : config.borderColor,
         "hover:shadow-lg"
       )}
     >
       {/* Header */}
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-start gap-3 flex-1">
-          <Icon className={clsx("w-5 h-5 mt-0.5", config.color)} />
+          <Icon className={clsx("w-5 h-5 mt-0.5", isSystemError ? "text-gray-400" : config.color)} />
 
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-1">
-              <span
-                className={clsx(
-                  "px-2 py-0.5 rounded text-xs font-bold uppercase",
-                  config.color
-                )}
-              >
-                {config.label}
-              </span>
+              {isSystemError ? (
+                <span className="px-2 py-0.5 rounded text-xs font-bold uppercase bg-gray-700 text-gray-300 border border-gray-600">
+                  🔧 SYSTEM DIAGNOSTIC
+                </span>
+              ) : (
+                <span
+                  className={clsx(
+                    "px-2 py-0.5 rounded text-xs font-bold uppercase",
+                    config.color
+                  )}
+                >
+                  {config.label}
+                </span>
+              )}
               <span className="text-xs text-gray-500">
                 {error.error_type.replace(/_/g, " ")}
               </span>
@@ -110,6 +119,12 @@ function ErrorCard({ error }: { error: ClinicalError }) {
             <p className="text-sm text-gray-200 font-medium">
               {error.description}
             </p>
+
+            {isSystemError && (
+              <p className="text-xs text-yellow-400 mt-2 font-semibold">
+                ⚠️ This is a backend issue, NOT an interpreter error. Do not count toward interpreter QA metrics.
+              </p>
+            )}
           </div>
         </div>
 
@@ -133,83 +148,102 @@ function ErrorCard({ error }: { error: ClinicalError }) {
       {/* Expanded Details */}
       {isExpanded && (
         <div className="ml-8 mt-3 pt-3 border-t border-gray-800 space-y-3">
+          {/* Case Type & Direction - SIMPLIFIED */}
+          {error.case_type && (
+            <div>
+              <h4 className="text-xs font-semibold text-gray-400 mb-1">
+                🔀 Direction:
+              </h4>
+              <p className="text-sm text-gray-300">
+                {error.case_type === "aligned_outbound" && "Provider → Interpreter → Patient"}
+                {error.case_type === "aligned_inbound" && "Patient → Interpreter → Provider"}
+                {error.case_type === "omission_outbound" && "Provider → [OMITTED] → Patient"}
+                {error.case_type === "omission_inbound" && "Patient → [OMITTED] → Provider"}
+                {error.case_type === "fabrication" && "Interpreter spoke without prompt"}
+                {!["aligned_outbound", "aligned_inbound", "omission_outbound", "omission_inbound", "fabrication"].includes(error.case_type) && "Unknown direction"}
+              </p>
+            </div>
+          )}
+
+          {/* Tribunal Context: Who said what (English) - CLEANED UP */}
+          {(error.source_quote || error.interpreter_quote || error.ideal_interpretation) && (
+            <div>
+              <h4 className="text-xs font-semibold text-gray-400 mb-2">
+                💬 What was said (English):
+              </h4>
+              <div className="space-y-2">
+                {error.source_quote && (
+                  <div className="text-sm bg-gray-900 rounded p-2">
+                    <span className="text-green-400 font-semibold">
+                      {error.source_role === "provider" ? "Provider (EN)" : error.source_role === "patient" ? "Patient (EN)" : "Source (EN)"}:
+                    </span>{" "}
+                    <span className="text-gray-200">&quot;{error.source_quote}&quot;</span>
+                  </div>
+                )}
+                {error.interpreter_quote && (
+                  <div className="text-sm bg-gray-900 rounded p-2">
+                    <span className="text-purple-400 font-semibold">Interpreter (EN):</span>{" "}
+                    <span className="text-gray-200">&quot;{error.interpreter_quote}&quot;</span>
+                  </div>
+                )}
+                {error.ideal_interpretation && (
+                  <div className="text-sm bg-gray-900 rounded p-2">
+                    <span className="text-cyan-400 font-semibold">Should have said:</span>{" "}
+                    <span className="text-gray-200">&quot;{error.ideal_interpretation}&quot;</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Arbiter Reasoning */}
           <div>
             <h4 className="text-xs font-semibold text-gray-400 mb-1">
-              💭 Arbiter&apos;s Reasoning:
+              💭 Explanation:
             </h4>
             <p className="text-sm text-gray-300 leading-relaxed">
               {error.arbiter_reasoning}
             </p>
           </div>
 
-          {/* Entities */}
-          {error.provider_entity && (
+          {/* Technical Details - HIDDEN by default, only show alignment info if user expands */}
+          {/* Alignment Info - NULL SAFE */}
+          {error.alignment_info && (
             <div>
               <h4 className="text-xs font-semibold text-gray-400 mb-1">
-                📝 Provider Entity:
+                🔗 Alignment Details:
               </h4>
-              <div className="text-sm bg-gray-900 rounded p-2">
-                <span className="text-blue-400">
-                  {error.provider_entity.entity_type}:
-                </span>{" "}
-                {error.provider_entity.text}
-                <span className="text-gray-500 ml-2">
-                  (normalized: {error.provider_entity.normalized})
-                </span>
+              <div className="text-sm bg-gray-900 rounded p-2 space-y-1">
+                <div>
+                  <span className="text-gray-400">Similarity:</span>{" "}
+                  <span
+                    className={clsx(
+                      "font-mono",
+                      error.alignment_info.similarity_score > 0.8
+                        ? "text-green-400"
+                        : error.alignment_info.similarity_score > 0.5
+                        ? "text-yellow-400"
+                        : "text-red-400"
+                    )}
+                  >
+                    {(error.alignment_info.similarity_score * 100).toFixed(1)}%
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400">Time Delta:</span>{" "}
+                  <span className="font-mono text-gray-300">
+                    {error.alignment_info.time_delta.toFixed(1)}s
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400">DTW Distance:</span>{" "}
+                  <span className="font-mono text-gray-300">
+                    {error.alignment_info.dtw_distance.toFixed(3)}
+                  </span>
+                </div>
               </div>
             </div>
           )}
-
-          {error.interpreter_entity && (
-            <div>
-              <h4 className="text-xs font-semibold text-gray-400 mb-1">
-                🌐 Interpreter Entity:
-              </h4>
-              <div className="text-sm bg-gray-900 rounded p-2">
-                <span className="text-purple-400">
-                  {error.interpreter_entity.entity_type}:
-                </span>{" "}
-                {error.interpreter_entity.text}
-              </div>
-            </div>
-          )}
-
-          {/* Alignment Info */}
-          <div>
-            <h4 className="text-xs font-semibold text-gray-400 mb-1">
-              🔗 Alignment Details:
-            </h4>
-            <div className="text-sm bg-gray-900 rounded p-2 space-y-1">
-              <div>
-                <span className="text-gray-400">Similarity:</span>{" "}
-                <span
-                  className={clsx(
-                    "font-mono",
-                    error.alignment_info.similarity_score > 0.8
-                      ? "text-green-400"
-                      : error.alignment_info.similarity_score > 0.5
-                      ? "text-yellow-400"
-                      : "text-red-400"
-                  )}
-                >
-                  {(error.alignment_info.similarity_score * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-400">Time Delta:</span>{" "}
-                <span className="font-mono text-gray-300">
-                  {error.alignment_info.time_delta.toFixed(1)}s
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-400">DTW Distance:</span>{" "}
-                <span className="font-mono text-gray-300">
-                  {error.alignment_info.dtw_distance.toFixed(3)}
-                </span>
-              </div>
-            </div>
-          </div>
 
           {/* Error ID */}
           <p className="text-xs text-gray-600 font-mono">{error.error_id}</p>
@@ -224,8 +258,12 @@ export function ArbiterLog({
   onClearErrors,
   className = "",
 }: ArbiterLogProps) {
-  // Count by severity
-  const severityCounts = errors.reduce(
+  // Separate system errors from interpreter errors
+  const interpreterErrors = errors.filter(e => !e.error_type?.startsWith("system_"));
+  const systemErrors = errors.filter(e => e.error_type?.startsWith("system_"));
+
+  // Count by severity (interpreter errors only - exclude system diagnostics)
+  const severityCounts = interpreterErrors.reduce(
     (acc, error) => {
       acc[error.severity] = (acc[error.severity] || 0) + 1;
       return acc;
@@ -244,6 +282,11 @@ export function ArbiterLog({
           </h2>
           <p className="text-sm text-gray-400 mt-1">
             Real-time clinical error detection
+            {systemErrors.length > 0 && (
+              <span className="ml-2 text-yellow-400">
+                ({systemErrors.length} system diagnostic{systemErrors.length !== 1 ? "s" : ""})
+              </span>
+            )}
           </p>
         </div>
 

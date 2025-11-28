@@ -110,7 +110,13 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
         const msg = JSON.parse(event.data);
         handleBackendEvent({ type: msg.type, data: msg.data });
       } catch (e) {
+        // Enhanced error logging to help debug JSON parsing issues (e.g., Infinity)
         console.error("Failed to parse WebSocket message:", e);
+        if (event.data) {
+          const preview = String(event.data).substring(0, 200);
+          console.error("Message preview:", preview);
+        }
+        // Continue processing other messages - don't break the connection
       }
     };
 
@@ -134,12 +140,18 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
     switch (event.type) {
       case "session_start":
       case "session":
-        setSessionState((prev) => ({
-          ...prev,
+        // CRITICAL: Reset ALL state on new session to prevent leakage
+        setSessionState({
           sessionId: event.data.session_id,
           isActive: true,
           startTime: new Date(),
-        }));
+          errors: [],          // Clear old errors
+          transcripts: [],     // Clear old transcripts
+          alignments: [],      // Clear old alignments
+          verdicts: [],        // Clear old verdicts
+          debugInfo: null,     // Clear debug info
+        });
+        console.log("🔄 Session reset: all state cleared for new session");
         break;
 
       case "transcript":
@@ -205,6 +217,9 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
   const providerLangRef = useRef<string>("en");
   const patientLangRef = useRef<string>("auto");
 
+  const audioLevelRef = useRef<number>(0);
+  const audioContextRef = useRef<AudioContext | null>(null);
+
   const startRecording = useCallback(async (
     role: StreamRole,
     language: string = "auto",
@@ -218,6 +233,26 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
       providerLangRef.current = providerLang;
       patientLangRef.current = patientLang;
       audioChunksRef.current = [];
+      audioLevelRef.current = 0;
+
+      // Create audio context to monitor audio levels
+      const audioContext = new AudioContext();
+      audioContextRef.current = audioContext;
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      // Monitor audio levels
+      const checkAudioLevel = () => {
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+        audioLevelRef.current = Math.max(audioLevelRef.current, average);
+      };
+
+      const levelCheckInterval = setInterval(checkAudioLevel, 100);
 
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: "audio/webm;codecs=opus",
@@ -230,7 +265,40 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
       };
 
       mediaRecorder.onstop = async () => {
+        clearInterval(levelCheckInterval);
+        audioContextRef.current?.close();
+
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        const maxLevel = audioLevelRef.current;
+
+        // Validate audio blob size and audio levels
+        console.log(`🎧 Audio blob: ${audioBlob.size} bytes (${audioChunksRef.current.length} chunks), max level: ${maxLevel.toFixed(1)}`);
+
+        if (audioBlob.size < 100) {
+          console.error("⚠️ Audio blob is too small! This will likely result in 'Thank you' hallucination.");
+          console.error("   Make sure you speak for at least 1-2 seconds after clicking Start Recording.");
+          setConnectionState((prev) => ({
+            ...prev,
+            error: "Audio too short - please record for at least 1-2 seconds",
+          }));
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        // Check if audio contains actual sound (not just silence)
+        // Typical speech has levels > 10-20, silence is < 5
+        if (maxLevel < 5) {
+          console.error("⚠️ NO AUDIO DETECTED! Microphone may be muted, off, or not selected.");
+          console.error(`   Audio level: ${maxLevel.toFixed(1)} (expected > 10 for speech)`);
+          console.error("   This would cause Whisper to hallucinate 'Thank you'");
+          setConnectionState((prev) => ({
+            ...prev,
+            error: "No audio detected - check your microphone is on and selected",
+          }));
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
         await sendAudioForTranscription(
           audioBlob,
           currentRoleRef.current,
@@ -290,19 +358,30 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
       formData.append("provider_lang", providerLang);
       formData.append("patient_lang", patientLang);
 
+      console.log(`🌐 Sending ${audioBlob.size} bytes to /transcribe for ${role}`);
+
       const response = await fetch(`${options.backendUrl}/transcribe`, {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error(`Transcription failed: ${response.statusText}`);
+        const errorText = await response.text();
+        throw new Error(`Transcription failed (${response.status}): ${errorText}`);
       }
 
       const result = await response.json();
       console.log(`📝 Transcription (${role}):`, result.text);
+      console.log(`   🎧 Audio duration: ${result.duration?.toFixed(2)}s`);
       if (result.detected_language && result.detected_language !== "auto") {
         console.log(`   🌐 Detected language: ${result.detected_language}`);
+      }
+
+      // Warn if transcription seems suspicious (known Whisper hallucination)
+      if (result.text === "Thank you." || result.text === "Thanks for watching!" || result.text === "Thank you for watching.") {
+        console.warn("⚠️ POSSIBLE WHISPER HALLUCINATION detected!");
+        console.warn("   This usually means the audio was too short, silent, or corrupted.");
+        console.warn(`   Audio size: ${audioBlob.size} bytes, Duration: ${result.duration}s`);
       }
 
       if (role === "interpreter") {

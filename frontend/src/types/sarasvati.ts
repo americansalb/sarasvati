@@ -17,6 +17,10 @@ export interface TranscriptSegment {
   confidence: number;
   is_final: boolean;
   speaker_id?: string;
+  segment_id?: string;  // Unique ID for error-transcript mapping
+  detected_language?: string;
+  english_translation?: string;  // English translation for non-English text (for QA monitors)
+  transliteration?: string;  // Romanized version of non-Latin scripts
 }
 
 export interface MedicalEntity {
@@ -40,14 +44,21 @@ export interface AlignmentMatch {
 export interface ClinicalError {
   error_id: string;
   severity: ErrorSeverity;
-  error_type: string; // "omission", "negation_mismatch", "dosage_error", etc.
+  error_type: string; // "omission", "fabrication_medical", "dosage_error", etc.
   provider_entity: MedicalEntity | null;
   interpreter_entity: MedicalEntity | null;
   description: string;
   arbiter_reasoning: string;
   confidence: number;
   detected_at: string; // ISO timestamp
-  alignment_info: AlignmentMatch;
+  alignment_info: AlignmentMatch | null; // null for system errors
+  is_system_error: boolean; // true for infrastructure failures, false for clinical errors
+  case_type?: string; // "aligned_outbound", "aligned_inbound", "fabrication", "omission_outbound", "omission_inbound"
+  // Interpreter-centric tribunal context
+  source_role?: StreamRole; // Who we're protecting (provider/patient)
+  interpreter_quote?: string; // Exact text interpreter said
+  source_quote?: string; // Exact text from source (provider/patient)
+  ideal_interpretation?: string; // What interpreter should have said
 }
 
 export interface AgentDebateResult {

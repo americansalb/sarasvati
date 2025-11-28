@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   title: "SARASVATI - Trisul Protocol",
   description: "Real-time medical interpreter monitoring system using adversarial AI agents",
   icons: {
-    icon: "/favicon.ico",
+    icon: "/favicon.svg",
   },
 };
 
