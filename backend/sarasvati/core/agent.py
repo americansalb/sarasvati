@@ -39,6 +39,11 @@ try:
 except ImportError:
     AsyncAnthropic = None
 
+try:
+    from openai import AsyncOpenAI
+except ImportError:
+    AsyncOpenAI = None
+
 from .state import (
     MedicalEntity,
     TranscriptSegment,
@@ -56,25 +61,27 @@ from .state import (
 #
 # MODEL SIZING RATIONALE:
 # - Extractor (8B): Fast structured extraction, simple JSON output
-# - Monitor (MoE): Different architecture for diversity, moderate reasoning
+# - Monitor: OpenAI GPT-4o-mini (different provider for diversity) or Mixtral fallback
 # - Arbiter (70B): Complex judicial prompt with 15+ rules - needs the biggest model
 #
-# CURRENT SETUP (cost-optimized):
+# DEFAULT SETUP (3 providers for diversity):
 # - Node A: Groq (Meta Llama 8B) - fast extraction
-# - Node B: Groq (Mistral Mixtral MoE) - different architecture for diversity
+# - Node B: OpenAI (GPT-4o-mini) - different provider for true diversity
 # - Node C: Groq (Meta Llama 70B) - complex reasoning
 #
-# FUTURE: When budget allows, swap Node B to Claude for true provider diversity:
-# - Set ANTHROPIC_API_KEY and TRIBUNAL_USE_CLAUDE=true to enable
+# To use all-Groq (cheaper): Set TRIBUNAL_MONITOR_PROVIDER=groq
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"     # Node A: Meta - 8B (fast extraction)
-DEFAULT_MODEL_MONITOR = "mixtral-8x7b-32768"         # Node B: Mistral - MoE (skeptic)
-DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"    # Node C: Meta - 70B (senior judge)
+DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"     # Node A: Groq/Meta - 8B (fast)
+DEFAULT_MODEL_MONITOR = "mixtral-8x7b-32768"         # Node B: Groq fallback
+DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"         # Node B: OpenAI (preferred)
+DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"    # Node C: Groq/Meta - 70B (judge)
 
 # Future Claude integration (disabled by default - expensive)
-# Set TRIBUNAL_USE_CLAUDE=true and ANTHROPIC_API_KEY to enable
 DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
-CLAUDE_ENABLED = os.getenv("TRIBUNAL_USE_CLAUDE", "false").lower() == "true"
+
+# Provider selection for Monitor node
+# Options: "openai" (default), "groq", "claude"
+MONITOR_PROVIDER = os.getenv("TRIBUNAL_MONITOR_PROVIDER", "openai").lower()
 
 
 class NodeAExtractor:
@@ -394,6 +401,91 @@ Remember: You are the patient's advocate. Be thorough."""
 
         except Exception as e:
             return f"Claude Monitor error: {e}. Flagging for manual review."
+
+
+class NodeBMonitorOpenAI:
+    """
+    Node B: The Monitor (Defense/Skeptic) - OPENAI VERSION
+
+    Model: GPT-4o-mini (OpenAI) - Cost-effective provider diversity
+
+    This uses OpenAI's GPT-4o-mini for the Monitor node, providing true
+    provider diversity (Groq + OpenAI) at a reasonable cost.
+
+    Why OpenAI for Monitor:
+    - Different provider than Groq (Meta/Mistral)
+    - GPT-4o-mini is fast and cost-effective
+    - Good at critical analysis
+    """
+
+    def __init__(self, openai_client: "AsyncOpenAI", model: str = DEFAULT_MODEL_MONITOR_OPENAI):
+        self.client = openai_client
+        self.model = model
+
+    async def analyze_independently(
+        self,
+        source_text: str,
+        interpreter_text: str,
+        patient_text: str = "",
+        source_role: str = "provider",
+        target_role: str = "patient",
+        case_type: str = "aligned_outbound",
+    ) -> str:
+        """
+        Independently analyze INTERPRETER PERFORMANCE using OpenAI.
+
+        Same interface as NodeBMonitor for drop-in replacement.
+        """
+        patient_section = f'''
+PATIENT CONTEXT (for verification):
+"{patient_text}"
+''' if patient_text else ""
+
+        prompt = f"""You are a SKEPTICAL medical interpretation monitor evaluating INTERPRETER BEHAVIOR.
+
+CRITICAL INSTRUCTIONS:
+- You are ONLY judging the interpreter's accuracy and ethics
+- The {source_role.upper()} statement is GROUND TRUTH - do not critique it
+- Focus on what the INTERPRETER did right or wrong
+
+{source_role.upper()}'S STATEMENT (GROUND TRUTH):
+"{source_text}"
+
+INTERPRETER'S RENDITION (what interpreter said to {target_role}):
+"{interpreter_text}"
+{patient_section}
+CASE TYPE: {case_type}
+
+Your job: Be a skeptic about the INTERPRETER'S performance.
+
+Analyze the INTERPRETER for:
+1. OMISSIONS: What critical info from the {source_role} did the interpreter fail to convey?
+2. ADDITIONS/FABRICATIONS: What did the interpreter add that the {source_role} never said?
+3. DISTORTIONS: What was mistranslated or changed (numbers, negations, medications, tone)?
+4. REGISTER VIOLATIONS: Did the interpreter change tone inappropriately (informal ↔ formal)?
+5. CLINICAL IMPACT: If errors exist, what's the patient safety risk?
+
+Write a plain-text critique of the INTERPRETER'S behavior. Be specific. Quote exact discrepancies.
+
+If the interpretation is accurate, say: "No significant issues detected."
+
+Remember: You are the patient's advocate. Be thorough."""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a skeptical medical monitor. You see NO prior analysis. Read the text directly and identify issues yourself."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=1000,
+            )
+
+            return response.choices[0].message.content
+
+        except Exception as e:
+            return f"OpenAI Monitor error: {e}. Flagging for manual review."
 
 
 class NodeCArbiter:
@@ -760,55 +852,82 @@ class ClinicalDebateOrchestrator:
     2. Node B is BLIND to Node A's output
     3. Node C sees everything and makes final judgment
 
-    Provider Diversity:
-    - Default: All Groq (Meta Llama + Mistral Mixtral)
-    - With TRIBUNAL_USE_CLAUDE=true: Node B uses Anthropic Claude for true diversity
+    Provider Diversity (controlled by TRIBUNAL_MONITOR_PROVIDER env var):
+    - "openai" (default): Node B uses OpenAI GPT-4o-mini for provider diversity
+    - "groq": All Groq (Meta Llama + Mistral Mixtral) - cheaper
+    - "claude": Node B uses Anthropic Claude - most expensive
     """
 
     def __init__(
         self,
         groq_api_key: str,
+        openai_api_key: str = "",
         anthropic_api_key: str = "",
         model_extractor: str = DEFAULT_MODEL_EXTRACTOR,
         model_monitor: str = DEFAULT_MODEL_MONITOR,
         model_arbiter: str = DEFAULT_MODEL_ARBITER,
-        use_claude_monitor: bool = False,
+        monitor_provider: str = MONITOR_PROVIDER,
     ):
         if AsyncGroq is None:
             raise ImportError("groq package not installed. Install with: pip install groq")
 
         self.groq_client = AsyncGroq(api_key=groq_api_key)
+        self.openai_client = None
         self.anthropic_client = None
-        self.using_claude = False
+        self.monitor_provider = "groq"  # Track actual provider used
 
         # Initialize Extractor and Arbiter (always Groq)
         self.extractor = NodeAExtractor(self.groq_client, model_extractor)
         self.arbiter = NodeCArbiter(self.groq_client, model_arbiter)
 
-        # Initialize Monitor - use Claude if enabled and available
-        if use_claude_monitor and anthropic_api_key and AsyncAnthropic is not None:
-            try:
-                self.anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
-                self.monitor = NodeBMonitorClaude(self.anthropic_client, DEFAULT_MODEL_MONITOR_CLAUDE)
-                self.using_claude = True
-                print(f"✅ TRIBUNAL: Using Claude ({DEFAULT_MODEL_MONITOR_CLAUDE}) for Monitor (true provider diversity)")
-            except Exception as e:
-                print(f"⚠️ Failed to initialize Claude Monitor: {e}. Falling back to Mixtral.")
+        # Initialize Monitor based on provider preference
+        monitor_model = model_monitor
+
+        if monitor_provider == "openai" and openai_api_key:
+            # Try OpenAI (default for provider diversity)
+            if AsyncOpenAI is not None:
+                try:
+                    self.openai_client = AsyncOpenAI(api_key=openai_api_key)
+                    self.monitor = NodeBMonitorOpenAI(self.openai_client, DEFAULT_MODEL_MONITOR_OPENAI)
+                    self.monitor_provider = "openai"
+                    monitor_model = DEFAULT_MODEL_MONITOR_OPENAI
+                    print(f"✅ TRIBUNAL: Using OpenAI ({DEFAULT_MODEL_MONITOR_OPENAI}) for Monitor (provider diversity)")
+                except Exception as e:
+                    print(f"⚠️ Failed to initialize OpenAI Monitor: {e}. Falling back to Groq.")
+                    self.monitor = NodeBMonitor(self.groq_client, model_monitor)
+            else:
+                print("⚠️ openai package not installed. Using Groq. Install with: pip install openai")
                 self.monitor = NodeBMonitor(self.groq_client, model_monitor)
+
+        elif monitor_provider == "claude" and anthropic_api_key:
+            # Try Claude (expensive but different)
+            if AsyncAnthropic is not None:
+                try:
+                    self.anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
+                    self.monitor = NodeBMonitorClaude(self.anthropic_client, DEFAULT_MODEL_MONITOR_CLAUDE)
+                    self.monitor_provider = "anthropic"
+                    monitor_model = DEFAULT_MODEL_MONITOR_CLAUDE
+                    print(f"✅ TRIBUNAL: Using Claude ({DEFAULT_MODEL_MONITOR_CLAUDE}) for Monitor (provider diversity)")
+                except Exception as e:
+                    print(f"⚠️ Failed to initialize Claude Monitor: {e}. Falling back to Groq.")
+                    self.monitor = NodeBMonitor(self.groq_client, model_monitor)
+            else:
+                print("⚠️ anthropic package not installed. Using Groq. Install with: pip install anthropic")
+                self.monitor = NodeBMonitor(self.groq_client, model_monitor)
+
         else:
+            # Use Groq (all-Groq setup - cheapest)
             self.monitor = NodeBMonitor(self.groq_client, model_monitor)
-            if use_claude_monitor:
-                if not anthropic_api_key:
-                    print("⚠️ TRIBUNAL_USE_CLAUDE=true but ANTHROPIC_API_KEY not set. Using Mixtral.")
-                elif AsyncAnthropic is None:
-                    print("⚠️ anthropic package not installed. Using Mixtral. Install with: pip install anthropic")
+            if monitor_provider == "openai" and not openai_api_key:
+                print("⚠️ TRIBUNAL_MONITOR_PROVIDER=openai but OPENAI_API_KEY not set. Using Groq.")
+            elif monitor_provider == "claude" and not anthropic_api_key:
+                print("⚠️ TRIBUNAL_MONITOR_PROVIDER=claude but ANTHROPIC_API_KEY not set. Using Groq.")
 
         # Store model info for debugging
-        monitor_model = DEFAULT_MODEL_MONITOR_CLAUDE if self.using_claude else model_monitor
         self.models = {
             "extractor": model_extractor,
             "monitor": monitor_model,
-            "monitor_provider": "anthropic" if self.using_claude else "groq",
+            "monitor_provider": self.monitor_provider,
             "arbiter": model_arbiter,
         }
 
