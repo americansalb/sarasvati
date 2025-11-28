@@ -4,9 +4,14 @@ SARASVATI Independent Tribunal System
 The "Trisul Protocol" - Three diverse agents with anti-telephone data flow.
 
 Architecture:
-- Node A (Extractor): llama-3.1-8b-instant (Meta) - Structured JSON extraction
-- Node B (Monitor): llama3-8b-8192 (Meta) - Blind skeptic, independent analysis
-- Node C (Arbiter): llama-3.3-70b-versatile (Meta) - Senior judge, overrides juniors
+- Node A (Extractor): llama-3.1-8b-instant (Meta) - Fast structured JSON extraction
+- Node B (Monitor): mixtral-8x7b-32768 (Mistral) - Blind skeptic, independent analysis
+- Node C (Arbiter): llama-3.3-70b-versatile (Meta) - Senior judge with complex ruleset
+
+Model Sizing Rationale:
+- Extractor (8B): Simple structured output task, speed matters
+- Monitor (MoE 46.7B): Different architecture for diversity, moderate complexity
+- Arbiter (70B): Complex judicial reasoning, many rules to follow - needs the biggest model
 
 Anti-Telephone Pattern:
 - Node A and B run in PARALLEL via asyncio.gather
@@ -41,24 +46,32 @@ from .state import (
 
 
 # ===== Default Models (can be overridden via env) =====
-# NOTE: These are fallback defaults. Server.py overrides with better models.
+# NOTE: These are fallback defaults. Server.py should use same values.
 # WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
+#
+# MODEL SIZING RATIONALE:
+# - Extractor (8B): Fast structured extraction, simple JSON output
+# - Monitor (MoE): Different architecture for diversity, moderate reasoning
+# - Arbiter (70B): Complex judicial prompt with 15+ rules - needs the biggest model
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.3-70b-versatile"  # Node A: Meta - 70B (Prosecution)
-DEFAULT_MODEL_MONITOR = "mixtral-8x7b-32768"         # Node B: Mistral - MoE (Defense)
-DEFAULT_MODEL_ARBITER = "llama-3.1-8b-instant"       # Node C: Meta - 8B (Arbiter, fast)
+DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"     # Node A: Meta - 8B (fast extraction)
+DEFAULT_MODEL_MONITOR = "mixtral-8x7b-32768"         # Node B: Mistral - MoE (skeptic)
+DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"    # Node C: Meta - 70B (senior judge)
 
 
 class NodeAExtractor:
     """
     Node A: The Extractor (Prosecution)
 
-    Model: llama-3.1-8b-instant (Meta)
+    Model: llama-3.1-8b-instant (Meta 8B) - Fast, good at structured output
 
     Inputs: Raw provider_segment, Raw interpreter_segment, Alignment metadata
     Output: Structured JSON comparing Provider Facts vs Interpreter Facts
 
     Role: "You are a clinical extraction engine. Produce STRICT JSON."
+
+    Why 8B: Extraction is a straightforward task - identify entities, format JSON.
+    Speed matters here since we run in parallel with Monitor.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_EXTRACTOR):
@@ -190,13 +203,16 @@ class NodeBMonitor:
     """
     Node B: The Monitor (Defense/Skeptic)
 
-    Model: llama3-8b-8192 (Meta) - Different model for diversity
+    Model: mixtral-8x7b-32768 (Mistral MoE ~46.7B active) - Different architecture for diversity
 
     Inputs: Raw provider_segment["text"], Raw interpreter_segment["text"]
     Constraint: Node B MUST NOT see Node A's JSON. It is BLIND to prevent anchoring bias.
 
     Role: "You are a skeptic. Read the utterances directly. Identify omissions/shifts yourself."
     Output: Plain-text critique (NOT JSON)
+
+    Why Mixtral MoE: Different model family (Mistral vs Meta) provides architectural diversity.
+    MoE architecture thinks differently than dense models, catching different edge cases.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_MONITOR):
@@ -280,7 +296,7 @@ class NodeCArbiter:
     """
     Node C: The Arbiter (Senior Judge)
 
-    Model: llama-3.3-70b-versatile (Meta) - Heavy model for final decision
+    Model: llama-3.3-70b-versatile (Meta 70B) - Largest model for complex judicial reasoning
 
     Inputs:
         - Raw Evidence (Provider + Interpreter Text)
@@ -291,6 +307,11 @@ class NodeCArbiter:
            If their claims conflict with the Raw Evidence, OVERRIDE them."
 
     Output: Final ClinicalError JSON
+
+    Why 70B: The Arbiter prompt has 15+ distinct rules, 30+ error types, cultural
+    equivalency exceptions, and severity calibration logic. This is the most complex
+    reasoning task in the tribunal - it NEEDS the biggest model to follow all rules
+    reliably. An 8B model would miss nuances and fail to apply the full ruleset.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_ARBITER):
