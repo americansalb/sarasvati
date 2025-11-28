@@ -34,7 +34,7 @@ from .state import (
     create_initial_state,
 )
 from .alignment import AlignmentEngine, BatchAligner, create_alignment_engine
-from .agent import ClinicalDebateOrchestrator, MONITOR_PROVIDER
+from .agent import ClinicalDebateOrchestrator
 
 
 class SarasvatiGraph:
@@ -62,10 +62,10 @@ class SarasvatiGraph:
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
-            model_extractor=config["groq_model_extractor"],
-            model_monitor=config["groq_model_monitor"],
-            model_arbiter=config["groq_model_arbiter"],
-            monitor_provider=MONITOR_PROVIDER,
+            # 3 different model families for consensus debate
+            model_a=config["groq_model_extractor"],  # Mistral Mixtral (via Groq)
+            model_b="gpt-4o-mini",                    # OpenAI GPT-4o-mini
+            model_c=config["groq_model_arbiter"],    # Meta Llama 70B (via Groq)
         )
 
         # Build the graph
