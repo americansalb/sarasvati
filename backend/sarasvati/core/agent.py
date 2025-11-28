@@ -1539,15 +1539,74 @@ class ClinicalDebateOrchestrator:
         # Example: "Lo siento porque yo escucho" → "I'm sorry because I listen" (NOT "I'm sorry to hear that")
         # FIXED: Explicit precedence to avoid operator precedence bugs
         if interpreter_segment:
+            raw_text = interpreter_segment.get("text", "")
             interpreter_text = (
                 interpreter_segment.get("text_english_literal")  # Priority 1: literal for interpreter eval
                 or interpreter_segment.get("text_english_smooth")  # Priority 2: smooth if literal not available
                 or interpreter_segment.get("text_english")  # Priority 3: backwards compat
-                or interpreter_segment.get("text")  # Priority 4: raw text
-                or "[NO INTERPRETATION]"
             )
+
+            # Check if we're falling back to non-English raw text
+            if not interpreter_text:
+                # Detect non-Latin scripts (Gujarati, Hindi, Arabic, etc.)
+                def has_non_latin(text: str) -> bool:
+                    """Check if text contains non-Latin characters."""
+                    if not text:
+                        return False
+                    for char in text:
+                        # Latin characters, digits, punctuation, spaces
+                        if ord(char) < 128 or char.isspace():
+                            continue
+                        # Extended Latin (accented chars)
+                        if 0x00C0 <= ord(char) <= 0x024F:
+                            continue
+                        return True
+                    return False
+
+                if has_non_latin(raw_text):
+                    # Non-Latin text without translation - DON'T use raw text
+                    interpreter_text = f"[TRANSLATION MISSING - Raw: {raw_text[:100]}...]"
+                    print(f"⚠️ TRIBUNAL: Interpreter text has no English translation!")
+                    print(f"   Raw text (non-Latin): {raw_text[:80]}...")
+                    print(f"   This segment should have been translated before tribunal.")
+                else:
+                    # Latin text (might be English already)
+                    interpreter_text = raw_text or "[NO INTERPRETATION]"
         else:
             interpreter_text = "[NO INTERPRETATION]"
+
+        # ═══════════════════════════════════════════════════════════
+        # TRANSLATION MISSING CHECK: Skip tribunal if no English translation
+        # ═══════════════════════════════════════════════════════════
+        if interpreter_text and interpreter_text.startswith("[TRANSLATION MISSING"):
+            print(f"⚠️ SKIPPING TRIBUNAL: Interpreter text has no English translation")
+            processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+            system_error = ClinicalError(
+                error_id=f"err_{datetime.utcnow().timestamp()}_no_translation",
+                severity=ErrorSeverity.MEDIUM,
+                error_type="system_translation_missing",
+                provider_entity=None,
+                interpreter_entity=None,
+                description="Translation missing for interpreter segment. Cannot evaluate without English translation.",
+                arbiter_reasoning="Translation pipeline did not provide English translation for interpreter segment. Tribunal cannot run on non-English text.",
+                confidence=0.5,
+                detected_at=datetime.utcnow(),
+                alignment_info=alignment,
+                is_system_error=True,
+                source_role=None,
+                interpreter_quote=interpreter_text,
+                source_quote=source_text,
+                ideal_interpretation=None,
+            )
+
+            return AgentDebateResult(
+                extractor_entities=[],
+                monitor_findings=["Translation missing - tribunal skipped"],
+                arbiter_decision="Cannot evaluate: interpreter text not translated to English",
+                detected_errors=[system_error],
+                processing_time_ms=processing_time,
+            )
 
         # ═══════════════════════════════════════════════════════════
         # ALIGNMENT SANITY CHECK: ALIGNED cases must have valid source
