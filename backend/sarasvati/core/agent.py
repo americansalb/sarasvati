@@ -3,12 +3,14 @@ SARASVATI Independent Tribunal System
 ======================================
 The "Trisul Protocol" - Three UNIQUE agents in CONSENSUS DEBATE.
 
-Architecture (3 UNIQUE MODELS for true independence):
-- Agent A: Llama 3.1 8B (via Groq) - Fast extraction
-- Agent B: GPT-4o-mini (via OpenAI) - Different provider
-- Agent C: GPT-4o (via OpenAI) - Best model for judicial reasoning
+Architecture (3 UNIQUE MODELS - all CHEAP!):
+- Agent A: Llama 3.1 8B (Groq) - FREE, fast extraction
+- Agent B: GPT-4o-mini (OpenAI) - $0.15/1M tokens, different architecture
+- Agent C: Llama 3.3 70B (Groq) - FREE, best reasoning
 
-This ensures 3 DIFFERENT models with different architectures and training!
+Diversity comes from:
+- Different SIZES: 8B vs 70B think very differently
+- Different PROVIDERS: Groq vs OpenAI = different training data
 
 DEBATE FLOW (not hierarchical - true consensus):
 1. ROUND 1 - Independent Analysis:
@@ -26,7 +28,7 @@ DEBATE FLOW (not hierarchical - true consensus):
    - If all disagree → continue debate (max 3 rounds)
    - Final verdict = majority or "needs human review"
 
-Providers: Groq (Llama) + OpenAI (GPT-4o family)
+Providers: Groq (FREE) + OpenAI (cheap GPT-4o-mini)
 """
 
 import os
@@ -63,21 +65,19 @@ from .state import (
 
 
 # ===== Default Models (can be overridden via env) =====
-# NOTE: These are fallback defaults. Server.py should use same values.
-# WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
-# WARNING: Groq has decommissioned Mixtral models (mixtral-8x7b-32768) as of late 2024
+# ALL CHEAP MODELS - Groq is free, GPT-4o-mini is $0.15/1M tokens
 #
-# 3 UNIQUE MODELS FOR TRUE INDEPENDENCE:
-# - Node A: Llama 3.1 8B (via Groq) - fast extraction, Meta architecture
-# - Node B: GPT-4o-mini (via OpenAI) - different provider, OpenAI architecture
-# - Node C: GPT-4o (via OpenAI) - full GPT-4o for complex judicial reasoning
+# 3 UNIQUE MODELS (all cheap!):
+# - Node A: Llama 3.1 8B (Groq) - FREE, fast extraction
+# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M tokens, different architecture
+# - Node C: Llama 3.3 70B (Groq) - FREE, best reasoning on Groq
 #
-# This ensures 3 DIFFERENT models with different architectures and training!
+# Different sizes (8B vs 70B) + different provider (OpenAI) = diversity!
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (via Groq)
-DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"            # Node B: Groq fallback (if no OpenAI)
-DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: GPT-4o-mini (OpenAI)
-DEFAULT_MODEL_ARBITER = "gpt-4o"                          # Node C: GPT-4o full (OpenAI) - best judge
+DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (Groq) - FREE
+DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"            # Node B: Groq fallback
+DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: GPT-4o-mini - CHEAP
+DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"         # Node C: Llama 70B (Groq) - FREE
 
 # Future Claude integration (disabled by default - expensive)
 DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
@@ -1149,24 +1149,14 @@ class ClinicalDebateOrchestrator:
             )
             print(f"⚠️ TRIBUNAL: Agent B falling back to Groq (no OpenAI key)")
 
-        # Agent C: OpenAI GPT-4o (full) - best model for complex judicial reasoning
-        if self.openai_client:
-            self.agent_c = DebateAgent(
-                name="Agent-C (GPT-4o)",
-                client=self.openai_client,
-                model=model_c,  # gpt-4o
-                provider="openai"
-            )
-            print(f"✅ TRIBUNAL: Agent C using OpenAI ({model_c})")
-        else:
-            # Fallback to Groq Llama 70B if no OpenAI
-            self.agent_c = DebateAgent(
-                name="Agent-C (Llama-70B-fallback)",
-                client=self.groq_client,
-                model="llama-3.3-70b-versatile",
-                provider="groq"
-            )
-            print(f"⚠️ TRIBUNAL: Agent C falling back to Groq Llama 70B (no OpenAI key)")
+        # Agent C: Llama 70B (via Groq) - FREE, best reasoning on Groq
+        self.agent_c = DebateAgent(
+            name="Agent-C (Llama-70B)",
+            client=self.groq_client,
+            model=model_c,  # llama-3.3-70b-versatile
+            provider="groq"
+        )
+        print(f"✅ TRIBUNAL: Agent C using Groq ({model_c}) - FREE")
 
         self.agents = [self.agent_a, self.agent_b, self.agent_c]
 

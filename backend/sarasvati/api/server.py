@@ -79,18 +79,18 @@ def parse_redis_url() -> tuple[str, int, int]:
 
 _redis_host, _redis_port, _redis_db = parse_redis_url()
 
-# Independent Tribunal: 3 UNIQUE MODELS for true independence
-# WARNING: Groq has decommissioned Gemma and Mixtral models as of late 2024
+# Independent Tribunal: 3 UNIQUE MODELS - ALL CHEAP!
+# Groq = FREE, GPT-4o-mini = $0.15/1M tokens
 #
 # 3 UNIQUE MODELS:
-# - Node A (Extractor): Llama 8B via Groq - fast extraction
-# - Node B (Monitor): GPT-4o-mini via OpenAI - different provider
-# - Node C (Arbiter): GPT-4o via OpenAI - best model for complex reasoning
+# - Node A: Llama 8B (Groq) - FREE, fast
+# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M, different architecture
+# - Node C: Llama 70B (Groq) - FREE, best reasoning
 #
-# This ensures 3 DIFFERENT models with different architectures!
-_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.1-8b-instant")     # Node A: Llama 8B (Groq)
-_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "llama-3.1-8b-instant")         # Groq fallback if no OpenAI
-_model_arbiter = os.getenv("OPENAI_MODEL_ARBITER", "gpt-4o")                     # Node C: GPT-4o (OpenAI)
+# Diversity: different sizes (8B/70B) + different provider (OpenAI)
+_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.1-8b-instant")     # Node A: Llama 8B - FREE
+_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "llama-3.1-8b-instant")         # Groq fallback
+_model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "llama-3.3-70b-versatile")      # Node C: Llama 70B - FREE
 
 DEFAULT_CONFIG = GraphConfig(
     max_buffer_size=50,
