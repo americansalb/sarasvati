@@ -79,18 +79,19 @@ def parse_redis_url() -> tuple[str, int, int]:
 
 _redis_host, _redis_port, _redis_db = parse_redis_url()
 
-# Independent Tribunal: 3 TOTALLY DIFFERENT model families for maximum diversity
+# Independent Tribunal: Using available models for diversity
 # NOTE: Claude (Anthropic), GPT (OpenAI), and Gemini (Google) are NOT available via Groq
-# Groq only provides open-source models. For proprietary models, we'd need multi-provider architecture.
+# Groq only provides open-source models. For proprietary models, we use multi-provider architecture.
 # WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
+# WARNING: Groq has decommissioned Mixtral models (mixtral-8x7b-32768) as of late 2024
 #
-# MODEL DIVERSITY (3 different families - critical for tribunal independence):
-# - Node A (Extractor): Mistral Mixtral MoE - different family from Arbiter
-# - Node B (Monitor): OpenAI GPT-4o-mini - different provider (set via TRIBUNAL_MONITOR_PROVIDER)
-# - Node C (Arbiter): Meta Llama 70B - biggest model for complex judicial reasoning
+# MODEL DIVERSITY (2 providers - Groq + OpenAI):
+# - Node A (Extractor): Llama 8B via Groq - fast extraction
+# - Node B (Monitor): OpenAI GPT-4o-mini - different provider for independence
+# - Node C (Arbiter): Meta Llama 70B via Groq - biggest model for complex reasoning
 #
-# This ensures NO two tribunal nodes use the same model family!
-_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "mixtral-8x7b-32768")       # Mistral MoE (via Groq)
+# For 3-family diversity: Set ANTHROPIC_API_KEY and TRIBUNAL_MONITOR_PROVIDER=claude
+_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.1-8b-instant")     # Llama 8B (via Groq) - Mixtral decommissioned
 _model_monitor = os.getenv("GROQ_MODEL_MONITOR", "llama-3.1-8b-instant")         # Groq fallback if no OpenAI
 _model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "llama-3.3-70b-versatile")      # Meta Llama 70B (via Groq)
 

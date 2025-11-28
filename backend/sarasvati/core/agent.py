@@ -3,10 +3,13 @@ SARASVATI Independent Tribunal System
 ======================================
 The "Trisul Protocol" - Three diverse agents in CONSENSUS DEBATE.
 
-Architecture (3 DIFFERENT model families for true independence):
-- Agent A: Mistral Mixtral 8x7B MoE (via Groq)
-- Agent B: OpenAI GPT-4o-mini
-- Agent C: Meta Llama 70B (via Groq)
+Architecture (2 providers for independence):
+- Agent A: Meta Llama 8B (via Groq) - Fast extraction
+- Agent B: OpenAI GPT-4o-mini - Different provider
+- Agent C: Meta Llama 70B (via Groq) - Complex reasoning
+
+NOTE: Mixtral was decommissioned by Groq in late 2024.
+For true 3-family diversity, enable Claude with ANTHROPIC_API_KEY.
 
 DEBATE FLOW (not hierarchical - true consensus):
 1. ROUND 1 - Independent Analysis:
@@ -23,10 +26,6 @@ DEBATE FLOW (not hierarchical - true consensus):
    - If 2/3 agree → consensus reached
    - If all disagree → continue debate (max 3 rounds)
    - Final verdict = majority or "needs human review"
-
-Model Family Diversity:
-- Mistral (MoE) → OpenAI (proprietary) → Meta (dense)
-- NO two agents share the same model family!
 
 Providers: Groq (fast inference) + OpenAI (diversity)
 """
@@ -67,24 +66,27 @@ from .state import (
 # ===== Default Models (can be overridden via env) =====
 # NOTE: These are fallback defaults. Server.py should use same values.
 # WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
+# WARNING: Groq has decommissioned Mixtral models (mixtral-8x7b-32768) as of late 2024
 #
-# MODEL DIVERSITY RATIONALE (3 different model families):
-# - Extractor: Mistral Mixtral MoE (different family from Arbiter)
+# MODEL DIVERSITY RATIONALE (using available models):
+# - Extractor: Llama 3.1 8B (fast, good at structured extraction)
 # - Monitor: OpenAI GPT-4o-mini (different provider entirely)
 # - Arbiter: Meta Llama 70B (biggest model for complex reasoning)
 #
-# DEFAULT SETUP (3 model families for maximum diversity):
-# - Node A: Mistral (Mixtral 8x7B MoE) - extraction via Groq
+# NOTE: Since Mixtral is decommissioned, we now have 2 Llama models on Groq.
+# For true 3-family diversity, enable Claude with ANTHROPIC_API_KEY.
+#
+# DEFAULT SETUP (2 providers for diversity):
+# - Node A: Meta (Llama 8B) - extraction via Groq
 # - Node B: OpenAI (GPT-4o-mini) - independent skeptic
 # - Node C: Meta (Llama 70B) - senior judge via Groq
 #
-# This ensures NO two tribunal nodes use the same model family!
-# To use all-Groq (cheaper): Set TRIBUNAL_MONITOR_PROVIDER=groq
+# To enable 3-family diversity: Set ANTHROPIC_API_KEY and TRIBUNAL_MONITOR_PROVIDER=claude
 
-DEFAULT_MODEL_EXTRACTOR = "mixtral-8x7b-32768"       # Node A: Mistral MoE (via Groq)
-DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"       # Node B: Groq fallback (if no OpenAI)
-DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"         # Node B: OpenAI (preferred)
-DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"    # Node C: Meta Llama 70B (via Groq)
+DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (via Groq) - Mixtral decommissioned
+DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"            # Node B: Groq fallback (if no OpenAI)
+DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: OpenAI (preferred)
+DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"         # Node C: Meta Llama 70B (via Groq)
 
 # Future Claude integration (disabled by default - expensive)
 DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
@@ -98,15 +100,15 @@ class NodeAExtractor:
     """
     Node A: The Extractor (Prosecution)
 
-    Model: mixtral-8x7b-32768 (Mistral MoE) - Different family from Arbiter
+    Model: llama-3.1-8b-instant (Meta Llama 8B) - Fast extraction model
+    NOTE: Previously used Mixtral, but Groq decommissioned it in late 2024.
 
     Inputs: Raw provider_segment, Raw interpreter_segment, Alignment metadata
     Output: Structured JSON comparing Provider Facts vs Interpreter Facts
 
     Role: "You are a clinical extraction engine. Produce STRICT JSON."
 
-    Why Mixtral: Ensures model diversity (Mistral vs Meta vs OpenAI).
-    MoE is fast enough for extraction while providing different "thinking" than Llama.
+    Why Llama 8B: Fast enough for extraction, paired with OpenAI for provider diversity.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_EXTRACTOR):
@@ -238,7 +240,8 @@ class NodeBMonitor:
     """
     Node B: The Monitor (Defense/Skeptic)
 
-    Model: mixtral-8x7b-32768 (Mistral MoE ~46.7B active) - Different architecture for diversity
+    Model: llama-3.1-8b-instant (fallback) or gpt-4o-mini (preferred via OpenAI)
+    NOTE: Previously used Mixtral, but Groq decommissioned it in late 2024.
 
     Inputs: Raw provider_segment["text"], Raw interpreter_segment["text"]
     Constraint: Node B MUST NOT see Node A's JSON. It is BLIND to prevent anchoring bias.
@@ -246,8 +249,8 @@ class NodeBMonitor:
     Role: "You are a skeptic. Read the utterances directly. Identify omissions/shifts yourself."
     Output: Plain-text critique (NOT JSON)
 
-    Why Mixtral MoE: Different model family (Mistral vs Meta) provides architectural diversity.
-    MoE architecture thinks differently than dense models, catching different edge cases.
+    Why OpenAI preferred: Different provider than Groq ensures independence.
+    Fallback to Llama 8B if no OpenAI key available.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_MONITOR):
