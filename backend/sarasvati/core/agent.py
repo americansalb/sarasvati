@@ -53,6 +53,9 @@ try:
 except ImportError:
     AsyncOpenAI = None
 
+# DeepSeek uses OpenAI-compatible API
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
 from .state import (
     MedicalEntity,
     TranscriptSegment,
@@ -65,19 +68,34 @@ from .state import (
 
 
 # ===== Default Models (can be overridden via env) =====
-# ALL CHEAP MODELS - ALL EQUAL CAPABILITY (small/efficient tier)
+# MUST BE 3 SEPARATE LLMs - Configure via environment variables:
 #
-# 3 UNIQUE MODELS - EQUAL but DIFFERENT:
-# - Node A: Llama 3.1 8B (Groq) - FREE, Meta architecture
-# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI architecture
-# - Node C: GPT-3.5-turbo (OpenAI) - $0.50/1M, older OpenAI (different training)
+# TRIBUNAL_MODEL_A = Model for Agent A (default: llama-3.1-8b-instant)
+# TRIBUNAL_MODEL_B = Model for Agent B (default: gpt-4o-mini)
+# TRIBUNAL_MODEL_C = Model for Agent C (default: gpt-3.5-turbo)
 #
-# All 3 are "efficient tier" models with similar capability but different training!
+# TRIBUNAL_PROVIDER_A = Provider for Agent A: "groq" | "openai" | "deepseek" (default: groq)
+# TRIBUNAL_PROVIDER_B = Provider for Agent B: "groq" | "openai" | "deepseek" (default: openai)
+# TRIBUNAL_PROVIDER_C = Provider for Agent C: "groq" | "openai" | "deepseek" (default: openai)
+#
+# API Keys needed:
+# - GROQ_API_KEY (for Groq models)
+# - OPENAI_API_KEY (for OpenAI models)
+# - DEEPSEEK_API_KEY (for DeepSeek models) - optional
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (Groq) - FREE
-DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"            # Node B: Groq fallback
-DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: GPT-4o-mini - CHEAP
-DEFAULT_MODEL_ARBITER = "gpt-3.5-turbo"                   # Node C: GPT-3.5-turbo (OpenAI) - different training
+DEFAULT_MODEL_A = os.getenv("TRIBUNAL_MODEL_A", "llama-3.1-8b-instant")
+DEFAULT_MODEL_B = os.getenv("TRIBUNAL_MODEL_B", "gpt-4o-mini")
+DEFAULT_MODEL_C = os.getenv("TRIBUNAL_MODEL_C", "gpt-3.5-turbo")
+
+DEFAULT_PROVIDER_A = os.getenv("TRIBUNAL_PROVIDER_A", "groq").lower()
+DEFAULT_PROVIDER_B = os.getenv("TRIBUNAL_PROVIDER_B", "openai").lower()
+DEFAULT_PROVIDER_C = os.getenv("TRIBUNAL_PROVIDER_C", "openai").lower()
+
+# Legacy defaults (for backwards compatibility)
+DEFAULT_MODEL_EXTRACTOR = DEFAULT_MODEL_A
+DEFAULT_MODEL_MONITOR = DEFAULT_MODEL_A  # Fallback
+DEFAULT_MODEL_MONITOR_OPENAI = DEFAULT_MODEL_B
+DEFAULT_MODEL_ARBITER = DEFAULT_MODEL_C
 
 # Future Claude integration (disabled by default - expensive)
 DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
@@ -1080,10 +1098,14 @@ class ClinicalDebateOrchestrator:
     2. ROUND 2: All 3 see each other's opinions, refine positions
     3. VOTE: Majority verdict wins (2/3 agreement)
 
-    Provider Diversity (3 different model families):
-    - Agent A: Mistral Mixtral (via Groq)
-    - Agent B: OpenAI GPT-4o-mini
-    - Agent C: Meta Llama 70B (via Groq)
+    Provider Diversity - FULLY CONFIGURABLE via environment variables:
+    - TRIBUNAL_MODEL_A/B/C: Model names for each agent
+    - TRIBUNAL_PROVIDER_A/B/C: Provider for each agent (groq/openai/deepseek)
+
+    Example configurations:
+    - Default: Groq (Llama 8B) + OpenAI (GPT-4o-mini) + OpenAI (GPT-3.5-turbo)
+    - All Groq: 3 different Llama models (FREE but same family)
+    - Mixed: Groq + OpenAI + DeepSeek (maximum diversity)
     """
 
     def __init__(
@@ -1091,82 +1113,146 @@ class ClinicalDebateOrchestrator:
         groq_api_key: str,
         openai_api_key: str = "",
         anthropic_api_key: str = "",
-        model_a: str = DEFAULT_MODEL_EXTRACTOR,  # Mistral Mixtral
-        model_b: str = DEFAULT_MODEL_MONITOR_OPENAI,  # OpenAI GPT-4o-mini
-        model_c: str = DEFAULT_MODEL_ARBITER,  # Meta Llama 70B
+        deepseek_api_key: str = "",
+        model_a: str = DEFAULT_MODEL_A,
+        model_b: str = DEFAULT_MODEL_B,
+        model_c: str = DEFAULT_MODEL_C,
+        provider_a: str = DEFAULT_PROVIDER_A,
+        provider_b: str = DEFAULT_PROVIDER_B,
+        provider_c: str = DEFAULT_PROVIDER_C,
     ):
-        if AsyncGroq is None:
-            raise ImportError("groq package not installed. Install with: pip install groq")
+        """
+        Initialize the tribunal with configurable models and providers.
 
-        # Initialize clients
-        self.groq_client = AsyncGroq(api_key=groq_api_key)
+        Args:
+            groq_api_key: API key for Groq (required)
+            openai_api_key: API key for OpenAI (optional)
+            anthropic_api_key: API key for Anthropic (optional, for future use)
+            deepseek_api_key: API key for DeepSeek (optional)
+            model_a: Model name for Agent A (default: llama-3.1-8b-instant)
+            model_b: Model name for Agent B (default: gpt-4o-mini)
+            model_c: Model name for Agent C (default: gpt-3.5-turbo)
+            provider_a: Provider for Agent A: "groq" | "openai" | "deepseek"
+            provider_b: Provider for Agent B: "groq" | "openai" | "deepseek"
+            provider_c: Provider for Agent C: "groq" | "openai" | "deepseek"
+        """
+        # ═══════════════════════════════════════════════════════════
+        # INITIALIZE ALL CLIENTS
+        # ═══════════════════════════════════════════════════════════
+        self.groq_client = None
         self.openai_client = None
         self.anthropic_client = None
+        self.deepseek_client = None
 
-        # Initialize OpenAI client if key provided
+        # Groq client (primary free option)
+        if groq_api_key and AsyncGroq is not None:
+            try:
+                self.groq_client = AsyncGroq(api_key=groq_api_key)
+                print(f"✅ Groq client initialized")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize Groq client: {e}")
+
+        # OpenAI client (cheap option)
         if openai_api_key and AsyncOpenAI is not None:
             try:
                 self.openai_client = AsyncOpenAI(api_key=openai_api_key)
+                print(f"✅ OpenAI client initialized")
             except Exception as e:
                 print(f"⚠️ Failed to initialize OpenAI client: {e}")
 
-        # Initialize Anthropic client if key provided (for future use)
+        # DeepSeek client (cheap + different architecture)
+        # Uses OpenAI-compatible API with different base URL
+        if deepseek_api_key and AsyncOpenAI is not None:
+            try:
+                self.deepseek_client = AsyncOpenAI(
+                    api_key=deepseek_api_key,
+                    base_url=DEEPSEEK_BASE_URL,
+                )
+                print(f"✅ DeepSeek client initialized")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize DeepSeek client: {e}")
+
+        # Anthropic client (for future use - expensive)
         if anthropic_api_key and AsyncAnthropic is not None:
             try:
                 self.anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
+                print(f"✅ Anthropic client initialized")
             except Exception as e:
                 print(f"⚠️ Failed to initialize Anthropic client: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # CREATE 3 UNIQUE DEBATE AGENTS (3 different models!)
+        # HELPER: Get client for a provider
         # ═══════════════════════════════════════════════════════════
+        def get_client_for_provider(provider: str, agent_name: str):
+            """Get the appropriate client for a provider, with fallback logic."""
+            provider = provider.lower()
 
-        # Agent A: Meta Llama 8B (via Groq) - fast extraction
+            if provider == "groq":
+                if self.groq_client:
+                    return self.groq_client, "groq"
+                print(f"⚠️ {agent_name}: Groq requested but no API key - falling back")
+
+            elif provider == "openai":
+                if self.openai_client:
+                    return self.openai_client, "openai"
+                print(f"⚠️ {agent_name}: OpenAI requested but no API key - falling back")
+
+            elif provider == "deepseek":
+                if self.deepseek_client:
+                    return self.deepseek_client, "deepseek"
+                print(f"⚠️ {agent_name}: DeepSeek requested but no API key - falling back")
+
+            elif provider == "anthropic":
+                if self.anthropic_client:
+                    return self.anthropic_client, "anthropic"
+                print(f"⚠️ {agent_name}: Anthropic requested but no API key - falling back")
+
+            # Fallback priority: Groq (free) > OpenAI (cheap) > DeepSeek
+            if self.groq_client:
+                return self.groq_client, "groq"
+            if self.openai_client:
+                return self.openai_client, "openai"
+            if self.deepseek_client:
+                return self.deepseek_client, "deepseek"
+
+            raise ValueError(f"No valid API client available for {agent_name}. Set at least one API key.")
+
+        # ═══════════════════════════════════════════════════════════
+        # CREATE 3 UNIQUE DEBATE AGENTS
+        # ═══════════════════════════════════════════════════════════
+        print(f"\n{'='*60}")
+        print(f"🏛️  TRIBUNAL CONFIGURATION")
+        print(f"{'='*60}")
+
+        # Agent A
+        client_a, actual_provider_a = get_client_for_provider(provider_a, "Agent-A")
         self.agent_a = DebateAgent(
-            name="Agent-A (Llama-8B)",
-            client=self.groq_client,
+            name=f"Agent-A ({model_a})",
+            client=client_a,
             model=model_a,
-            provider="groq"
+            provider=actual_provider_a,
         )
-        print(f"✅ TRIBUNAL: Agent A using Groq ({model_a})")
+        print(f"✅ Agent A: {model_a} via {actual_provider_a}")
 
-        # Agent B: OpenAI GPT-4o-mini (or fallback to Groq)
-        if self.openai_client:
-            self.agent_b = DebateAgent(
-                name="Agent-B (GPT-4o-mini)",
-                client=self.openai_client,
-                model=model_b,
-                provider="openai"
-            )
-            print(f"✅ TRIBUNAL: Agent B using OpenAI ({model_b})")
-        else:
-            # Fallback to Groq Llama if no OpenAI
-            self.agent_b = DebateAgent(
-                name="Agent-B (Llama-fallback)",
-                client=self.groq_client,
-                model=DEFAULT_MODEL_MONITOR,  # llama-3.1-8b
-                provider="groq"
-            )
-            print(f"⚠️ TRIBUNAL: Agent B falling back to Groq (no OpenAI key)")
+        # Agent B
+        client_b, actual_provider_b = get_client_for_provider(provider_b, "Agent-B")
+        self.agent_b = DebateAgent(
+            name=f"Agent-B ({model_b})",
+            client=client_b,
+            model=model_b,
+            provider=actual_provider_b,
+        )
+        print(f"✅ Agent B: {model_b} via {actual_provider_b}")
 
-        # Agent C: GPT-3.5-turbo (via OpenAI) - different training from GPT-4o-mini
-        if self.openai_client:
-            self.agent_c = DebateAgent(
-                name="Agent-C (GPT-3.5)",
-                client=self.openai_client,
-                model=model_c,  # gpt-3.5-turbo
-                provider="openai"
-            )
-            print(f"✅ TRIBUNAL: Agent C using OpenAI ({model_c})")
-        else:
-            # Fallback to Groq Llama 8B if no OpenAI (equal to Node A)
-            self.agent_c = DebateAgent(
-                name="Agent-C (Llama-fallback)",
-                client=self.groq_client,
-                model="llama-3.1-8b-instant",
-                provider="groq"
-            )
-            print(f"⚠️ TRIBUNAL: Agent C falling back to Groq (no OpenAI key)")
+        # Agent C
+        client_c, actual_provider_c = get_client_for_provider(provider_c, "Agent-C")
+        self.agent_c = DebateAgent(
+            name=f"Agent-C ({model_c})",
+            client=client_c,
+            model=model_c,
+            provider=actual_provider_c,
+        )
+        print(f"✅ Agent C: {model_c} via {actual_provider_c}")
 
         self.agents = [self.agent_a, self.agent_b, self.agent_c]
 
@@ -1177,14 +1263,23 @@ class ClinicalDebateOrchestrator:
             "agent_c": {"name": self.agent_c.name, "model": self.agent_c.model, "provider": self.agent_c.provider},
         }
 
-        print(f"✅ TRIBUNAL initialized with 3 agents:")
-        for name, info in self.models.items():
-            print(f"   {info['name']}: {info['model']} via {info['provider']}")
+        # Check for model diversity
+        unique_models = len(set([model_a, model_b, model_c]))
+        unique_providers = len(set([actual_provider_a, actual_provider_b, actual_provider_c]))
+
+        if unique_models < 3:
+            print(f"⚠️ WARNING: Only {unique_models} unique models. Tribunal works best with 3 DIFFERENT models.")
+        if unique_providers < 2:
+            print(f"⚠️ WARNING: All agents use same provider ({actual_provider_a}). Consider adding provider diversity.")
+
+        print(f"{'='*60}")
+        print(f"📊 Diversity: {unique_models} unique models, {unique_providers} unique providers")
+        print(f"{'='*60}\n")
 
         # Keep legacy references for backward compatibility
-        self.extractor = NodeAExtractor(self.groq_client, model_a)
-        self.monitor = NodeBMonitor(self.groq_client, DEFAULT_MODEL_MONITOR)
-        self.arbiter = NodeCArbiter(self.groq_client, model_c)
+        self.extractor = NodeAExtractor(self.groq_client or client_a, model_a)
+        self.monitor = NodeBMonitor(self.groq_client or client_a, DEFAULT_MODEL_MONITOR)
+        self.arbiter = NodeCArbiter(self.groq_client or client_a, model_c)
 
     async def run_consensus_debate(
         self,

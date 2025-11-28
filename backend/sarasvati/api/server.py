@@ -79,17 +79,35 @@ def parse_redis_url() -> tuple[str, int, int]:
 
 _redis_host, _redis_port, _redis_db = parse_redis_url()
 
-# Independent Tribunal: 3 UNIQUE MODELS - EQUAL CAPABILITY, ALL CHEAP!
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRIBUNAL CONFIGURATION (3 UNIQUE LLMs)
+# ═══════════════════════════════════════════════════════════════════════════════
 #
-# 3 UNIQUE MODELS (all "efficient tier" - similar capability):
-# - Node A: Llama 8B (Groq) - FREE, Meta architecture
-# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI architecture
-# - Node C: GPT-3.5-turbo (OpenAI) - $0.50/1M, older OpenAI (different training)
+# Configure via environment variables:
+#   TRIBUNAL_MODEL_A    = Model for Agent A (default: llama-3.1-8b-instant)
+#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-4o-mini)
+#   TRIBUNAL_MODEL_C    = Model for Agent C (default: gpt-3.5-turbo)
 #
-# All equal capability but DIFFERENT training data and architectures!
-_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.1-8b-instant")     # Node A: Llama 8B - FREE
-_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "llama-3.1-8b-instant")         # Groq fallback
-_model_arbiter = os.getenv("OPENAI_MODEL_ARBITER", "gpt-3.5-turbo")              # Node C: GPT-3.5-turbo
+#   TRIBUNAL_PROVIDER_A = Provider for Agent A: groq|openai|deepseek (default: groq)
+#   TRIBUNAL_PROVIDER_B = Provider for Agent B: groq|openai|deepseek (default: openai)
+#   TRIBUNAL_PROVIDER_C = Provider for Agent C: groq|openai|deepseek (default: openai)
+#
+# API Keys:
+#   GROQ_API_KEY     = For Groq models (FREE)
+#   OPENAI_API_KEY   = For OpenAI models (cheap)
+#   DEEPSEEK_API_KEY = For DeepSeek models (cheap + different architecture)
+#
+# Example configurations:
+#   Default: Groq (Llama 8B) + OpenAI (GPT-4o-mini) + OpenAI (GPT-3.5-turbo)
+#   All Groq FREE: Set all TRIBUNAL_PROVIDER_X to "groq" and use 3 different Llama models
+#   Max diversity: Groq + OpenAI + DeepSeek
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Legacy config (kept for backwards compatibility - actual config via agent.py defaults)
+_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.1-8b-instant")
+_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "llama-3.1-8b-instant")
+_model_arbiter = os.getenv("OPENAI_MODEL_ARBITER", "gpt-3.5-turbo")
 
 DEFAULT_CONFIG = GraphConfig(
     max_buffer_size=50,

@@ -59,14 +59,26 @@ class SarasvatiGraph:
             similarity_threshold=config["alignment_threshold"],
         )
         self.batch_aligner = BatchAligner(self.alignment_engine)
+        # Import configurable defaults from agent module
+        from .agent import (
+            DEFAULT_MODEL_A, DEFAULT_MODEL_B, DEFAULT_MODEL_C,
+            DEFAULT_PROVIDER_A, DEFAULT_PROVIDER_B, DEFAULT_PROVIDER_C,
+        )
+
         self.debate_orchestrator = ClinicalDebateOrchestrator(
+            # API Keys - set via environment variables
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
-            # 3 UNIQUE MODELS - EQUAL CAPABILITY, ALL CHEAP!
-            model_a=config["groq_model_extractor"],  # Llama 8B (Groq) - FREE
-            model_b="gpt-4o-mini",                    # GPT-4o-mini (OpenAI) - $0.15/1M
-            model_c="gpt-3.5-turbo",                  # GPT-3.5-turbo (OpenAI) - $0.50/1M
+            deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            # Models - configurable via TRIBUNAL_MODEL_A/B/C env vars
+            model_a=DEFAULT_MODEL_A,
+            model_b=DEFAULT_MODEL_B,
+            model_c=DEFAULT_MODEL_C,
+            # Providers - configurable via TRIBUNAL_PROVIDER_A/B/C env vars
+            provider_a=DEFAULT_PROVIDER_A,
+            provider_b=DEFAULT_PROVIDER_B,
+            provider_c=DEFAULT_PROVIDER_C,
         )
 
         # Build the graph
