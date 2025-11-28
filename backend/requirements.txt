@@ -11,6 +11,7 @@ uvicorn[standard]>=0.27.0
 
 # LLM Inference
 groq>=0.4.0
+anthropic>=0.25.0  # For Claude as Monitor (tribunal diversity)
 
 # HTTP Client (for Groq Whisper API)
 httpx>=0.25.0

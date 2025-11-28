@@ -34,6 +34,11 @@ try:
 except ImportError:
     AsyncGroq = None
 
+try:
+    from anthropic import AsyncAnthropic
+except ImportError:
+    AsyncAnthropic = None
+
 from .state import (
     MedicalEntity,
     TranscriptSegment,
@@ -53,10 +58,23 @@ from .state import (
 # - Extractor (8B): Fast structured extraction, simple JSON output
 # - Monitor (MoE): Different architecture for diversity, moderate reasoning
 # - Arbiter (70B): Complex judicial prompt with 15+ rules - needs the biggest model
+#
+# CURRENT SETUP (cost-optimized):
+# - Node A: Groq (Meta Llama 8B) - fast extraction
+# - Node B: Groq (Mistral Mixtral MoE) - different architecture for diversity
+# - Node C: Groq (Meta Llama 70B) - complex reasoning
+#
+# FUTURE: When budget allows, swap Node B to Claude for true provider diversity:
+# - Set ANTHROPIC_API_KEY and TRIBUNAL_USE_CLAUDE=true to enable
 
 DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"     # Node A: Meta - 8B (fast extraction)
 DEFAULT_MODEL_MONITOR = "mixtral-8x7b-32768"         # Node B: Mistral - MoE (skeptic)
 DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"    # Node C: Meta - 70B (senior judge)
+
+# Future Claude integration (disabled by default - expensive)
+# Set TRIBUNAL_USE_CLAUDE=true and ANTHROPIC_API_KEY to enable
+DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
+CLAUDE_ENABLED = os.getenv("TRIBUNAL_USE_CLAUDE", "false").lower() == "true"
 
 
 class NodeAExtractor:
@@ -290,6 +308,92 @@ Remember: You are the patient's advocate. Be thorough."""
 
         except Exception as e:
             return f"Monitor error: {e}. Flagging for manual review."
+
+
+class NodeBMonitorClaude:
+    """
+    Node B: The Monitor (Defense/Skeptic) - CLAUDE VERSION
+
+    Model: Claude Sonnet (Anthropic) - True provider diversity
+
+    This is an OPTIONAL alternative to NodeBMonitor that uses Anthropic's Claude
+    instead of Groq's Mixtral. Provides true provider diversity in the tribunal.
+
+    Enable with: TRIBUNAL_USE_CLAUDE=true and ANTHROPIC_API_KEY set
+
+    Why Claude for Monitor:
+    - Different training philosophy than Meta/Mistral models
+    - Excellent at critical analysis and finding edge cases
+    - Reduces systematic bias from using all-Groq models
+    """
+
+    def __init__(self, anthropic_client: "AsyncAnthropic", model: str = DEFAULT_MODEL_MONITOR_CLAUDE):
+        self.client = anthropic_client
+        self.model = model
+
+    async def analyze_independently(
+        self,
+        source_text: str,
+        interpreter_text: str,
+        patient_text: str = "",
+        source_role: str = "provider",
+        target_role: str = "patient",
+        case_type: str = "aligned_outbound",
+    ) -> str:
+        """
+        Independently analyze INTERPRETER PERFORMANCE using Claude.
+
+        Same interface as NodeBMonitor for drop-in replacement.
+        """
+        patient_section = f'''
+PATIENT CONTEXT (for verification):
+"{patient_text}"
+''' if patient_text else ""
+
+        prompt = f"""You are a SKEPTICAL medical interpretation monitor evaluating INTERPRETER BEHAVIOR.
+
+CRITICAL INSTRUCTIONS:
+- You are ONLY judging the interpreter's accuracy and ethics
+- The {source_role.upper()} statement is GROUND TRUTH - do not critique it
+- Focus on what the INTERPRETER did right or wrong
+
+{source_role.upper()}'S STATEMENT (GROUND TRUTH):
+"{source_text}"
+
+INTERPRETER'S RENDITION (what interpreter said to {target_role}):
+"{interpreter_text}"
+{patient_section}
+CASE TYPE: {case_type}
+
+Your job: Be a skeptic about the INTERPRETER'S performance.
+
+Analyze the INTERPRETER for:
+1. OMISSIONS: What critical info from the {source_role} did the interpreter fail to convey?
+2. ADDITIONS/FABRICATIONS: What did the interpreter add that the {source_role} never said?
+3. DISTORTIONS: What was mistranslated or changed (numbers, negations, medications, tone)?
+4. REGISTER VIOLATIONS: Did the interpreter change tone inappropriately (informal ↔ formal)?
+5. CLINICAL IMPACT: If errors exist, what's the patient safety risk?
+
+Write a plain-text critique of the INTERPRETER'S behavior. Be specific. Quote exact discrepancies.
+
+If the interpretation is accurate, say: "No significant issues detected."
+
+Remember: You are the patient's advocate. Be thorough."""
+
+        try:
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=1000,
+                messages=[
+                    {"role": "user", "content": prompt},
+                ],
+                system="You are a skeptical medical monitor. You see NO prior analysis. Read the text directly and identify issues yourself.",
+            )
+
+            return response.content[0].text
+
+        except Exception as e:
+            return f"Claude Monitor error: {e}. Flagging for manual review."
 
 
 class NodeCArbiter:
@@ -655,29 +759,56 @@ class ClinicalDebateOrchestrator:
     1. Node A and B run in PARALLEL (asyncio.gather)
     2. Node B is BLIND to Node A's output
     3. Node C sees everything and makes final judgment
+
+    Provider Diversity:
+    - Default: All Groq (Meta Llama + Mistral Mixtral)
+    - With TRIBUNAL_USE_CLAUDE=true: Node B uses Anthropic Claude for true diversity
     """
 
     def __init__(
         self,
         groq_api_key: str,
+        anthropic_api_key: str = "",
         model_extractor: str = DEFAULT_MODEL_EXTRACTOR,
         model_monitor: str = DEFAULT_MODEL_MONITOR,
         model_arbiter: str = DEFAULT_MODEL_ARBITER,
+        use_claude_monitor: bool = False,
     ):
         if AsyncGroq is None:
             raise ImportError("groq package not installed. Install with: pip install groq")
 
-        self.client = AsyncGroq(api_key=groq_api_key)
+        self.groq_client = AsyncGroq(api_key=groq_api_key)
+        self.anthropic_client = None
+        self.using_claude = False
 
-        # Initialize agents with DIFFERENT models
-        self.extractor = NodeAExtractor(self.client, model_extractor)
-        self.monitor = NodeBMonitor(self.client, model_monitor)
-        self.arbiter = NodeCArbiter(self.client, model_arbiter)
+        # Initialize Extractor and Arbiter (always Groq)
+        self.extractor = NodeAExtractor(self.groq_client, model_extractor)
+        self.arbiter = NodeCArbiter(self.groq_client, model_arbiter)
+
+        # Initialize Monitor - use Claude if enabled and available
+        if use_claude_monitor and anthropic_api_key and AsyncAnthropic is not None:
+            try:
+                self.anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
+                self.monitor = NodeBMonitorClaude(self.anthropic_client, DEFAULT_MODEL_MONITOR_CLAUDE)
+                self.using_claude = True
+                print(f"✅ TRIBUNAL: Using Claude ({DEFAULT_MODEL_MONITOR_CLAUDE}) for Monitor (true provider diversity)")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize Claude Monitor: {e}. Falling back to Mixtral.")
+                self.monitor = NodeBMonitor(self.groq_client, model_monitor)
+        else:
+            self.monitor = NodeBMonitor(self.groq_client, model_monitor)
+            if use_claude_monitor:
+                if not anthropic_api_key:
+                    print("⚠️ TRIBUNAL_USE_CLAUDE=true but ANTHROPIC_API_KEY not set. Using Mixtral.")
+                elif AsyncAnthropic is None:
+                    print("⚠️ anthropic package not installed. Using Mixtral. Install with: pip install anthropic")
 
         # Store model info for debugging
+        monitor_model = DEFAULT_MODEL_MONITOR_CLAUDE if self.using_claude else model_monitor
         self.models = {
             "extractor": model_extractor,
-            "monitor": model_monitor,
+            "monitor": monitor_model,
+            "monitor_provider": "anthropic" if self.using_claude else "groq",
             "arbiter": model_arbiter,
         }
 

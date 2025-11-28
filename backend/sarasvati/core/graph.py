@@ -34,7 +34,7 @@ from .state import (
     create_initial_state,
 )
 from .alignment import AlignmentEngine, BatchAligner, create_alignment_engine
-from .agent import ClinicalDebateOrchestrator
+from .agent import ClinicalDebateOrchestrator, CLAUDE_ENABLED
 
 
 class SarasvatiGraph:
@@ -60,9 +60,11 @@ class SarasvatiGraph:
         self.batch_aligner = BatchAligner(self.alignment_engine)
         self.debate_orchestrator = ClinicalDebateOrchestrator(
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
+            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
             model_extractor=config["groq_model_extractor"],
             model_monitor=config["groq_model_monitor"],
             model_arbiter=config["groq_model_arbiter"],
+            use_claude_monitor=CLAUDE_ENABLED,
         )
 
         # Build the graph
