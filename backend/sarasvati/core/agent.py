@@ -1,20 +1,34 @@
 """
 SARASVATI Independent Tribunal System
 ======================================
-The "Trisul Protocol" - Three diverse agents with anti-telephone data flow.
+The "Trisul Protocol" - Three UNIQUE agents in CONSENSUS DEBATE.
 
-Architecture:
-- Node A (Extractor): llama-3.1-8b-instant (Meta) - Structured JSON extraction
-- Node B (Monitor): llama3-8b-8192 (Meta) - Blind skeptic, independent analysis
-- Node C (Arbiter): llama-3.3-70b-versatile (Meta) - Senior judge, overrides juniors
+Architecture (3 UNIQUE MODELS - EQUAL capability, all CHEAP!):
+- Agent A: Llama 3.1 8B (Groq) - FREE, Meta architecture
+- Agent B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI newest efficient
+- Agent C: GPT-3.5-turbo (OpenAI) - $0.50/1M, OpenAI older (different training)
 
-Anti-Telephone Pattern:
-- Node A and B run in PARALLEL via asyncio.gather
-- Node B is BLIND to Node A's output (prevents anchoring bias)
-- Node C sees raw evidence + both A and B outputs
-- Node C can OVERRIDE junior analysts if they conflict with raw text
+All 3 are "efficient tier" models with EQUAL capability but DIFFERENT:
+- Different training data (Meta vs OpenAI 2024 vs OpenAI 2022)
+- Different architectures (Llama vs GPT-4 family vs GPT-3.5 family)
 
-This module uses Groq API for fast inference with model diversity.
+DEBATE FLOW (not hierarchical - true consensus):
+1. ROUND 1 - Independent Analysis:
+   - All 3 agents see ONLY raw evidence (source + interpreter text)
+   - Each forms their own opinion WITHOUT seeing the others
+   - This prevents anchoring bias
+
+2. ROUND 2 - Cross-Examination:
+   - All 3 agents see each other's Round 1 opinions
+   - Each can CHALLENGE or AGREE with the others
+   - They refine their positions based on peer arguments
+
+3. ROUND 3+ - Consensus:
+   - If 2/3 agree → consensus reached
+   - If all disagree → continue debate (max 3 rounds)
+   - Final verdict = majority or "needs human review"
+
+Providers: Groq (FREE) + OpenAI (cheap)
 """
 
 import os
@@ -29,6 +43,16 @@ try:
 except ImportError:
     AsyncGroq = None
 
+try:
+    from anthropic import AsyncAnthropic
+except ImportError:
+    AsyncAnthropic = None
+
+try:
+    from openai import AsyncOpenAI
+except ImportError:
+    AsyncOpenAI = None
+
 from .state import (
     MedicalEntity,
     TranscriptSegment,
@@ -41,24 +65,41 @@ from .state import (
 
 
 # ===== Default Models (can be overridden via env) =====
-# NOTE: These are fallback defaults. Server.py overrides with better models.
-# WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
+# ALL CHEAP MODELS - ALL EQUAL CAPABILITY (small/efficient tier)
+#
+# 3 UNIQUE MODELS - EQUAL but DIFFERENT:
+# - Node A: Llama 3.1 8B (Groq) - FREE, Meta architecture
+# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI architecture
+# - Node C: GPT-3.5-turbo (OpenAI) - $0.50/1M, older OpenAI (different training)
+#
+# All 3 are "efficient tier" models with similar capability but different training!
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.3-70b-versatile"  # Node A: Meta - 70B (Prosecution)
-DEFAULT_MODEL_MONITOR = "mixtral-8x7b-32768"         # Node B: Mistral - MoE (Defense)
-DEFAULT_MODEL_ARBITER = "llama-3.1-8b-instant"       # Node C: Meta - 8B (Arbiter, fast)
+DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (Groq) - FREE
+DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"            # Node B: Groq fallback
+DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: GPT-4o-mini - CHEAP
+DEFAULT_MODEL_ARBITER = "gpt-3.5-turbo"                   # Node C: GPT-3.5-turbo (OpenAI) - different training
+
+# Future Claude integration (disabled by default - expensive)
+DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
+
+# Provider selection for Monitor node
+# Options: "openai" (default), "groq", "claude"
+MONITOR_PROVIDER = os.getenv("TRIBUNAL_MONITOR_PROVIDER", "openai").lower()
 
 
 class NodeAExtractor:
     """
     Node A: The Extractor (Prosecution)
 
-    Model: llama-3.1-8b-instant (Meta)
+    Model: llama-3.1-8b-instant (Meta Llama 8B) - Fast extraction model
+    NOTE: Previously used Mixtral, but Groq decommissioned it in late 2024.
 
     Inputs: Raw provider_segment, Raw interpreter_segment, Alignment metadata
     Output: Structured JSON comparing Provider Facts vs Interpreter Facts
 
     Role: "You are a clinical extraction engine. Produce STRICT JSON."
+
+    Why Llama 8B: Fast enough for extraction, paired with OpenAI for provider diversity.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_EXTRACTOR):
@@ -190,13 +231,17 @@ class NodeBMonitor:
     """
     Node B: The Monitor (Defense/Skeptic)
 
-    Model: llama3-8b-8192 (Meta) - Different model for diversity
+    Model: llama-3.1-8b-instant (fallback) or gpt-4o-mini (preferred via OpenAI)
+    NOTE: Previously used Mixtral, but Groq decommissioned it in late 2024.
 
     Inputs: Raw provider_segment["text"], Raw interpreter_segment["text"]
     Constraint: Node B MUST NOT see Node A's JSON. It is BLIND to prevent anchoring bias.
 
     Role: "You are a skeptic. Read the utterances directly. Identify omissions/shifts yourself."
     Output: Plain-text critique (NOT JSON)
+
+    Why OpenAI preferred: Different provider than Groq ensures independence.
+    Fallback to Llama 8B if no OpenAI key available.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_MONITOR):
@@ -276,11 +321,182 @@ Remember: You are the patient's advocate. Be thorough."""
             return f"Monitor error: {e}. Flagging for manual review."
 
 
+class NodeBMonitorClaude:
+    """
+    Node B: The Monitor (Defense/Skeptic) - CLAUDE VERSION
+
+    Model: Claude Sonnet (Anthropic) - True provider diversity
+
+    This is an OPTIONAL alternative to NodeBMonitor that uses Anthropic's Claude
+    instead of Groq's Mixtral. Provides true provider diversity in the tribunal.
+
+    Enable with: TRIBUNAL_USE_CLAUDE=true and ANTHROPIC_API_KEY set
+
+    Why Claude for Monitor:
+    - Different training philosophy than Meta/Mistral models
+    - Excellent at critical analysis and finding edge cases
+    - Reduces systematic bias from using all-Groq models
+    """
+
+    def __init__(self, anthropic_client: "AsyncAnthropic", model: str = DEFAULT_MODEL_MONITOR_CLAUDE):
+        self.client = anthropic_client
+        self.model = model
+
+    async def analyze_independently(
+        self,
+        source_text: str,
+        interpreter_text: str,
+        patient_text: str = "",
+        source_role: str = "provider",
+        target_role: str = "patient",
+        case_type: str = "aligned_outbound",
+    ) -> str:
+        """
+        Independently analyze INTERPRETER PERFORMANCE using Claude.
+
+        Same interface as NodeBMonitor for drop-in replacement.
+        """
+        patient_section = f'''
+PATIENT CONTEXT (for verification):
+"{patient_text}"
+''' if patient_text else ""
+
+        prompt = f"""You are a SKEPTICAL medical interpretation monitor evaluating INTERPRETER BEHAVIOR.
+
+CRITICAL INSTRUCTIONS:
+- You are ONLY judging the interpreter's accuracy and ethics
+- The {source_role.upper()} statement is GROUND TRUTH - do not critique it
+- Focus on what the INTERPRETER did right or wrong
+
+{source_role.upper()}'S STATEMENT (GROUND TRUTH):
+"{source_text}"
+
+INTERPRETER'S RENDITION (what interpreter said to {target_role}):
+"{interpreter_text}"
+{patient_section}
+CASE TYPE: {case_type}
+
+Your job: Be a skeptic about the INTERPRETER'S performance.
+
+Analyze the INTERPRETER for:
+1. OMISSIONS: What critical info from the {source_role} did the interpreter fail to convey?
+2. ADDITIONS/FABRICATIONS: What did the interpreter add that the {source_role} never said?
+3. DISTORTIONS: What was mistranslated or changed (numbers, negations, medications, tone)?
+4. REGISTER VIOLATIONS: Did the interpreter change tone inappropriately (informal ↔ formal)?
+5. CLINICAL IMPACT: If errors exist, what's the patient safety risk?
+
+Write a plain-text critique of the INTERPRETER'S behavior. Be specific. Quote exact discrepancies.
+
+If the interpretation is accurate, say: "No significant issues detected."
+
+Remember: You are the patient's advocate. Be thorough."""
+
+        try:
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=1000,
+                messages=[
+                    {"role": "user", "content": prompt},
+                ],
+                system="You are a skeptical medical monitor. You see NO prior analysis. Read the text directly and identify issues yourself.",
+            )
+
+            return response.content[0].text
+
+        except Exception as e:
+            return f"Claude Monitor error: {e}. Flagging for manual review."
+
+
+class NodeBMonitorOpenAI:
+    """
+    Node B: The Monitor (Defense/Skeptic) - OPENAI VERSION
+
+    Model: GPT-4o-mini (OpenAI) - Cost-effective provider diversity
+
+    This uses OpenAI's GPT-4o-mini for the Monitor node, providing true
+    provider diversity (Groq + OpenAI) at a reasonable cost.
+
+    Why OpenAI for Monitor:
+    - Different provider than Groq (Meta/Mistral)
+    - GPT-4o-mini is fast and cost-effective
+    - Good at critical analysis
+    """
+
+    def __init__(self, openai_client: "AsyncOpenAI", model: str = DEFAULT_MODEL_MONITOR_OPENAI):
+        self.client = openai_client
+        self.model = model
+
+    async def analyze_independently(
+        self,
+        source_text: str,
+        interpreter_text: str,
+        patient_text: str = "",
+        source_role: str = "provider",
+        target_role: str = "patient",
+        case_type: str = "aligned_outbound",
+    ) -> str:
+        """
+        Independently analyze INTERPRETER PERFORMANCE using OpenAI.
+
+        Same interface as NodeBMonitor for drop-in replacement.
+        """
+        patient_section = f'''
+PATIENT CONTEXT (for verification):
+"{patient_text}"
+''' if patient_text else ""
+
+        prompt = f"""You are a SKEPTICAL medical interpretation monitor evaluating INTERPRETER BEHAVIOR.
+
+CRITICAL INSTRUCTIONS:
+- You are ONLY judging the interpreter's accuracy and ethics
+- The {source_role.upper()} statement is GROUND TRUTH - do not critique it
+- Focus on what the INTERPRETER did right or wrong
+
+{source_role.upper()}'S STATEMENT (GROUND TRUTH):
+"{source_text}"
+
+INTERPRETER'S RENDITION (what interpreter said to {target_role}):
+"{interpreter_text}"
+{patient_section}
+CASE TYPE: {case_type}
+
+Your job: Be a skeptic about the INTERPRETER'S performance.
+
+Analyze the INTERPRETER for:
+1. OMISSIONS: What critical info from the {source_role} did the interpreter fail to convey?
+2. ADDITIONS/FABRICATIONS: What did the interpreter add that the {source_role} never said?
+3. DISTORTIONS: What was mistranslated or changed (numbers, negations, medications, tone)?
+4. REGISTER VIOLATIONS: Did the interpreter change tone inappropriately (informal ↔ formal)?
+5. CLINICAL IMPACT: If errors exist, what's the patient safety risk?
+
+Write a plain-text critique of the INTERPRETER'S behavior. Be specific. Quote exact discrepancies.
+
+If the interpretation is accurate, say: "No significant issues detected."
+
+Remember: You are the patient's advocate. Be thorough."""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a skeptical medical monitor. You see NO prior analysis. Read the text directly and identify issues yourself."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=1000,
+            )
+
+            return response.choices[0].message.content
+
+        except Exception as e:
+            return f"OpenAI Monitor error: {e}. Flagging for manual review."
+
+
 class NodeCArbiter:
     """
     Node C: The Arbiter (Senior Judge)
 
-    Model: llama-3.3-70b-versatile (Meta) - Heavy model for final decision
+    Model: llama-3.3-70b-versatile (Meta 70B) - Largest model for complex judicial reasoning
 
     Inputs:
         - Raw Evidence (Provider + Interpreter Text)
@@ -291,6 +507,11 @@ class NodeCArbiter:
            If their claims conflict with the Raw Evidence, OVERRIDE them."
 
     Output: Final ClinicalError JSON
+
+    Why 70B: The Arbiter prompt has 15+ distinct rules, 30+ error types, cultural
+    equivalency exceptions, and severity calibration logic. This is the most complex
+    reasoning task in the tribunal - it NEEDS the biggest model to follow all rules
+    reliably. An 8B model would miss nuances and fail to apply the full ruleset.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_ARBITER):
@@ -626,38 +847,473 @@ If no errors: return {{"verdict": "NO_ERRORS", "reasoning": "...", "override_not
             )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEBATE AGENT - Unified agent for consensus-based tribunal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class DebateAgent:
+    """
+    A unified debate agent that can use any provider (Groq, OpenAI, Anthropic).
+
+    Each agent participates in a multi-round debate:
+    - Round 1: Form independent opinion from raw evidence
+    - Round 2+: See peer opinions, refine/challenge
+    - Vote: Final position for consensus
+    """
+
+    def __init__(
+        self,
+        name: str,
+        client: Any,
+        model: str,
+        provider: str,  # "groq", "openai", or "anthropic"
+    ):
+        self.name = name
+        self.client = client
+        self.model = model
+        self.provider = provider
+
+    async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Call the LLM with provider-specific API."""
+        try:
+            if self.provider == "anthropic":
+                response = await self.client.messages.create(
+                    model=self.model,
+                    max_tokens=1500,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
+                return response.content[0].text
+            else:  # groq or openai (same API)
+                response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.3,
+                    max_tokens=1500,
+                )
+                return response.choices[0].message.content
+        except Exception as e:
+            return f"[{self.name} ERROR: {e}]"
+
+    async def round1_analyze(
+        self,
+        source_text: str,
+        interpreter_text: str,
+        source_role: str,
+        case_type: str,
+    ) -> Dict[str, Any]:
+        """
+        ROUND 1: Form independent opinion from raw evidence only.
+        No peer opinions visible yet.
+        """
+        system_prompt = f"""You are {self.name}, a medical interpretation analyst.
+You are part of a 3-agent tribunal evaluating interpreter performance.
+
+CRITICAL: Form your OWN opinion. You will see peer opinions in Round 2.
+For now, analyze ONLY the raw evidence below."""
+
+        user_prompt = f"""CASE TYPE: {case_type}
+
+{source_role.upper()} SAID (GROUND TRUTH):
+"{source_text}"
+
+INTERPRETER'S RENDITION:
+"{interpreter_text}"
+
+Analyze the interpreter's performance. Look for:
+1. OMISSIONS - Did they miss critical info?
+2. FABRICATIONS - Did they add things not said?
+3. DISTORTIONS - Did they change meaning (especially numbers, negations, medications)?
+4. If accurate, say so clearly.
+
+Respond with JSON:
+{{
+  "verdict": "accurate" | "minor_issues" | "significant_errors" | "critical_errors",
+  "errors": [
+    {{"type": "omission|fabrication|distortion", "severity": "low|medium|high|critical", "description": "..."}}
+  ],
+  "reasoning": "Brief explanation of your analysis"
+}}"""
+
+        response = await self._call_llm(system_prompt, user_prompt)
+
+        # Parse JSON from response
+        try:
+            # Find JSON in response
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                return json.loads(json_match.group())
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"⚠️ {self.name} round1 JSON parse error: {e}")
+
+        return {
+            "verdict": "error",
+            "errors": [],
+            "reasoning": response,
+            "raw_response": response
+        }
+
+    async def round2_crossexamine(
+        self,
+        source_text: str,
+        interpreter_text: str,
+        source_role: str,
+        case_type: str,
+        peer_opinions: Dict[str, Dict],
+    ) -> Dict[str, Any]:
+        """
+        ROUND 2: See peer opinions, challenge or agree, refine position.
+        """
+        # Format peer opinions
+        peers_text = ""
+        for peer_name, opinion in peer_opinions.items():
+            if peer_name != self.name:
+                peers_text += f"\n{peer_name}'s ANALYSIS:\n"
+                peers_text += f"  Verdict: {opinion.get('verdict', 'unknown')}\n"
+                peers_text += f"  Reasoning: {opinion.get('reasoning', 'N/A')}\n"
+                if opinion.get('errors'):
+                    peers_text += f"  Errors found: {len(opinion['errors'])}\n"
+                    for err in opinion['errors'][:3]:  # Show first 3
+                        peers_text += f"    - {err.get('severity', '?')}: {err.get('description', '?')[:100]}\n"
+
+        system_prompt = f"""You are {self.name}, a medical interpretation analyst.
+This is ROUND 2 of the debate. You now see your peers' opinions.
+
+You may:
+- AGREE with a peer's finding you missed
+- CHALLENGE a peer's finding you think is wrong
+- MAINTAIN your position with new justification
+- CHANGE your verdict based on peer arguments"""
+
+        user_prompt = f"""ORIGINAL EVIDENCE:
+{source_role.upper()}: "{source_text}"
+INTERPRETER: "{interpreter_text}"
+
+YOUR ROUND 1 ANALYSIS:
+Verdict: {peer_opinions.get(self.name, {}).get('verdict', 'unknown')}
+Reasoning: {peer_opinions.get(self.name, {}).get('reasoning', 'N/A')}
+
+PEER OPINIONS:{peers_text}
+
+After considering your peers' analysis, what is your REFINED position?
+
+Respond with JSON:
+{{
+  "verdict": "accurate" | "minor_issues" | "significant_errors" | "critical_errors",
+  "errors": [...],
+  "reasoning": "Your refined analysis, noting agreements/disagreements with peers",
+  "agreements": ["Agent X correctly identified...", ...],
+  "challenges": ["I disagree with Agent Y because...", ...]
+}}"""
+
+        response = await self._call_llm(system_prompt, user_prompt)
+
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                return json.loads(json_match.group())
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"⚠️ {self.name} round2 JSON parse error: {e}")
+
+        return {
+            "verdict": "error",
+            "errors": [],
+            "reasoning": response,
+            "raw_response": response
+        }
+
+    async def final_vote(
+        self,
+        source_text: str,
+        interpreter_text: str,
+        all_round2_opinions: Dict[str, Dict],
+    ) -> Dict[str, Any]:
+        """
+        FINAL VOTE: After debate, cast final vote on interpreter performance.
+        """
+        # Summarize all positions
+        positions = ""
+        for agent_name, opinion in all_round2_opinions.items():
+            positions += f"\n{agent_name}: {opinion.get('verdict', 'unknown')}"
+            if opinion.get('errors'):
+                positions += f" ({len(opinion['errors'])} errors found)"
+
+        system_prompt = f"""You are {self.name}. This is your FINAL VOTE.
+The debate is over. Cast your final verdict on the interpreter's performance."""
+
+        user_prompt = f"""FINAL POSITIONS AFTER DEBATE:{positions}
+
+YOUR ROUND 2 POSITION:
+{json.dumps(all_round2_opinions.get(self.name, {}), indent=2)}
+
+Cast your FINAL vote. The majority wins.
+
+Respond with JSON:
+{{
+  "final_verdict": "accurate" | "minor_issues" | "significant_errors" | "critical_errors",
+  "final_errors": [...],
+  "confidence": 0.0-1.0,
+  "consensus_note": "Do you agree with the majority? Why/why not?"
+}}"""
+
+        response = await self._call_llm(system_prompt, user_prompt)
+
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                return json.loads(json_match.group())
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"⚠️ {self.name} final_vote JSON parse error: {e}")
+
+        return {"final_verdict": "error", "raw_response": response}
+
+
 class ClinicalDebateOrchestrator:
     """
-    Independent Tribunal Orchestrator
+    Consensus-Based Tribunal Orchestrator
 
-    Implements the Anti-Telephone pattern:
-    1. Node A and B run in PARALLEL (asyncio.gather)
-    2. Node B is BLIND to Node A's output
-    3. Node C sees everything and makes final judgment
+    Implements TRUE DEBATE between 3 agents:
+    1. ROUND 1: All 3 analyze independently (no peer visibility)
+    2. ROUND 2: All 3 see each other's opinions, refine positions
+    3. VOTE: Majority verdict wins (2/3 agreement)
+
+    Provider Diversity (3 different model families):
+    - Agent A: Mistral Mixtral (via Groq)
+    - Agent B: OpenAI GPT-4o-mini
+    - Agent C: Meta Llama 70B (via Groq)
     """
 
     def __init__(
         self,
         groq_api_key: str,
-        model_extractor: str = DEFAULT_MODEL_EXTRACTOR,
-        model_monitor: str = DEFAULT_MODEL_MONITOR,
-        model_arbiter: str = DEFAULT_MODEL_ARBITER,
+        openai_api_key: str = "",
+        anthropic_api_key: str = "",
+        model_a: str = DEFAULT_MODEL_EXTRACTOR,  # Mistral Mixtral
+        model_b: str = DEFAULT_MODEL_MONITOR_OPENAI,  # OpenAI GPT-4o-mini
+        model_c: str = DEFAULT_MODEL_ARBITER,  # Meta Llama 70B
     ):
         if AsyncGroq is None:
             raise ImportError("groq package not installed. Install with: pip install groq")
 
-        self.client = AsyncGroq(api_key=groq_api_key)
+        # Initialize clients
+        self.groq_client = AsyncGroq(api_key=groq_api_key)
+        self.openai_client = None
+        self.anthropic_client = None
 
-        # Initialize agents with DIFFERENT models
-        self.extractor = NodeAExtractor(self.client, model_extractor)
-        self.monitor = NodeBMonitor(self.client, model_monitor)
-        self.arbiter = NodeCArbiter(self.client, model_arbiter)
+        # Initialize OpenAI client if key provided
+        if openai_api_key and AsyncOpenAI is not None:
+            try:
+                self.openai_client = AsyncOpenAI(api_key=openai_api_key)
+            except Exception as e:
+                print(f"⚠️ Failed to initialize OpenAI client: {e}")
+
+        # Initialize Anthropic client if key provided (for future use)
+        if anthropic_api_key and AsyncAnthropic is not None:
+            try:
+                self.anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
+            except Exception as e:
+                print(f"⚠️ Failed to initialize Anthropic client: {e}")
+
+        # ═══════════════════════════════════════════════════════════
+        # CREATE 3 UNIQUE DEBATE AGENTS (3 different models!)
+        # ═══════════════════════════════════════════════════════════
+
+        # Agent A: Meta Llama 8B (via Groq) - fast extraction
+        self.agent_a = DebateAgent(
+            name="Agent-A (Llama-8B)",
+            client=self.groq_client,
+            model=model_a,
+            provider="groq"
+        )
+        print(f"✅ TRIBUNAL: Agent A using Groq ({model_a})")
+
+        # Agent B: OpenAI GPT-4o-mini (or fallback to Groq)
+        if self.openai_client:
+            self.agent_b = DebateAgent(
+                name="Agent-B (GPT-4o-mini)",
+                client=self.openai_client,
+                model=model_b,
+                provider="openai"
+            )
+            print(f"✅ TRIBUNAL: Agent B using OpenAI ({model_b})")
+        else:
+            # Fallback to Groq Llama if no OpenAI
+            self.agent_b = DebateAgent(
+                name="Agent-B (Llama-fallback)",
+                client=self.groq_client,
+                model=DEFAULT_MODEL_MONITOR,  # llama-3.1-8b
+                provider="groq"
+            )
+            print(f"⚠️ TRIBUNAL: Agent B falling back to Groq (no OpenAI key)")
+
+        # Agent C: GPT-3.5-turbo (via OpenAI) - different training from GPT-4o-mini
+        if self.openai_client:
+            self.agent_c = DebateAgent(
+                name="Agent-C (GPT-3.5)",
+                client=self.openai_client,
+                model=model_c,  # gpt-3.5-turbo
+                provider="openai"
+            )
+            print(f"✅ TRIBUNAL: Agent C using OpenAI ({model_c})")
+        else:
+            # Fallback to Groq Llama 8B if no OpenAI (equal to Node A)
+            self.agent_c = DebateAgent(
+                name="Agent-C (Llama-fallback)",
+                client=self.groq_client,
+                model="llama-3.1-8b-instant",
+                provider="groq"
+            )
+            print(f"⚠️ TRIBUNAL: Agent C falling back to Groq (no OpenAI key)")
+
+        self.agents = [self.agent_a, self.agent_b, self.agent_c]
 
         # Store model info for debugging
         self.models = {
-            "extractor": model_extractor,
-            "monitor": model_monitor,
-            "arbiter": model_arbiter,
+            "agent_a": {"name": self.agent_a.name, "model": self.agent_a.model, "provider": self.agent_a.provider},
+            "agent_b": {"name": self.agent_b.name, "model": self.agent_b.model, "provider": self.agent_b.provider},
+            "agent_c": {"name": self.agent_c.name, "model": self.agent_c.model, "provider": self.agent_c.provider},
+        }
+
+        print(f"✅ TRIBUNAL initialized with 3 agents:")
+        for name, info in self.models.items():
+            print(f"   {info['name']}: {info['model']} via {info['provider']}")
+
+        # Keep legacy references for backward compatibility
+        self.extractor = NodeAExtractor(self.groq_client, model_a)
+        self.monitor = NodeBMonitor(self.groq_client, DEFAULT_MODEL_MONITOR)
+        self.arbiter = NodeCArbiter(self.groq_client, model_c)
+
+    async def run_consensus_debate(
+        self,
+        source_text: str,
+        interpreter_text: str,
+        source_role: str,
+        case_type: str,
+    ) -> Dict[str, Any]:
+        """
+        Run a TRUE CONSENSUS DEBATE between all 3 agents.
+
+        Flow:
+        1. ROUND 1: All 3 agents analyze independently (parallel)
+        2. ROUND 2: All 3 see each other's opinions, refine (parallel)
+        3. CONSENSUS: Majority verdict wins (2/3 agreement)
+
+        Returns dict with:
+        - round1_opinions: Each agent's independent analysis
+        - round2_opinions: Each agent's refined position after seeing peers
+        - final_votes: Each agent's final vote
+        - consensus_verdict: The majority verdict
+        - consensus_errors: Merged error list from majority
+        - debate_log: Full debate transcript for debugging
+        """
+        debate_log = []
+
+        # ═══════════════════════════════════════════════════════════
+        # ROUND 1: Independent Analysis (all 3 in parallel)
+        # ═══════════════════════════════════════════════════════════
+        print(f"\n{'='*60}")
+        print(f"🗣️ DEBATE ROUND 1: Independent Analysis")
+        print(f"{'='*60}")
+
+        round1_tasks = [
+            agent.round1_analyze(source_text, interpreter_text, source_role, case_type)
+            for agent in self.agents
+        ]
+        round1_results = await asyncio.gather(*round1_tasks)
+
+        round1_opinions = {}
+        for agent, result in zip(self.agents, round1_results):
+            round1_opinions[agent.name] = result
+            print(f"\n{agent.name} verdict: {result.get('verdict', 'error')}")
+            if result.get('errors'):
+                print(f"  Errors: {len(result['errors'])}")
+            debate_log.append({"round": 1, "agent": agent.name, "opinion": result})
+
+        # ═══════════════════════════════════════════════════════════
+        # ROUND 2: Cross-Examination (all 3 see peers, refine in parallel)
+        # ═══════════════════════════════════════════════════════════
+        print(f"\n{'='*60}")
+        print(f"🔍 DEBATE ROUND 2: Cross-Examination")
+        print(f"{'='*60}")
+
+        round2_tasks = [
+            agent.round2_crossexamine(
+                source_text, interpreter_text, source_role, case_type, round1_opinions
+            )
+            for agent in self.agents
+        ]
+        round2_results = await asyncio.gather(*round2_tasks)
+
+        round2_opinions = {}
+        for agent, result in zip(self.agents, round2_results):
+            round2_opinions[agent.name] = result
+            print(f"\n{agent.name} refined verdict: {result.get('verdict', 'error')}")
+            if result.get('agreements'):
+                print(f"  Agreements: {result['agreements'][:2]}")
+            if result.get('challenges'):
+                print(f"  Challenges: {result['challenges'][:2]}")
+            debate_log.append({"round": 2, "agent": agent.name, "opinion": result})
+
+        # ═══════════════════════════════════════════════════════════
+        # CONSENSUS: Count votes and determine majority
+        # ═══════════════════════════════════════════════════════════
+        print(f"\n{'='*60}")
+        print(f"🗳️ CONSENSUS VOTING")
+        print(f"{'='*60}")
+
+        # Count verdicts
+        verdict_counts = {}
+        for agent_name, opinion in round2_opinions.items():
+            verdict = opinion.get('verdict', 'error')
+            verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+
+        # Find majority (2/3 or more)
+        consensus_verdict = None
+        for verdict, count in verdict_counts.items():
+            if count >= 2:
+                consensus_verdict = verdict
+                break
+
+        # If no 2/3 majority, use the most severe verdict
+        if not consensus_verdict:
+            severity_order = ['critical_errors', 'significant_errors', 'minor_issues', 'accurate', 'error']
+            for severity in severity_order:
+                if severity in verdict_counts:
+                    consensus_verdict = severity
+                    break
+
+        print(f"\n📊 Verdict counts: {verdict_counts}")
+        print(f"✅ CONSENSUS: {consensus_verdict}")
+
+        # Merge errors from agents who agree with consensus
+        consensus_errors = []
+        for agent_name, opinion in round2_opinions.items():
+            if opinion.get('verdict') == consensus_verdict:
+                for err in opinion.get('errors', []):
+                    # Avoid duplicates
+                    if not any(e.get('description') == err.get('description') for e in consensus_errors):
+                        consensus_errors.append(err)
+
+        # Map verdict to severity for compatibility
+        verdict_to_severity = {
+            'accurate': None,
+            'minor_issues': 'medium',
+            'significant_errors': 'high',
+            'critical_errors': 'critical',
+            'error': 'high',
+        }
+
+        return {
+            "round1_opinions": round1_opinions,
+            "round2_opinions": round2_opinions,
+            "verdict_counts": verdict_counts,
+            "consensus_verdict": consensus_verdict,
+            "consensus_errors": consensus_errors,
+            "consensus_severity": verdict_to_severity.get(consensus_verdict),
+            "debate_log": debate_log,
         }
 
     async def run_debate(
@@ -901,69 +1557,47 @@ class ClinicalDebateOrchestrator:
         print(f"{'='*70}\n")
 
         # ═══════════════════════════════════════════════════════════
-        # TRIBUNAL EXECUTION WITH ERROR HANDLING
-        # Wrap in try/except so tribunal failures don't kill the whole cycle
+        # CONSENSUS DEBATE: All 3 agents debate and reach consensus
         # ═══════════════════════════════════════════════════════════
         try:
-            # ═══════════════════════════════════════════════════════════
-            # PARALLEL EXECUTION: Node A and Node B run simultaneously
-            # Node B is BLIND to Node A (anti-telephone pattern)
-            # ═══════════════════════════════════════════════════════════
-
-            extractor_task = asyncio.create_task(
-                self.extractor.extract_comparison(
-                    source_segment, interpreter_segment, alignment, patient_text,
-                    source_role, target_role, case_type
-                )
-            )
-            monitor_task = asyncio.create_task(
-                self.monitor.analyze_independently(
-                    source_text, interpreter_text, patient_text,
-                    source_role, target_role, case_type
-                )
-            )
-
-            # Wait for both to complete
-            (extractor_json, extractor_notes), monitor_report = await asyncio.gather(
-                extractor_task, monitor_task
-            )
-
-            # ═══════════════════════════════════════════════════════════
-            # DEBATE OUTPUT LOGGING (Node A and Node B results)
-            # ═══════════════════════════════════════════════════════════
-            print(f"\n🔬 NODE A (EXTRACTOR) OUTPUT:")
-            print(f"   Verdict: {extractor_notes}")
-            if isinstance(extractor_json, dict) and "interpreter_errors" in extractor_json:
-                errors = extractor_json.get("interpreter_errors", [])
-                if errors:
-                    print(f"   Errors found: {len(errors)}")
-                    for idx, err in enumerate(errors):
-                        print(f"     [{idx+1}] {err.get('severity', '?').upper()}: {err.get('type', '?')} - {err.get('description', '?')[:80]}")
-                else:
-                    print(f"   ✅ No errors detected by Extractor")
-            print(f"\n👁️  NODE B (MONITOR) OUTPUT:")
-            print(f"   {monitor_report[:300]}{'...' if len(monitor_report) > 300 else ''}")
-            print()
-
-            # ═══════════════════════════════════════════════════════════
-            # SEQUENTIAL: Node C (Arbiter) sees everything
-            # ═══════════════════════════════════════════════════════════
-
-            arbiter_reasoning, error_list = await self.arbiter.arbitrate(
+            # Run the 2-round consensus debate
+            debate_result = await self.run_consensus_debate(
                 source_text=source_text,
                 interpreter_text=interpreter_text,
-                extractor_json=extractor_json,
-                monitor_report=monitor_report,
-                alignment=alignment,
-                patient_text=patient_text,
                 source_role=source_role,
-                target_role=target_role,
-                case_type=case_type,
+                case_type=case_type.value if hasattr(case_type, 'value') else str(case_type),
             )
 
-            # Log Arbiter results for debugging
-            print(f"\n⚖️  ARBITER RESULT:")
-            print(f"   Reasoning: {arbiter_reasoning[:150]}...")
+            # Extract results from debate
+            consensus_verdict = debate_result.get("consensus_verdict", "error")
+            consensus_errors = debate_result.get("consensus_errors", [])
+            round1_opinions = debate_result.get("round1_opinions", {})
+            round2_opinions = debate_result.get("round2_opinions", {})
+
+            # Build arbiter_reasoning from debate summary
+            arbiter_reasoning = f"CONSENSUS: {consensus_verdict}. "
+            arbiter_reasoning += f"Votes: {debate_result.get('verdict_counts', {})}. "
+
+            # Collect agreements and challenges from round 2
+            for agent_name, opinion in round2_opinions.items():
+                if opinion.get('agreements'):
+                    arbiter_reasoning += f"{agent_name} agreed: {opinion['agreements'][:1]}. "
+                if opinion.get('challenges'):
+                    arbiter_reasoning += f"{agent_name} challenged: {opinion['challenges'][:1]}. "
+
+            # Convert consensus errors to error_list format
+            error_list = []
+            for err in consensus_errors:
+                error_list.append({
+                    "severity": err.get("severity", "medium"),
+                    "type": err.get("type", "unknown"),
+                    "description": err.get("description", "No description"),
+                })
+
+            # Log consensus results
+            print(f"\n⚖️  CONSENSUS RESULT:")
+            print(f"   Verdict: {consensus_verdict}")
+            print(f"   Votes: {debate_result.get('verdict_counts', {})}")
             print(f"   Errors detected: {len(error_list)}")
             if error_list:
                 for idx, err in enumerate(error_list):
@@ -1056,11 +1690,32 @@ class ClinicalDebateOrchestrator:
 
             processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
 
-            # Build monitor findings from report
-            monitor_findings = [line.strip() for line in monitor_report.split('\n') if line.strip() and not line.strip().lower().startswith('no significant')]
+            # Build monitor findings from consensus debate round 1 opinions
+            # Extract key findings from each agent's reasoning
+            monitor_findings = []
+            for agent_name, opinion in round1_opinions.items():
+                reasoning = opinion.get('reasoning', '')
+                if reasoning and not reasoning.lower().startswith('no significant'):
+                    monitor_findings.append(f"{agent_name}: {reasoning[:150]}")
+
+            # Build extractor entities from round 1 opinions (errors found)
+            extractor_entities = []
+            if source_segment:
+                for agent_name, opinion in round1_opinions.items():
+                    for err in opinion.get('errors', []):
+                        if isinstance(err, dict):
+                            extractor_entities.append(MedicalEntity(
+                                entity_type=err.get('type', 'unknown'),
+                                text=err.get('description', '')[:100],
+                                normalized=err.get('description', '')[:100].lower(),
+                                confidence=0.7,
+                                timestamp=source_segment.get('timestamp', 0.0),
+                                context=source_text[:200] if source_text else '',
+                                embedding=None,
+                            ))
 
             return AgentDebateResult(
-                extractor_entities=self._json_to_entities(extractor_json, source_segment),
+                extractor_entities=extractor_entities,
                 monitor_findings=monitor_findings[:5],  # Top 5 findings
                 arbiter_decision=arbiter_reasoning,
                 detected_errors=clinical_errors,
@@ -1104,7 +1759,7 @@ class ClinicalDebateOrchestrator:
         start_time: datetime,
         source_role: str,
         source_text: str,
-        case_type: str,
+        case_type: TribunalCaseType,
     ) -> AgentDebateResult:
         """
         Handle omission cases (source spoke, interpreter didn't respond).
@@ -1120,6 +1775,9 @@ class ClinicalDebateOrchestrator:
         else:
             description = f"{source_role.capitalize()} spoke but interpreter did not respond"
             reasoning = "Omission detected - interpreter failed to render the message."
+
+        # Get case_type value for display (handle both enum and string)
+        case_type_str = case_type.value if hasattr(case_type, 'value') else str(case_type)
 
         error = ClinicalError(
             error_id=f"err_{datetime.utcnow().timestamp()}",
@@ -1140,7 +1798,7 @@ class ClinicalDebateOrchestrator:
         return AgentDebateResult(
             extractor_entities=[],
             monitor_findings=[f"CRITICAL: {source_role.capitalize()} spoke, interpreter silent - complete omission"],
-            arbiter_decision=f"Critical: Interpreter omission in {case_type} case",
+            arbiter_decision=f"Critical: Interpreter omission in {case_type_str} case",
             detected_errors=[error],
             processing_time_ms=processing_time,
         )

@@ -15,6 +15,7 @@ This is the heart of the system - a continuous processing loop that:
 from typing import Literal, Optional, Dict, Any
 from datetime import datetime
 import asyncio
+import os
 
 try:
     from langgraph.graph import StateGraph, END
@@ -60,9 +61,12 @@ class SarasvatiGraph:
         self.batch_aligner = BatchAligner(self.alignment_engine)
         self.debate_orchestrator = ClinicalDebateOrchestrator(
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
-            model_extractor=config["groq_model_extractor"],
-            model_monitor=config["groq_model_monitor"],
-            model_arbiter=config["groq_model_arbiter"],
+            openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            # 3 UNIQUE MODELS - EQUAL CAPABILITY, ALL CHEAP!
+            model_a=config["groq_model_extractor"],  # Llama 8B (Groq) - FREE
+            model_b="gpt-4o-mini",                    # GPT-4o-mini (OpenAI) - $0.15/1M
+            model_c="gpt-3.5-turbo",                  # GPT-3.5-turbo (OpenAI) - $0.50/1M
         )
 
         # Build the graph
@@ -532,7 +536,3 @@ def create_engine(config: GraphConfig) -> SarasvatiEngine:
         Configured SarasvatiEngine instance
     """
     return SarasvatiEngine(config)
-
-
-# ===== Module Import Fix =====
-import os  # Add missing import
