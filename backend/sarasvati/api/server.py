@@ -80,27 +80,32 @@ def parse_redis_url() -> tuple[str, int, int]:
 _redis_host, _redis_port, _redis_db = parse_redis_url()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TRIBUNAL CONFIGURATION (3 UNIQUE LLMs)
+# TRIBUNAL CONFIGURATION - STRICT MODE
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# Configure via environment variables:
+# REQUIREMENTS (enforced - system fails if not met):
+#   - 3 UNIQUE providers (groq, openai, deepseek - all different)
+#   - 3 UNIQUE models (all different model names)
+#   - NO FALLBACKS - missing API keys cause hard failure
+#
+# Environment Variables:
 #   TRIBUNAL_MODEL_A    = Model for Agent A (default: llama-3.1-8b-instant)
 #   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-4o-mini)
-#   TRIBUNAL_MODEL_C    = Model for Agent C (default: gpt-3.5-turbo)
+#   TRIBUNAL_MODEL_C    = Model for Agent C (default: deepseek-chat)
 #
-#   TRIBUNAL_PROVIDER_A = Provider for Agent A: groq|openai|deepseek (default: groq)
-#   TRIBUNAL_PROVIDER_B = Provider for Agent B: groq|openai|deepseek (default: openai)
-#   TRIBUNAL_PROVIDER_C = Provider for Agent C: groq|openai|deepseek (default: openai)
+#   TRIBUNAL_PROVIDER_A = Provider for Agent A (default: groq)
+#   TRIBUNAL_PROVIDER_B = Provider for Agent B (default: openai)
+#   TRIBUNAL_PROVIDER_C = Provider for Agent C (default: deepseek)
 #
-# API Keys:
+# API Keys (ALL REQUIRED for default config):
 #   GROQ_API_KEY     = For Groq models (FREE)
-#   OPENAI_API_KEY   = For OpenAI models (cheap)
-#   DEEPSEEK_API_KEY = For DeepSeek models (cheap + different architecture)
+#   OPENAI_API_KEY   = For OpenAI models (~$0.15/1M tokens)
+#   DEEPSEEK_API_KEY = For DeepSeek models (~$0.14/1M tokens)
 #
-# Example configurations:
-#   Default: Groq (Llama 8B) + OpenAI (GPT-4o-mini) + OpenAI (GPT-3.5-turbo)
-#   All Groq FREE: Set all TRIBUNAL_PROVIDER_X to "groq" and use 3 different Llama models
-#   Max diversity: Groq + OpenAI + DeepSeek
+# Default tribunal (3 unique providers, 3 unique models):
+#   Agent A: llama-3.1-8b-instant (Groq/Meta) - FREE
+#   Agent B: gpt-4o-mini (OpenAI) - $0.15/1M
+#   Agent C: deepseek-chat (DeepSeek) - $0.14/1M
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 
