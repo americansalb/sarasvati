@@ -84,13 +84,15 @@ _redis_host, _redis_port, _redis_db = parse_redis_url()
 # Groq only provides open-source models. For proprietary models, we'd need multi-provider architecture.
 # WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
 #
-# MODEL SIZING RATIONALE (critical for accuracy):
-# - Extractor (8B): Fast structured extraction, simple JSON output - speed matters
-# - Monitor (MoE ~46.7B): Different architecture for diversity, moderate reasoning
-# - Arbiter (70B): Complex judicial prompt with 15+ rules - NEEDS the biggest model
-_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.1-8b-instant")     # Meta AI (8B, fast extraction)
-_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "mixtral-8x7b-32768")           # Mistral AI (MoE, 46.7B active)
-_model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "llama-3.3-70b-versatile")      # Meta AI (70B, senior judge)
+# MODEL DIVERSITY (3 different families - critical for tribunal independence):
+# - Node A (Extractor): Mistral Mixtral MoE - different family from Arbiter
+# - Node B (Monitor): OpenAI GPT-4o-mini - different provider (set via TRIBUNAL_MONITOR_PROVIDER)
+# - Node C (Arbiter): Meta Llama 70B - biggest model for complex judicial reasoning
+#
+# This ensures NO two tribunal nodes use the same model family!
+_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "mixtral-8x7b-32768")       # Mistral MoE (via Groq)
+_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "llama-3.1-8b-instant")         # Groq fallback if no OpenAI
+_model_arbiter = os.getenv("GROQ_MODEL_ARBITER", "llama-3.3-70b-versatile")      # Meta Llama 70B (via Groq)
 
 DEFAULT_CONFIG = GraphConfig(
     max_buffer_size=50,
@@ -98,9 +100,9 @@ DEFAULT_CONFIG = GraphConfig(
     alignment_window_seconds=30.0,
     debounce_ms=500,
     enable_negation_check=True,
-    groq_model_extractor=_model_extractor,   # Node A: Meta Llama 3.1 8B (fast extraction)
-    groq_model_monitor=_model_monitor,       # Node B: Mistral Mixtral 8x7B MoE (skeptic)
-    groq_model_arbiter=_model_arbiter,       # Node C: Meta Llama 3.3 70B (senior judge)
+    groq_model_extractor=_model_extractor,   # Node A: Mistral Mixtral MoE
+    groq_model_monitor=_model_monitor,       # Node B: Groq fallback (OpenAI preferred)
+    groq_model_arbiter=_model_arbiter,       # Node C: Meta Llama 70B (judge)
     redis_host=_redis_host,
     redis_port=_redis_port,
     redis_db=_redis_db,

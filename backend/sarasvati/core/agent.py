@@ -3,15 +3,15 @@ SARASVATI Independent Tribunal System
 ======================================
 The "Trisul Protocol" - Three diverse agents with anti-telephone data flow.
 
-Architecture:
-- Node A (Extractor): llama-3.1-8b-instant (Meta) - Fast structured JSON extraction
-- Node B (Monitor): mixtral-8x7b-32768 (Mistral) - Blind skeptic, independent analysis
-- Node C (Arbiter): llama-3.3-70b-versatile (Meta) - Senior judge with complex ruleset
+Architecture (3 DIFFERENT model families for true independence):
+- Node A (Extractor): Mistral Mixtral 8x7B MoE (via Groq) - extraction
+- Node B (Monitor): OpenAI GPT-4o-mini - blind skeptic, independent analysis
+- Node C (Arbiter): Meta Llama 70B (via Groq) - senior judge with complex ruleset
 
-Model Sizing Rationale:
-- Extractor (8B): Simple structured output task, speed matters
-- Monitor (MoE 46.7B): Different architecture for diversity, moderate complexity
-- Arbiter (70B): Complex judicial reasoning, many rules to follow - needs the biggest model
+Model Family Diversity:
+- Mistral (MoE architecture) → OpenAI (proprietary) → Meta (dense)
+- NO two nodes share the same model family!
+- This ensures genuine independence - different training data, different biases
 
 Anti-Telephone Pattern:
 - Node A and B run in PARALLEL via asyncio.gather
@@ -19,7 +19,7 @@ Anti-Telephone Pattern:
 - Node C sees raw evidence + both A and B outputs
 - Node C can OVERRIDE junior analysts if they conflict with raw text
 
-This module uses Groq API for fast inference with model diversity.
+Providers: Groq (fast inference) + OpenAI (diversity)
 """
 
 import os
@@ -59,22 +59,23 @@ from .state import (
 # NOTE: These are fallback defaults. Server.py should use same values.
 # WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
 #
-# MODEL SIZING RATIONALE:
-# - Extractor (8B): Fast structured extraction, simple JSON output
-# - Monitor: OpenAI GPT-4o-mini (different provider for diversity) or Mixtral fallback
-# - Arbiter (70B): Complex judicial prompt with 15+ rules - needs the biggest model
+# MODEL DIVERSITY RATIONALE (3 different model families):
+# - Extractor: Mistral Mixtral MoE (different family from Arbiter)
+# - Monitor: OpenAI GPT-4o-mini (different provider entirely)
+# - Arbiter: Meta Llama 70B (biggest model for complex reasoning)
 #
-# DEFAULT SETUP (3 providers for diversity):
-# - Node A: Groq (Meta Llama 8B) - fast extraction
-# - Node B: OpenAI (GPT-4o-mini) - different provider for true diversity
-# - Node C: Groq (Meta Llama 70B) - complex reasoning
+# DEFAULT SETUP (3 model families for maximum diversity):
+# - Node A: Mistral (Mixtral 8x7B MoE) - extraction via Groq
+# - Node B: OpenAI (GPT-4o-mini) - independent skeptic
+# - Node C: Meta (Llama 70B) - senior judge via Groq
 #
+# This ensures NO two tribunal nodes use the same model family!
 # To use all-Groq (cheaper): Set TRIBUNAL_MONITOR_PROVIDER=groq
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"     # Node A: Groq/Meta - 8B (fast)
-DEFAULT_MODEL_MONITOR = "mixtral-8x7b-32768"         # Node B: Groq fallback
+DEFAULT_MODEL_EXTRACTOR = "mixtral-8x7b-32768"       # Node A: Mistral MoE (via Groq)
+DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"       # Node B: Groq fallback (if no OpenAI)
 DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"         # Node B: OpenAI (preferred)
-DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"    # Node C: Groq/Meta - 70B (judge)
+DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"    # Node C: Meta Llama 70B (via Groq)
 
 # Future Claude integration (disabled by default - expensive)
 DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
@@ -88,15 +89,15 @@ class NodeAExtractor:
     """
     Node A: The Extractor (Prosecution)
 
-    Model: llama-3.1-8b-instant (Meta 8B) - Fast, good at structured output
+    Model: mixtral-8x7b-32768 (Mistral MoE) - Different family from Arbiter
 
     Inputs: Raw provider_segment, Raw interpreter_segment, Alignment metadata
     Output: Structured JSON comparing Provider Facts vs Interpreter Facts
 
     Role: "You are a clinical extraction engine. Produce STRICT JSON."
 
-    Why 8B: Extraction is a straightforward task - identify entities, format JSON.
-    Speed matters here since we run in parallel with Monitor.
+    Why Mixtral: Ensures model diversity (Mistral vs Meta vs OpenAI).
+    MoE is fast enough for extraction while providing different "thinking" than Llama.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_EXTRACTOR):
