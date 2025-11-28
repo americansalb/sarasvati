@@ -1,15 +1,14 @@
 """
 SARASVATI Independent Tribunal System
 ======================================
-The "Trisul Protocol" - Three diverse agents in CONSENSUS DEBATE.
+The "Trisul Protocol" - Three UNIQUE agents in CONSENSUS DEBATE.
 
-Architecture (2 providers for independence):
-- Agent A: Meta Llama 8B (via Groq) - Fast extraction
-- Agent B: OpenAI GPT-4o-mini - Different provider
-- Agent C: Meta Llama 70B (via Groq) - Complex reasoning
+Architecture (3 UNIQUE MODELS for true independence):
+- Agent A: Llama 3.1 8B (via Groq) - Fast extraction
+- Agent B: GPT-4o-mini (via OpenAI) - Different provider
+- Agent C: GPT-4o (via OpenAI) - Best model for judicial reasoning
 
-NOTE: Mixtral was decommissioned by Groq in late 2024.
-For true 3-family diversity, enable Claude with ANTHROPIC_API_KEY.
+This ensures 3 DIFFERENT models with different architectures and training!
 
 DEBATE FLOW (not hierarchical - true consensus):
 1. ROUND 1 - Independent Analysis:
@@ -27,7 +26,7 @@ DEBATE FLOW (not hierarchical - true consensus):
    - If all disagree → continue debate (max 3 rounds)
    - Final verdict = majority or "needs human review"
 
-Providers: Groq (fast inference) + OpenAI (diversity)
+Providers: Groq (Llama) + OpenAI (GPT-4o family)
 """
 
 import os
@@ -68,25 +67,17 @@ from .state import (
 # WARNING: Groq has decommissioned all Gemma models (gemma2-27b-it, gemma2-9b-it)
 # WARNING: Groq has decommissioned Mixtral models (mixtral-8x7b-32768) as of late 2024
 #
-# MODEL DIVERSITY RATIONALE (using available models):
-# - Extractor: Llama 3.1 8B (fast, good at structured extraction)
-# - Monitor: OpenAI GPT-4o-mini (different provider entirely)
-# - Arbiter: Meta Llama 70B (biggest model for complex reasoning)
+# 3 UNIQUE MODELS FOR TRUE INDEPENDENCE:
+# - Node A: Llama 3.1 8B (via Groq) - fast extraction, Meta architecture
+# - Node B: GPT-4o-mini (via OpenAI) - different provider, OpenAI architecture
+# - Node C: GPT-4o (via OpenAI) - full GPT-4o for complex judicial reasoning
 #
-# NOTE: Since Mixtral is decommissioned, we now have 2 Llama models on Groq.
-# For true 3-family diversity, enable Claude with ANTHROPIC_API_KEY.
-#
-# DEFAULT SETUP (2 providers for diversity):
-# - Node A: Meta (Llama 8B) - extraction via Groq
-# - Node B: OpenAI (GPT-4o-mini) - independent skeptic
-# - Node C: Meta (Llama 70B) - senior judge via Groq
-#
-# To enable 3-family diversity: Set ANTHROPIC_API_KEY and TRIBUNAL_MONITOR_PROVIDER=claude
+# This ensures 3 DIFFERENT models with different architectures and training!
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (via Groq) - Mixtral decommissioned
+DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (via Groq)
 DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"            # Node B: Groq fallback (if no OpenAI)
-DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: OpenAI (preferred)
-DEFAULT_MODEL_ARBITER = "llama-3.3-70b-versatile"         # Node C: Meta Llama 70B (via Groq)
+DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: GPT-4o-mini (OpenAI)
+DEFAULT_MODEL_ARBITER = "gpt-4o"                          # Node C: GPT-4o full (OpenAI) - best judge
 
 # Future Claude integration (disabled by default - expensive)
 DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
@@ -1127,21 +1118,22 @@ class ClinicalDebateOrchestrator:
                 print(f"⚠️ Failed to initialize Anthropic client: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # CREATE 3 DEBATE AGENTS (different model families)
+        # CREATE 3 UNIQUE DEBATE AGENTS (3 different models!)
         # ═══════════════════════════════════════════════════════════
 
-        # Agent A: Mistral Mixtral (via Groq)
+        # Agent A: Meta Llama 8B (via Groq) - fast extraction
         self.agent_a = DebateAgent(
-            name="Agent-A (Mistral)",
+            name="Agent-A (Llama-8B)",
             client=self.groq_client,
             model=model_a,
             provider="groq"
         )
+        print(f"✅ TRIBUNAL: Agent A using Groq ({model_a})")
 
         # Agent B: OpenAI GPT-4o-mini (or fallback to Groq)
         if self.openai_client:
             self.agent_b = DebateAgent(
-                name="Agent-B (OpenAI)",
+                name="Agent-B (GPT-4o-mini)",
                 client=self.openai_client,
                 model=model_b,
                 provider="openai"
@@ -1157,13 +1149,24 @@ class ClinicalDebateOrchestrator:
             )
             print(f"⚠️ TRIBUNAL: Agent B falling back to Groq (no OpenAI key)")
 
-        # Agent C: Meta Llama 70B (via Groq)
-        self.agent_c = DebateAgent(
-            name="Agent-C (Meta)",
-            client=self.groq_client,
-            model=model_c,
-            provider="groq"
-        )
+        # Agent C: OpenAI GPT-4o (full) - best model for complex judicial reasoning
+        if self.openai_client:
+            self.agent_c = DebateAgent(
+                name="Agent-C (GPT-4o)",
+                client=self.openai_client,
+                model=model_c,  # gpt-4o
+                provider="openai"
+            )
+            print(f"✅ TRIBUNAL: Agent C using OpenAI ({model_c})")
+        else:
+            # Fallback to Groq Llama 70B if no OpenAI
+            self.agent_c = DebateAgent(
+                name="Agent-C (Llama-70B-fallback)",
+                client=self.groq_client,
+                model="llama-3.3-70b-versatile",
+                provider="groq"
+            )
+            print(f"⚠️ TRIBUNAL: Agent C falling back to Groq Llama 70B (no OpenAI key)")
 
         self.agents = [self.agent_a, self.agent_b, self.agent_c]
 

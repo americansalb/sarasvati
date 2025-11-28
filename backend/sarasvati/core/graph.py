@@ -63,10 +63,10 @@ class SarasvatiGraph:
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
-            # 3 different model families for consensus debate
-            model_a=config["groq_model_extractor"],  # Mistral Mixtral (via Groq)
-            model_b="gpt-4o-mini",                    # OpenAI GPT-4o-mini
-            model_c=config["groq_model_arbiter"],    # Meta Llama 70B (via Groq)
+            # 3 UNIQUE MODELS for true independence
+            model_a=config["groq_model_extractor"],  # Llama 8B (via Groq)
+            model_b="gpt-4o-mini",                    # GPT-4o-mini (via OpenAI)
+            model_c="gpt-4o",                         # GPT-4o (via OpenAI) - best judge
         )
 
         # Build the graph
