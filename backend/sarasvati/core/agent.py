@@ -952,8 +952,8 @@ Respond with JSON:
             json_match = re.search(r'\{[\s\S]*\}', response)
             if json_match:
                 return json.loads(json_match.group())
-        except:
-            pass
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"⚠️ {self.name} round1 JSON parse error: {e}")
 
         return {
             "verdict": "error",
@@ -1021,8 +1021,8 @@ Respond with JSON:
             json_match = re.search(r'\{[\s\S]*\}', response)
             if json_match:
                 return json.loads(json_match.group())
-        except:
-            pass
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"⚠️ {self.name} round2 JSON parse error: {e}")
 
         return {
             "verdict": "error",
@@ -1071,8 +1071,8 @@ Respond with JSON:
             json_match = re.search(r'\{[\s\S]*\}', response)
             if json_match:
                 return json.loads(json_match.group())
-        except:
-            pass
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"⚠️ {self.name} final_vote JSON parse error: {e}")
 
         return {"final_verdict": "error", "raw_response": response}
 
@@ -1565,6 +1565,7 @@ class ClinicalDebateOrchestrator:
             # Extract results from debate
             consensus_verdict = debate_result.get("consensus_verdict", "error")
             consensus_errors = debate_result.get("consensus_errors", [])
+            round1_opinions = debate_result.get("round1_opinions", {})
             round2_opinions = debate_result.get("round2_opinions", {})
 
             # Build arbiter_reasoning from debate summary
@@ -1683,11 +1684,32 @@ class ClinicalDebateOrchestrator:
 
             processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
 
-            # Build monitor findings from report
-            monitor_findings = [line.strip() for line in monitor_report.split('\n') if line.strip() and not line.strip().lower().startswith('no significant')]
+            # Build monitor findings from consensus debate round 1 opinions
+            # Extract key findings from each agent's reasoning
+            monitor_findings = []
+            for agent_name, opinion in round1_opinions.items():
+                reasoning = opinion.get('reasoning', '')
+                if reasoning and not reasoning.lower().startswith('no significant'):
+                    monitor_findings.append(f"{agent_name}: {reasoning[:150]}")
+
+            # Build extractor entities from round 1 opinions (errors found)
+            extractor_entities = []
+            if source_segment:
+                for agent_name, opinion in round1_opinions.items():
+                    for err in opinion.get('errors', []):
+                        if isinstance(err, dict):
+                            extractor_entities.append(MedicalEntity(
+                                entity_type=err.get('type', 'unknown'),
+                                text=err.get('description', '')[:100],
+                                normalized=err.get('description', '')[:100].lower(),
+                                confidence=0.7,
+                                timestamp=source_segment.get('timestamp', 0.0),
+                                context=source_text[:200] if source_text else '',
+                                embedding=None,
+                            ))
 
             return AgentDebateResult(
-                extractor_entities=self._json_to_entities(extractor_json, source_segment),
+                extractor_entities=extractor_entities,
                 monitor_findings=monitor_findings[:5],  # Top 5 findings
                 arbiter_decision=arbiter_reasoning,
                 detected_errors=clinical_errors,
@@ -1731,7 +1753,7 @@ class ClinicalDebateOrchestrator:
         start_time: datetime,
         source_role: str,
         source_text: str,
-        case_type: str,
+        case_type: TribunalCaseType,
     ) -> AgentDebateResult:
         """
         Handle omission cases (source spoke, interpreter didn't respond).
@@ -1747,6 +1769,9 @@ class ClinicalDebateOrchestrator:
         else:
             description = f"{source_role.capitalize()} spoke but interpreter did not respond"
             reasoning = "Omission detected - interpreter failed to render the message."
+
+        # Get case_type value for display (handle both enum and string)
+        case_type_str = case_type.value if hasattr(case_type, 'value') else str(case_type)
 
         error = ClinicalError(
             error_id=f"err_{datetime.utcnow().timestamp()}",
@@ -1767,7 +1792,7 @@ class ClinicalDebateOrchestrator:
         return AgentDebateResult(
             extractor_entities=[],
             monitor_findings=[f"CRITICAL: {source_role.capitalize()} spoke, interpreter silent - complete omission"],
-            arbiter_decision=f"Critical: Interpreter omission in {case_type} case",
+            arbiter_decision=f"Critical: Interpreter omission in {case_type_str} case",
             detected_errors=[error],
             processing_time_ms=processing_time,
         )

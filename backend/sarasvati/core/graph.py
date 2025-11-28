@@ -15,6 +15,7 @@ This is the heart of the system - a continuous processing loop that:
 from typing import Literal, Optional, Dict, Any
 from datetime import datetime
 import asyncio
+import os
 
 try:
     from langgraph.graph import StateGraph, END
@@ -535,7 +536,3 @@ def create_engine(config: GraphConfig) -> SarasvatiEngine:
         Configured SarasvatiEngine instance
     """
     return SarasvatiEngine(config)
-
-
-# ===== Module Import Fix =====
-import os  # Add missing import
