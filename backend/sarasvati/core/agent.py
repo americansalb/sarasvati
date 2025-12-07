@@ -1,16 +1,18 @@
 """
 SARASVATI Independent Tribunal System
 ======================================
-The "Trisul Protocol" - Three UNIQUE agents in CONSENSUS DEBATE.
+The "Trisul Protocol" - Three CAPABLE agents in CONSENSUS DEBATE.
 
-Architecture (3 UNIQUE MODELS - EQUAL capability, all CHEAP!):
-- Agent A: Llama 3.1 8B (Groq) - FREE, Meta architecture
-- Agent B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI newest efficient
-- Agent C: GPT-3.5-turbo (OpenAI) - $0.50/1M, OpenAI older (different training)
+Architecture (3 FLAGSHIP MODELS - True provider diversity):
+- Agent A: Llama 3.3 70B (Groq) - FREE, Meta's flagship reasoning model
+- Agent B: GPT-4o (OpenAI) - OpenAI's flagship multimodal model
+- Agent C: Claude Sonnet 4 (Anthropic) - Anthropic's flagship model
 
-All 3 are "efficient tier" models with EQUAL capability but DIFFERENT:
-- Different training data (Meta vs OpenAI 2024 vs OpenAI 2022)
-- Different architectures (Llama vs GPT-4 family vs GPT-3.5 family)
+TRUE DIVERSITY for medical safety:
+- Different training philosophies (Meta vs OpenAI vs Anthropic)
+- Different RLHF approaches (helpfulness vs safety vs honesty)
+- Different architectures (Llama vs GPT vs Claude)
+- 70B+ parameter models that can actually reason about medical content
 
 DEBATE FLOW (not hierarchical - true consensus):
 1. ROUND 1 - Independent Analysis:
@@ -28,7 +30,7 @@ DEBATE FLOW (not hierarchical - true consensus):
    - If all disagree → continue debate (max 3 rounds)
    - Final verdict = majority or "needs human review"
 
-Providers: Groq (FREE) + OpenAI (cheap)
+Providers: Groq (FREE) + OpenAI + Anthropic
 """
 
 import os
@@ -65,22 +67,22 @@ from .state import (
 
 
 # ===== Default Models (can be overridden via env) =====
-# ALL CHEAP MODELS - ALL EQUAL CAPABILITY (small/efficient tier)
+# 3 CAPABLE MODELS - Different providers, all production-grade
 #
-# 3 UNIQUE MODELS - EQUAL but DIFFERENT:
-# - Node A: Llama 3.1 8B (Groq) - FREE, Meta architecture
-# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI architecture
-# - Node C: GPT-3.5-turbo (OpenAI) - $0.50/1M, older OpenAI (different training)
+# This is MEDICAL SAFETY software. We use the BEST models available:
+# - Node A: Llama 3.3 70B (Groq) - FREE, Meta's flagship
+# - Node B: GPT-4o (OpenAI) - OpenAI's flagship
+# - Node C: Claude Sonnet 4 (Anthropic) - Different training philosophy
 #
-# All 3 are "efficient tier" models with similar capability but different training!
+# TRUE DIVERSITY: Different architectures, training data, and RLHF approaches
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (Groq) - FREE
-DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"            # Node B: Groq fallback
-DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: GPT-4o-mini - CHEAP
-DEFAULT_MODEL_ARBITER = "gpt-3.5-turbo"                   # Node C: GPT-3.5-turbo (OpenAI) - different training
+DEFAULT_MODEL_EXTRACTOR = "llama-3.3-70b-versatile"       # Node A: Llama 70B (Groq) - FREE & capable
+DEFAULT_MODEL_MONITOR = "llama-3.3-70b-versatile"         # Node B: Groq fallback (if no OpenAI)
+DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o"                   # Node B: GPT-4o - OpenAI flagship
+DEFAULT_MODEL_ARBITER = "claude-sonnet-4-20250514"        # Node C: Claude Sonnet 4 - Anthropic flagship
 
-# Future Claude integration (disabled by default - expensive)
-DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
+# Fallback models if primary unavailable
+FALLBACK_MODEL_ARBITER = "gpt-4o"                         # If no Anthropic key, use GPT-4o
 
 # Provider selection for Monitor node
 # Options: "openai" (default), "groq", "claude"
@@ -91,15 +93,16 @@ class NodeAExtractor:
     """
     Node A: The Extractor (Prosecution)
 
-    Model: llama-3.1-8b-instant (Meta Llama 8B) - Fast extraction model
-    NOTE: Previously used Mixtral, but Groq decommissioned it in late 2024.
+    Model: llama-3.3-70b-versatile (Meta Llama 70B) - Flagship reasoning model
+    Provider: Groq (FREE inference)
 
     Inputs: Raw provider_segment, Raw interpreter_segment, Alignment metadata
     Output: Structured JSON comparing Provider Facts vs Interpreter Facts
 
     Role: "You are a clinical extraction engine. Produce STRICT JSON."
 
-    Why Llama 8B: Fast enough for extraction, paired with OpenAI for provider diversity.
+    Why Llama 70B: Medical entity extraction requires real reasoning capability.
+    The 8B model was insufficient for complex medical terminology.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_EXTRACTOR):
@@ -231,8 +234,8 @@ class NodeBMonitor:
     """
     Node B: The Monitor (Defense/Skeptic)
 
-    Model: llama-3.1-8b-instant (fallback) or gpt-4o-mini (preferred via OpenAI)
-    NOTE: Previously used Mixtral, but Groq decommissioned it in late 2024.
+    Model: gpt-4o (OpenAI flagship) - Best-in-class reasoning
+    Fallback: llama-3.3-70b-versatile (Groq) if no OpenAI key
 
     Inputs: Raw provider_segment["text"], Raw interpreter_segment["text"]
     Constraint: Node B MUST NOT see Node A's JSON. It is BLIND to prevent anchoring bias.
@@ -240,8 +243,8 @@ class NodeBMonitor:
     Role: "You are a skeptic. Read the utterances directly. Identify omissions/shifts yourself."
     Output: Plain-text critique (NOT JSON)
 
-    Why OpenAI preferred: Different provider than Groq ensures independence.
-    Fallback to Llama 8B if no OpenAI key available.
+    Why GPT-4o: OpenAI's flagship provides true provider diversity from Groq/Meta.
+    Medical safety requires the best models, not the cheapest.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_MONITOR):
@@ -496,7 +499,8 @@ class NodeCArbiter:
     """
     Node C: The Arbiter (Senior Judge)
 
-    Model: llama-3.3-70b-versatile (Meta 70B) - Largest model for complex judicial reasoning
+    Model: claude-sonnet-4-20250514 (Anthropic flagship) - Best reasoning & safety
+    Fallback chain: Anthropic → GPT-4o → Llama 70B
 
     Inputs:
         - Raw Evidence (Provider + Interpreter Text)
@@ -508,10 +512,11 @@ class NodeCArbiter:
 
     Output: Final ClinicalError JSON
 
-    Why 70B: The Arbiter prompt has 15+ distinct rules, 30+ error types, cultural
-    equivalency exceptions, and severity calibration logic. This is the most complex
-    reasoning task in the tribunal - it NEEDS the biggest model to follow all rules
-    reliably. An 8B model would miss nuances and fail to apply the full ruleset.
+    Why Claude Sonnet: Anthropic's models excel at careful reasoning and nuance.
+    The Arbiter prompt has 15+ distinct rules, 30+ error types, cultural
+    equivalency exceptions, and severity calibration logic. Claude's training
+    on avoiding harmful outputs makes it ideal for medical safety decisions.
+    True 3-provider diversity: Meta (Groq) + OpenAI + Anthropic.
     """
 
     def __init__(self, groq_client: AsyncGroq, model: str = DEFAULT_MODEL_ARBITER):
@@ -1080,10 +1085,12 @@ class ClinicalDebateOrchestrator:
     2. ROUND 2: All 3 see each other's opinions, refine positions
     3. VOTE: Majority verdict wins (2/3 agreement)
 
-    Provider Diversity (3 different model families):
-    - Agent A: Mistral Mixtral (via Groq)
-    - Agent B: OpenAI GPT-4o-mini
-    - Agent C: Meta Llama 70B (via Groq)
+    Provider Diversity (3 FLAGSHIP models from 3 different providers):
+    - Agent A: Llama 3.3 70B (Groq) - Meta's flagship, FREE
+    - Agent B: GPT-4o (OpenAI) - OpenAI's flagship
+    - Agent C: Claude Sonnet 4 (Anthropic) - Anthropic's flagship
+
+    This is MEDICAL SAFETY software - we use the BEST models available.
     """
 
     def __init__(
@@ -1091,9 +1098,9 @@ class ClinicalDebateOrchestrator:
         groq_api_key: str,
         openai_api_key: str = "",
         anthropic_api_key: str = "",
-        model_a: str = DEFAULT_MODEL_EXTRACTOR,  # Mistral Mixtral
-        model_b: str = DEFAULT_MODEL_MONITOR_OPENAI,  # OpenAI GPT-4o-mini
-        model_c: str = DEFAULT_MODEL_ARBITER,  # Meta Llama 70B
+        model_a: str = DEFAULT_MODEL_EXTRACTOR,  # Llama 3.3 70B
+        model_b: str = DEFAULT_MODEL_MONITOR_OPENAI,  # GPT-4o
+        model_c: str = DEFAULT_MODEL_ARBITER,  # Claude Sonnet 4
     ):
         if AsyncGroq is None:
             raise ImportError("groq package not installed. Install with: pip install groq")
@@ -1118,55 +1125,65 @@ class ClinicalDebateOrchestrator:
                 print(f"⚠️ Failed to initialize Anthropic client: {e}")
 
         # ═══════════════════════════════════════════════════════════
-        # CREATE 3 UNIQUE DEBATE AGENTS (3 different models!)
+        # CREATE 3 CAPABLE DEBATE AGENTS (flagship models from 3 providers)
         # ═══════════════════════════════════════════════════════════
 
-        # Agent A: Meta Llama 8B (via Groq) - fast extraction
+        # Agent A: Meta Llama 3.3 70B (via Groq) - FREE and capable
         self.agent_a = DebateAgent(
-            name="Agent-A (Llama-8B)",
+            name="Agent-A (Llama-70B)",
             client=self.groq_client,
             model=model_a,
             provider="groq"
         )
         print(f"✅ TRIBUNAL: Agent A using Groq ({model_a})")
 
-        # Agent B: OpenAI GPT-4o-mini (or fallback to Groq)
+        # Agent B: OpenAI GPT-4o (flagship) or fallback to Groq 70B
         if self.openai_client:
             self.agent_b = DebateAgent(
-                name="Agent-B (GPT-4o-mini)",
+                name="Agent-B (GPT-4o)",
                 client=self.openai_client,
                 model=model_b,
                 provider="openai"
             )
             print(f"✅ TRIBUNAL: Agent B using OpenAI ({model_b})")
         else:
-            # Fallback to Groq Llama if no OpenAI
+            # Fallback to Groq Llama 70B if no OpenAI (still capable)
             self.agent_b = DebateAgent(
-                name="Agent-B (Llama-fallback)",
+                name="Agent-B (Llama-70B-fallback)",
                 client=self.groq_client,
-                model=DEFAULT_MODEL_MONITOR,  # llama-3.1-8b
+                model=DEFAULT_MODEL_MONITOR,  # llama-3.3-70b-versatile
                 provider="groq"
             )
-            print(f"⚠️ TRIBUNAL: Agent B falling back to Groq (no OpenAI key)")
+            print(f"⚠️ TRIBUNAL: Agent B falling back to Groq 70B (no OpenAI key)")
 
-        # Agent C: GPT-3.5-turbo (via OpenAI) - different training from GPT-4o-mini
-        if self.openai_client:
+        # Agent C: Claude Sonnet 4 (Anthropic) - true provider diversity
+        # Fallback chain: Anthropic → OpenAI GPT-4o → Groq 70B
+        if self.anthropic_client:
             self.agent_c = DebateAgent(
-                name="Agent-C (GPT-3.5)",
+                name="Agent-C (Claude-Sonnet)",
+                client=self.anthropic_client,
+                model=model_c,  # claude-sonnet-4-20250514
+                provider="anthropic"
+            )
+            print(f"✅ TRIBUNAL: Agent C using Anthropic ({model_c})")
+        elif self.openai_client:
+            # Fallback to GPT-4o if no Anthropic key
+            self.agent_c = DebateAgent(
+                name="Agent-C (GPT-4o-fallback)",
                 client=self.openai_client,
-                model=model_c,  # gpt-3.5-turbo
+                model=FALLBACK_MODEL_ARBITER,  # gpt-4o
                 provider="openai"
             )
-            print(f"✅ TRIBUNAL: Agent C using OpenAI ({model_c})")
+            print(f"⚠️ TRIBUNAL: Agent C falling back to GPT-4o (no Anthropic key)")
         else:
-            # Fallback to Groq Llama 8B if no OpenAI (equal to Node A)
+            # Final fallback to Groq 70B
             self.agent_c = DebateAgent(
-                name="Agent-C (Llama-fallback)",
+                name="Agent-C (Llama-70B-fallback)",
                 client=self.groq_client,
-                model="llama-3.1-8b-instant",
+                model="llama-3.3-70b-versatile",
                 provider="groq"
             )
-            print(f"⚠️ TRIBUNAL: Agent C falling back to Groq (no OpenAI key)")
+            print(f"⚠️ TRIBUNAL: Agent C falling back to Groq 70B (no Anthropic or OpenAI key)")
 
         self.agents = [self.agent_a, self.agent_b, self.agent_c]
 

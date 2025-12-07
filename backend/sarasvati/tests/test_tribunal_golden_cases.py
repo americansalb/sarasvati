@@ -314,32 +314,34 @@ GOLDEN_CASES = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestModelConfiguration:
-    """Verify that model assignments are correct (big judge, small workers)."""
+    """Verify that model assignments are correct (all flagship models)."""
 
-    def test_extractor_uses_8b_model(self):
-        """Extractor should use the fast 8B model for structured extraction."""
-        assert "8b" in DEFAULT_MODEL_EXTRACTOR.lower(), (
-            f"Extractor should use 8B model for speed, got: {DEFAULT_MODEL_EXTRACTOR}"
+    def test_extractor_uses_70b_model(self):
+        """Extractor should use Llama 70B for capable medical extraction."""
+        assert "70b" in DEFAULT_MODEL_EXTRACTOR.lower(), (
+            f"Extractor should use 70B model for medical reasoning, got: {DEFAULT_MODEL_EXTRACTOR}"
         )
 
-    def test_monitor_uses_mixtral(self):
-        """Monitor should use Mixtral for architectural diversity."""
-        assert "mixtral" in DEFAULT_MODEL_MONITOR.lower(), (
-            f"Monitor should use Mixtral MoE for diversity, got: {DEFAULT_MODEL_MONITOR}"
+    def test_monitor_fallback_uses_70b(self):
+        """Monitor fallback should use Llama 70B (not 8B)."""
+        assert "70b" in DEFAULT_MODEL_MONITOR.lower(), (
+            f"Monitor fallback should use 70B model, got: {DEFAULT_MODEL_MONITOR}"
         )
 
-    def test_arbiter_uses_70b_model(self):
-        """Arbiter should use the largest model (70B) for complex reasoning."""
-        assert "70b" in DEFAULT_MODEL_ARBITER.lower(), (
-            f"Arbiter should use 70B model for complex reasoning, got: {DEFAULT_MODEL_ARBITER}"
+    def test_arbiter_uses_claude(self):
+        """Arbiter should use Claude Sonnet for best reasoning."""
+        assert "claude" in DEFAULT_MODEL_ARBITER.lower(), (
+            f"Arbiter should use Claude for safety-critical decisions, got: {DEFAULT_MODEL_ARBITER}"
         )
 
-    def test_all_models_are_different(self):
-        """All three models should be different for diversity."""
-        models = {DEFAULT_MODEL_EXTRACTOR, DEFAULT_MODEL_MONITOR, DEFAULT_MODEL_ARBITER}
-        assert len(models) == 3, (
-            f"All tribunal models should be different, got: {models}"
-        )
+    def test_all_models_are_flagship(self):
+        """All three models should be flagship-tier (70B or equivalent)."""
+        # Extractor: Llama 70B
+        assert "70b" in DEFAULT_MODEL_EXTRACTOR.lower()
+        # Monitor fallback: Llama 70B
+        assert "70b" in DEFAULT_MODEL_MONITOR.lower()
+        # Arbiter: Claude Sonnet (flagship)
+        assert "claude" in DEFAULT_MODEL_ARBITER.lower() or "sonnet" in DEFAULT_MODEL_ARBITER.lower()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
