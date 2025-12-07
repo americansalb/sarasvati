@@ -317,7 +317,7 @@ class TestModelConfiguration:
     """Verify that model assignments are correct (all flagship models)."""
 
     def test_extractor_uses_70b_model(self):
-        """Extractor should use Llama 70B for capable medical extraction."""
+        """Extractor (Agent A) should use Llama 70B for capable medical extraction."""
         assert "70b" in DEFAULT_MODEL_EXTRACTOR.lower(), (
             f"Extractor should use 70B model for medical reasoning, got: {DEFAULT_MODEL_EXTRACTOR}"
         )
@@ -328,20 +328,20 @@ class TestModelConfiguration:
             f"Monitor fallback should use 70B model, got: {DEFAULT_MODEL_MONITOR}"
         )
 
-    def test_arbiter_uses_claude(self):
-        """Arbiter should use Claude Sonnet for best reasoning."""
-        assert "claude" in DEFAULT_MODEL_ARBITER.lower(), (
-            f"Arbiter should use Claude for safety-critical decisions, got: {DEFAULT_MODEL_ARBITER}"
+    def test_arbiter_uses_gpt4o(self):
+        """Arbiter (Agent C) should use GPT-4o for structured judgment."""
+        assert "gpt-4o" in DEFAULT_MODEL_ARBITER.lower() or "gpt4o" in DEFAULT_MODEL_ARBITER.lower(), (
+            f"Arbiter should use GPT-4o, got: {DEFAULT_MODEL_ARBITER}"
         )
 
     def test_all_models_are_flagship(self):
-        """All three models should be flagship-tier (70B or equivalent)."""
-        # Extractor: Llama 70B
+        """All three models should be flagship-tier."""
+        # Extractor (A): Llama 70B
         assert "70b" in DEFAULT_MODEL_EXTRACTOR.lower()
         # Monitor fallback: Llama 70B
         assert "70b" in DEFAULT_MODEL_MONITOR.lower()
-        # Arbiter: Claude Sonnet (flagship)
-        assert "claude" in DEFAULT_MODEL_ARBITER.lower() or "sonnet" in DEFAULT_MODEL_ARBITER.lower()
+        # Arbiter (C): GPT-4o (flagship)
+        assert "gpt-4o" in DEFAULT_MODEL_ARBITER.lower() or "gpt4o" in DEFAULT_MODEL_ARBITER.lower()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
