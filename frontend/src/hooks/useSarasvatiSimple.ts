@@ -68,6 +68,7 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
     alignments: [],
     verdicts: [],
     debugInfo: null,
+    debateLogs: null,
   });
 
   const socketRef = useRef<WebSocket | null>(null);
@@ -199,6 +200,17 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
           ...prev,
           verdicts: [...(prev.verdicts || []), event.data].slice(-20),
           errors: [...prev.errors, ...verdictErrors].slice(-50),
+          // Update debate logs if present in verdict
+          debateLogs: event.data.debate_logs || prev.debateLogs,
+        }));
+        break;
+
+      case "debate_log":
+        console.log("🏛️ DEBATE LOG:", event.data);
+        // Store the visible debate log from two-tribunal architecture
+        setSessionState((prev) => ({
+          ...prev,
+          debateLogs: event.data,
         }));
         break;
 

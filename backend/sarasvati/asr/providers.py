@@ -279,8 +279,12 @@ class ASRProviderFactory:
         Returns:
             ASRProvider instance
         """
-        if backend == "groq":
-            return GroqProvider(groq_key)
+        if backend == "groq" or backend == "groq-turbo":
+            # Groq Whisper Turbo: $0.04/hr, 228x speed
+            return GroqProvider(groq_key, model="whisper-large-v3-turbo")
+        elif backend == "groq-large":
+            # Groq Whisper Large: $0.111/hr, 217x speed (most accurate)
+            return GroqProvider(groq_key, model="whisper-large-v3")
         elif backend == "openai-gpt4o-transcribe":
             # Use gpt-4o-transcribe for high-quality transcription (better for Gujarati, etc.)
             return OpenAIProvider(openai_key, model="gpt-4o-transcribe")
@@ -577,11 +581,21 @@ class ASRConfig:
         self.config["mode"] = backend
 
     def get_mode(self) -> str:
-        """Get current mode: 'groq', 'ensemble', or 'openai'"""
+        """Get current mode: 'groq', 'groq-turbo', 'groq-large', 'ensemble', or 'openai'"""
         return self.config.get("mode", "groq")
 
+    def get_groq_model(self) -> str:
+        """Get current Groq Whisper model."""
+        return self.config.get("groq_model", "whisper-large-v3-turbo")
+
+    def set_groq_model(self, model: str) -> None:
+        """Set Groq Whisper model: 'whisper-large-v3-turbo' or 'whisper-large-v3'"""
+        self.config["groq_model"] = model
+
     def get_all(self) -> dict:
-        return self.config.copy()
+        result = self.config.copy()
+        result["groq_model"] = self.get_groq_model()
+        return result
 
     def update(self, config: dict) -> None:
         self.config.update(config)

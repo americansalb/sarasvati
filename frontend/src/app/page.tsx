@@ -29,7 +29,7 @@ export default function DashboardPage() {
   const [manualText, setManualText] = useState("");
   const [providerLang, setProviderLang] = useState("en");
   const [patientLang, setPatientLang] = useState("es"); // Default Spanish for testing (change to "gu" for Gujarati, etc.)
-  const [asrBackend, setAsrBackend] = useState<"ensemble" | "groq" | "openai">("groq"); // Default: Groq Whisper ($0.04/hr)
+  const [asrBackend, setAsrBackend] = useState<"groq-turbo" | "groq-large" | "ensemble" | "openai">("groq-turbo"); // Default: Groq Whisper Turbo ($0.04/hr)
   const [asrBackendLoading, setAsrBackendLoading] = useState(false);
 
   const LANGUAGES = [
@@ -53,12 +53,14 @@ export default function DashboardPage() {
         const response = await fetch(`${httpUrl}/admin/asr-config`);
         if (response.ok) {
           const data = await response.json();
-          const mode = data.current_mode || data.current_config?.mode || "groq";
+          const mode = data.current_mode || data.current_config?.mode || "groq-turbo";
           // Map mode to frontend state
-          if (mode === "ensemble") {
+          if (mode === "groq-turbo" || mode === "groq") {
+            setAsrBackend("groq-turbo");
+          } else if (mode === "groq-large") {
+            setAsrBackend("groq-large");
+          } else if (mode === "ensemble") {
             setAsrBackend("ensemble");
-          } else if (mode === "groq" || mode.startsWith("groq")) {
-            setAsrBackend("groq");
           } else {
             setAsrBackend("openai");
           }
@@ -71,7 +73,7 @@ export default function DashboardPage() {
   }, []);
 
   // Switch ASR backend
-  const handleSwitchAsrBackend = async (backend: "ensemble" | "groq" | "openai") => {
+  const handleSwitchAsrBackend = async (backend: "groq-turbo" | "groq-large" | "ensemble" | "openai") => {
     setAsrBackendLoading(true);
     try {
       const httpUrl = BACKEND_URL.replace("ws://", "http://").replace("wss://", "https://");
@@ -237,7 +239,29 @@ export default function DashboardPage() {
               <Settings size={16} />
               ASR Mode (Speech Recognition)
             </label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
+              <button
+                onClick={() => handleSwitchAsrBackend("groq-turbo")}
+                disabled={asrBackendLoading || asrBackend === "groq-turbo"}
+                className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
+                  asrBackend === "groq-turbo"
+                    ? "bg-emerald-600 text-white ring-2 ring-emerald-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {asrBackend === "groq-turbo" && "✓ "}Turbo
+              </button>
+              <button
+                onClick={() => handleSwitchAsrBackend("groq-large")}
+                disabled={asrBackendLoading || asrBackend === "groq-large"}
+                className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
+                  asrBackend === "groq-large"
+                    ? "bg-emerald-700 text-white ring-2 ring-emerald-500"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {asrBackend === "groq-large" && "✓ "}Large
+              </button>
               <button
                 onClick={() => handleSwitchAsrBackend("ensemble")}
                 disabled={asrBackendLoading || asrBackend === "ensemble"}
@@ -248,17 +272,6 @@ export default function DashboardPage() {
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 {asrBackend === "ensemble" && "✓ "}Ensemble
-              </button>
-              <button
-                onClick={() => handleSwitchAsrBackend("groq")}
-                disabled={asrBackendLoading || asrBackend === "groq"}
-                className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
-                  asrBackend === "groq"
-                    ? "bg-emerald-600 text-white ring-2 ring-emerald-400"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                } disabled:opacity-50 disabled:cursor-not-allowed`}
-              >
-                {asrBackend === "groq" && "✓ "}Groq
               </button>
               <button
                 onClick={() => handleSwitchAsrBackend("openai")}
@@ -276,14 +289,14 @@ export default function DashboardPage() {
               <p className="text-xs text-gray-500 mt-1 animate-pulse">Switching mode...</p>
             )}
             <p className="text-xs text-gray-500 mt-2">
-              {asrBackend === "ensemble" ? (
-                <span>
-                  <span className="font-semibold text-purple-300">🤝 Ensemble Mode</span>: Runs both Groq + OpenAI in parallel, picks best result (tribunal pattern)
-                </span>
-              ) : asrBackend === "groq" ? (
-                <span className="font-semibold text-emerald-300">Groq Whisper Large V3 only</span>
+              {asrBackend === "groq-turbo" ? (
+                <span className="font-semibold text-emerald-300">⚡ Groq Whisper Turbo: $0.04/hr, 228x speed (fast)</span>
+              ) : asrBackend === "groq-large" ? (
+                <span className="font-semibold text-emerald-400">🎯 Groq Whisper Large: $0.111/hr (most accurate)</span>
+              ) : asrBackend === "ensemble" ? (
+                <span className="font-semibold text-purple-300">🤝 Ensemble: Groq + OpenAI in parallel</span>
               ) : (
-                <span className="font-semibold text-blue-300">OpenAI Whisper-1 only</span>
+                <span className="font-semibold text-blue-300">🔵 OpenAI gpt-4o-transcribe</span>
               )}
             </p>
           </div>
@@ -292,9 +305,10 @@ export default function DashboardPage() {
           <div className="mb-6">
             <label className="block text-sm text-gray-400 mb-2">
               Voice Input ({
-                asrBackend === "ensemble" ? "Ensemble (Groq + OpenAI)" :
-                asrBackend === "groq" ? "Groq Whisper" :
-                "OpenAI Whisper"
+                asrBackend === "groq-turbo" ? "Groq Turbo" :
+                asrBackend === "groq-large" ? "Groq Large" :
+                asrBackend === "ensemble" ? "Ensemble" :
+                "OpenAI"
               })
             </label>
             <button
@@ -439,6 +453,97 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* Debate Logs - Visible tribunal deliberation */}
+      {sessionState.debateLogs && (
+        <div className="mt-6 bg-gray-800/50 rounded-xl p-6 border border-gray-700">
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+            <span className="text-2xl">🏛️</span>
+            Tribunal Debate Log
+          </h2>
+          <p className="text-sm text-gray-400 mb-4">
+            The two-tribunal system debates translation meaning and error detection. Each round shows agents arguing their positions.
+          </p>
+
+          {/* Error Tribunal */}
+          {sessionState.debateLogs.error_evaluation && (
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold text-red-400 mb-3 flex items-center gap-2">
+                ⚖️ Error Tribunal
+                <span className={`text-xs px-2 py-1 rounded ${
+                  sessionState.debateLogs.error_evaluation.consensus_reached
+                    ? "bg-green-700"
+                    : "bg-yellow-700"
+                }`}>
+                  {sessionState.debateLogs.error_evaluation.consensus_reached ? "Consensus" : "No Consensus"}
+                </span>
+              </h3>
+              <p className="text-xs text-gray-500 mb-2">
+                Rounds: {sessionState.debateLogs.error_evaluation.rounds_taken} |
+                Verdict: <span className="text-yellow-300">{sessionState.debateLogs.error_evaluation.final_consensus}</span>
+              </p>
+              <div className="space-y-3 max-h-64 overflow-y-auto">
+                {sessionState.debateLogs.error_evaluation.turns.map((turn, idx) => (
+                  <div key={idx} className={`p-3 rounded-lg border ${
+                    turn.changed_mind ? "border-yellow-600 bg-yellow-900/20" : "border-gray-600 bg-gray-900/50"
+                  }`}>
+                    <div className="flex justify-between items-start mb-1">
+                      <span className="font-medium text-purple-300">
+                        {turn.agent}
+                        <span className="text-xs text-gray-500 ml-2">Round {turn.round}</span>
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded ${
+                        turn.position === "accurate" ? "bg-green-700" :
+                        turn.position === "critical_errors" ? "bg-red-700" :
+                        "bg-yellow-700"
+                      }`}>
+                        {turn.position}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-300 mb-1">{turn.statement.slice(0, 200)}...</p>
+                    {turn.changed_mind && (
+                      <p className="text-xs text-yellow-400">🔄 Changed position this round</p>
+                    )}
+                    {turn.agrees_with.length > 0 && (
+                      <p className="text-xs text-green-400">✓ Agrees with: {turn.agrees_with.join(", ")}</p>
+                    )}
+                    {turn.disagrees_with.length > 0 && (
+                      <p className="text-xs text-red-400">✗ Disagrees with: {turn.disagrees_with.join(", ")}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Translation Tribunals */}
+          {(sessionState.debateLogs.source_translation || sessionState.debateLogs.interpreter_translation) && (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-sm text-gray-400 hover:text-gray-200">
+                🌐 Translation Debates (click to expand)
+              </summary>
+              <div className="mt-3 space-y-4">
+                {sessionState.debateLogs.source_translation && (
+                  <div className="p-3 bg-gray-900/50 rounded-lg border border-gray-700">
+                    <h4 className="text-sm font-medium text-blue-300 mb-2">Source Translation Tribunal</h4>
+                    <p className="text-xs text-gray-500 mb-2">
+                      Consensus: {sessionState.debateLogs.source_translation.final_consensus?.slice(0, 100)}...
+                    </p>
+                  </div>
+                )}
+                {sessionState.debateLogs.interpreter_translation && (
+                  <div className="p-3 bg-gray-900/50 rounded-lg border border-gray-700">
+                    <h4 className="text-sm font-medium text-purple-300 mb-2">Interpreter Translation Tribunal</h4>
+                    <p className="text-xs text-gray-500 mb-2">
+                      Consensus: {sessionState.debateLogs.interpreter_translation.final_consensus?.slice(0, 100)}...
+                    </p>
+                  </div>
+                )}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
 
       {/* Transcripts */}
       <div className="mt-6 bg-gray-800/50 rounded-xl p-6 border border-gray-700">

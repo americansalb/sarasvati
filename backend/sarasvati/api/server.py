@@ -1409,8 +1409,9 @@ async def get_asr_config():
     return {
         "current_config": asr_config.get_all(),
         "current_mode": asr_config.get_mode(),
-        "available_modes": ["ensemble", "groq", "openai"],
-        "note": "ENSEMBLE mode (default) runs both Groq + OpenAI in parallel and picks the best result using consensus logic",
+        "groq_model": asr_config.get_groq_model(),
+        "available_modes": ["groq-turbo", "groq-large", "ensemble", "openai"],
+        "note": "Groq Whisper: Turbo=$0.04/hr (fast), Large=$0.111/hr (accurate). Ensemble runs Groq+OpenAI in parallel.",
     }
 
 
@@ -1420,13 +1421,36 @@ async def switch_default_asr(request: ASRSwitchRequest):
     Switch ASR mode.
 
     Modes:
-    - "ensemble" (default): Run both Groq + OpenAI in parallel, pick best (tribunal pattern)
-    - "groq": Use only Groq Whisper Large V3
-    - "openai": Use only OpenAI Whisper-1
+    - "groq-turbo": Groq Whisper Turbo ($0.04/hr, 228x speed) - DEFAULT
+    - "groq-large": Groq Whisper Large ($0.111/hr, most accurate)
+    - "ensemble": Run both Groq + OpenAI in parallel, pick best
+    - "openai": Use only OpenAI gpt-4o-transcribe
     """
     backend = request.backend
 
-    if backend == "ensemble":
+    if backend == "groq-turbo" or backend == "groq":
+        asr_config.set_default("groq-turbo")
+        asr_config.set_groq_model("whisper-large-v3-turbo")
+        asr_config.set_backend("provider", "en", "groq-turbo")
+        asr_config.set_backend("patient", "auto", "groq-turbo")
+        asr_config.set_backend("interpreter", "auto", "groq-turbo")
+        return {
+            "status": "success",
+            "message": "Switched to Groq Whisper TURBO ($0.04/hr, 228x speed)",
+            "config": asr_config.get_all()
+        }
+    elif backend == "groq-large":
+        asr_config.set_default("groq-large")
+        asr_config.set_groq_model("whisper-large-v3")
+        asr_config.set_backend("provider", "en", "groq-large")
+        asr_config.set_backend("patient", "auto", "groq-large")
+        asr_config.set_backend("interpreter", "auto", "groq-large")
+        return {
+            "status": "success",
+            "message": "Switched to Groq Whisper LARGE ($0.111/hr, most accurate)",
+            "config": asr_config.get_all()
+        }
+    elif backend == "ensemble":
         asr_config.set_default("ensemble")
         asr_config.set_backend("provider", "en", "ensemble")
         asr_config.set_backend("patient", "auto", "ensemble")
@@ -1436,16 +1460,6 @@ async def switch_default_asr(request: ASRSwitchRequest):
             "message": "Switched to ENSEMBLE mode (Groq + OpenAI in parallel)",
             "config": asr_config.get_all()
         }
-    elif backend == "groq":
-        asr_config.set_default("groq")
-        asr_config.set_backend("provider", "en", "groq")
-        asr_config.set_backend("patient", "auto", "groq")
-        asr_config.set_backend("interpreter", "auto", "groq")
-        return {
-            "status": "success",
-            "message": "Switched to Groq Whisper Large V3 only",
-            "config": asr_config.get_all()
-        }
     elif backend == "openai":
         asr_config.set_default("openai-gpt4o-transcribe")
         asr_config.set_backend("provider", "en", "openai-gpt4o-transcribe")
@@ -1453,11 +1467,11 @@ async def switch_default_asr(request: ASRSwitchRequest):
         asr_config.set_backend("interpreter", "auto", "openai-gpt4o-transcribe")
         return {
             "status": "success",
-            "message": "Switched to OpenAI Whisper-1 only",
+            "message": "Switched to OpenAI gpt-4o-transcribe",
             "config": asr_config.get_all()
         }
     else:
-        raise HTTPException(status_code=400, detail=f"Invalid backend: {backend}. Use 'ensemble', 'groq', or 'openai'")
+        raise HTTPException(status_code=400, detail=f"Invalid backend: {backend}. Use 'groq-turbo', 'groq-large', 'ensemble', or 'openai'")
 
 
 @app.post("/admin/asr-config/update")
