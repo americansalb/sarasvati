@@ -193,13 +193,32 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
 
       case "tribunal_verdict":
         console.log("⚖️ TRIBUNAL VERDICT:", event.data);
-        // Append tribunal errors to the errors list so they show in UI
         const verdictErrors = event.data.errors || [];
-        setSessionState((prev) => ({
-          ...prev,
-          verdicts: [...(prev.verdicts || []), event.data].slice(-20),
-          errors: [...prev.errors, ...verdictErrors].slice(-50),
-        }));
+        const verdictIsAccurate = event.data.verdict_is_accurate || false;
+
+        setSessionState((prev) => {
+          // If verdict is accurate, clear all existing errors
+          // Otherwise, add new errors (deduped by error_id)
+          let newErrors: typeof prev.errors;
+          if (verdictIsAccurate) {
+            newErrors = [];
+            console.log("✅ Verdict is ACCURATE - clearing errors");
+          } else if (verdictErrors.length > 0) {
+            const existingIds = new Set(prev.errors.map((e) => e.error_id));
+            const uniqueNew = verdictErrors.filter(
+              (e: { error_id?: string }) => e.error_id && !existingIds.has(e.error_id)
+            );
+            newErrors = [...prev.errors, ...uniqueNew].slice(-50);
+          } else {
+            newErrors = prev.errors;
+          }
+
+          return {
+            ...prev,
+            verdicts: [...(prev.verdicts || []), event.data].slice(-20),
+            errors: newErrors,
+          };
+        });
         break;
 
       case "detected_error":

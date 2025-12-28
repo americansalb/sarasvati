@@ -444,8 +444,12 @@ async def emit_error_loop() -> None:
                         num_errors = len(valid_errors)
                         severity = "none"
                         if num_errors > 0:
-                            # Get max severity from errors
-                            severities = [e.get("severity", "medium") for e in valid_errors]
+                            # Get max severity from errors (handle both enum and string)
+                            def get_sev_str(e):
+                                sev = e.get("severity", "medium")
+                                return sev.value if hasattr(sev, "value") else str(sev)
+
+                            severities = [get_sev_str(e) for e in valid_errors]
                             if any(s == "critical" for s in severities):
                                 severity = "critical"
                             elif any(s == "high" for s in severities):
@@ -457,19 +461,31 @@ async def emit_error_loop() -> None:
 
                         confidence = compute_confidence(severity, num_errors)
 
+                        # Check if verdict is ACCURATE (clear errors if so)
+                        arbiter_decision = debate_result.get("arbiter_decision", "")
+                        verdict_is_accurate = "ACCURATE" in arbiter_decision.upper() and "ERROR" not in arbiter_decision.upper()
+
+                        # If accurate, don't show errors (they were false positives)
+                        if verdict_is_accurate:
+                            valid_errors = []
+                            num_errors = 0
+                            severity = "none"
+
                         verdict_payload = {
                             "confidence": confidence,
                             "severity": severity,
                             "num_issues": num_errors,
-                            "arbiter_decision": debate_result.get("arbiter_decision", ""),
+                            "arbiter_decision": arbiter_decision,
                             "monitor_findings": debate_result.get("monitor_findings", []) or [],
+                            "verdict_is_accurate": verdict_is_accurate,
                             "errors": [
                                 {
-                                    "severity": str(e.get("severity", "medium")),
+                                    "error_id": e.get("error_id", f"err_{idx}"),
+                                    "severity": e.get("severity").value if hasattr(e.get("severity"), "value") else str(e.get("severity", "medium")),
                                     "error_type": e.get("error_type", "unknown"),
-                                    "description": e.get("description", ""),
+                                    "description": e.get("description", "") or "No description provided",
                                 }
-                                for e in valid_errors
+                                for idx, e in enumerate(valid_errors)
                             ],
                         }
 
