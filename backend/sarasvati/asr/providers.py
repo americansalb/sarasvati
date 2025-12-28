@@ -511,24 +511,25 @@ class ASRConfig:
 
     def __init__(self):
         # Default configuration
+        # DEFAULT: Groq Whisper ($0.04/hr for Turbo, $0.111/hr for Large)
+        # User can switch to ensemble or OpenAI via UI if needed
         self.config = {
-            # Global mode
-            "mode": "ensemble",  # "ensemble" | specific backend
-            "default": "ensemble",
+            # Global mode - DEFAULT TO GROQ WHISPER
+            "mode": "groq",  # "groq" | "ensemble" | "openai"
+            "default": "groq",
 
             # Per-language defaults (applies to all roles)
-            # For high-quality languages, use ensemble (Groq + OpenAI gpt-4o-transcribe)
-            # This enables the debate + referee pattern for best accuracy
-            "gu": "ensemble",  # Gujarati → Ensemble (Groq + OpenAI gpt-4o-transcribe)
-            "hi": "ensemble",  # Hindi → Ensemble
-            "es": "ensemble",  # Spanish → Ensemble
-            "en": "ensemble",  # English → Ensemble
-            "ar": "ensemble",  # Arabic → Ensemble
-            "zh": "ensemble",  # Chinese → Ensemble
-            "auto": "ensemble",  # Auto-detect → Ensemble
+            # Groq Whisper works well for most languages
+            "gu": "groq",  # Gujarati → Groq Whisper
+            "hi": "groq",  # Hindi → Groq Whisper
+            "es": "groq",  # Spanish → Groq Whisper
+            "en": "groq",  # English → Groq Whisper
+            "ar": "groq",  # Arabic → Groq Whisper
+            "zh": "groq",  # Chinese → Groq Whisper
+            "auto": "groq",  # Auto-detect → Groq Whisper
 
             # Per-role defaults (overrides language defaults if specified)
-            "provider": "ensemble",  # Provider (usually English) → Ensemble
+            "provider": "groq",  # Provider (usually English) → Groq Whisper
             "patient": None,  # Patient → Use language default
             "interpreter": None,  # Interpreter → Use language default
 
@@ -565,7 +566,7 @@ class ASRConfig:
             return self.config[language]
 
         # Priority 4: Global default
-        return self.config.get("default", "ensemble")
+        return self.config.get("default", "groq")
 
     def set_backend(self, role: str, language: str, backend: str) -> None:
         key = f"{role}_{language}"
@@ -576,8 +577,8 @@ class ASRConfig:
         self.config["mode"] = backend
 
     def get_mode(self) -> str:
-        """Get current mode: 'ensemble', 'groq', or 'openai'"""
-        return self.config.get("mode", "ensemble")
+        """Get current mode: 'groq', 'ensemble', or 'openai'"""
+        return self.config.get("mode", "groq")
 
     def get_all(self) -> dict:
         return self.config.copy()

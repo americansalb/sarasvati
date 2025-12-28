@@ -29,7 +29,7 @@ export default function DashboardPage() {
   const [manualText, setManualText] = useState("");
   const [providerLang, setProviderLang] = useState("en");
   const [patientLang, setPatientLang] = useState("es"); // Default Spanish for testing (change to "gu" for Gujarati, etc.)
-  const [asrBackend, setAsrBackend] = useState<"ensemble" | "groq" | "openai">("ensemble");
+  const [asrBackend, setAsrBackend] = useState<"ensemble" | "groq" | "openai">("groq"); // Default: Groq Whisper ($0.04/hr)
   const [asrBackendLoading, setAsrBackendLoading] = useState(false);
 
   const LANGUAGES = [
@@ -53,7 +53,7 @@ export default function DashboardPage() {
         const response = await fetch(`${httpUrl}/admin/asr-config`);
         if (response.ok) {
           const data = await response.json();
-          const mode = data.current_mode || data.current_config?.mode || "ensemble";
+          const mode = data.current_mode || data.current_config?.mode || "groq";
           // Map mode to frontend state
           if (mode === "ensemble") {
             setAsrBackend("ensemble");
