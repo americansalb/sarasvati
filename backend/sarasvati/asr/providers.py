@@ -123,8 +123,18 @@ class ASRProvider(ABC):
         pass
 
 
+# Groq Whisper Model Options
+# - whisper-large-v3-turbo: $0.04/hr, 228x speed (faster, cheaper, slightly less accurate)
+# - whisper-large-v3: $0.111/hr, 217x speed (full model, most accurate)
+GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
+
+
 class GroqProvider(ASRProvider):
-    """Groq Whisper Large V3 provider."""
+    """Groq Whisper provider with configurable model."""
+
+    def __init__(self, api_key: str, model: str = GROQ_WHISPER_MODEL):
+        super().__init__(api_key)
+        self.model = model
 
     async def transcribe(
         self,
@@ -133,8 +143,8 @@ class GroqProvider(ASRProvider):
         content_type: str,
         language: Optional[str] = None,
     ) -> ASRResult:
-        """Transcribe using Groq Whisper Large V3 with medical vocabulary hints."""
-        whisper_data: dict = {"model": "whisper-large-v3", "response_format": "json"}
+        """Transcribe using Groq Whisper with medical vocabulary hints."""
+        whisper_data: dict = {"model": self.model, "response_format": "json"}
 
         # Add language hint if provided
         if language and language != "auto":
@@ -166,11 +176,12 @@ class GroqProvider(ASRProvider):
                     )
 
                 result = response.json()
+                print(f"🎤 Groq Whisper ({self.model}): transcribed {result.get('duration', 0.0):.1f}s audio")
                 return ASRResult(
                     text=result.get("text", "").strip(),
                     duration=result.get("duration", 0.0),
                     language=result.get("language", "unknown"),
-                    provider="groq",
+                    provider=f"groq-{self.model}",
                 )
             except Exception as e:
                 return ASRResult(

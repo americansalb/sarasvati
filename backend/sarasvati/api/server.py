@@ -457,6 +457,10 @@ async def emit_error_loop() -> None:
 
                         confidence = compute_confidence(severity, num_errors)
 
+                        # NEW: Include debate logs for visibility (user wants to see the debate!)
+                        debate_logs = debate_result.get("debate_logs")
+                        has_debate_logs = debate_logs is not None
+
                         verdict_payload = {
                             "confidence": confidence,
                             "severity": severity,
@@ -471,11 +475,20 @@ async def emit_error_loop() -> None:
                                 }
                                 for e in valid_errors
                             ],
+                            # Visible debate logs from two-tribunal architecture
+                            "debate_logs": debate_logs,
+                            "has_debate_logs": has_debate_logs,
                         }
 
                         message = build_ws_message("tribunal_verdict", verdict_payload)
                         await manager.broadcast(message)
-                        print(f"📢 Broadcast tribunal_verdict: confidence={confidence:.2f}, severity={severity}, issues={num_errors}")
+                        print(f"📢 Broadcast tribunal_verdict: confidence={confidence:.2f}, severity={severity}, issues={num_errors}, debate_visible={has_debate_logs}")
+
+                        # NEW: Broadcast debate logs as separate message for UI (visible debate section)
+                        if has_debate_logs:
+                            debate_message = build_ws_message("debate_log", debate_logs)
+                            await manager.broadcast(debate_message)
+                            print(f"📢 Broadcast debate_log: {len(debate_logs)} tribunal logs")
 
                     last_verdict_count = current_verdict_count
 
