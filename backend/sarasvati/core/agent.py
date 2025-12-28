@@ -1606,6 +1606,7 @@ class ClinicalDebateOrchestrator:
                 arbiter_decision="Cannot evaluate: interpreter text not translated to English",
                 detected_errors=[system_error],
                 processing_time_ms=processing_time,
+                debate_log=[],  # No debate for system error
             )
 
         # ═══════════════════════════════════════════════════════════
@@ -1652,6 +1653,7 @@ class ClinicalDebateOrchestrator:
                     arbiter_decision="Alignment layer bug - no source segment for ALIGNED case. Not grading interpreter.",
                     detected_errors=[system_error],
                     processing_time_ms=processing_time,
+                    debate_log=[],  # No debate for system error
                 )
 
         # ═══════════════════════════════════════════════════════════
@@ -1707,6 +1709,7 @@ class ClinicalDebateOrchestrator:
                 arbiter_decision="ASR transcription unreliable - interpreter not judged",
                 detected_errors=[asr_error],
                 processing_time_ms=processing_time,
+                debate_log=[],  # No debate for ASR error
             )
 
         # Handle omissions (no interpreter response)
@@ -1895,6 +1898,7 @@ class ClinicalDebateOrchestrator:
                 arbiter_decision=arbiter_reasoning,
                 detected_errors=clinical_errors,
                 processing_time_ms=processing_time,
+                debate_log=debate_result.get("debate_log", []),  # Visible debate for frontend
             )
 
         except Exception as e:
@@ -1926,6 +1930,7 @@ class ClinicalDebateOrchestrator:
                 arbiter_decision=f"System error: {type(e).__name__}",
                 detected_errors=[system_error],
                 processing_time_ms=processing_time,
+                debate_log=[],  # No debate for exception
             )
 
     def _handle_omission(
@@ -1976,6 +1981,7 @@ class ClinicalDebateOrchestrator:
             arbiter_decision=f"Critical: Interpreter omission in {case_type_str} case",
             detected_errors=[error],
             processing_time_ms=processing_time,
+            debate_log=[],  # No debate for omission
         )
 
     def _deduplicate_errors(self, error_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

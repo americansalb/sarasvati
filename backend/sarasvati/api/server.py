@@ -471,6 +471,9 @@ async def emit_error_loop() -> None:
                             num_errors = 0
                             severity = "none"
 
+                        # Get debate log for visibility
+                        debate_log = debate_result.get("debate_log", [])
+
                         verdict_payload = {
                             "confidence": confidence,
                             "severity": severity,
@@ -487,6 +490,8 @@ async def emit_error_loop() -> None:
                                 }
                                 for idx, e in enumerate(valid_errors)
                             ],
+                            # Visible debate log for frontend
+                            "debate_log": debate_log,
                         }
 
                         message = build_ws_message("tribunal_verdict", verdict_payload)

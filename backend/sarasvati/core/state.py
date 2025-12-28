@@ -124,6 +124,7 @@ class AgentDebateResult(TypedDict):
     arbiter_decision: str                       # Final verdict
     detected_errors: List[ClinicalError]
     processing_time_ms: float
+    debate_log: List[dict]                      # Visible debate transcript
 
 
 class SarasvatiState(TypedDict):

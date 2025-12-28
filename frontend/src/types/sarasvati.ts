@@ -132,6 +132,19 @@ export interface TribunalVerdict {
   }>;
 }
 
+export interface DebateLogEntry {
+  round: number;
+  agent: string;
+  opinion: {
+    verdict?: string;
+    errors?: Array<{ type: string; severity: string; description: string }>;
+    reasoning?: string;
+    agrees_with?: string[];
+    disagrees_with?: string[];
+    changed_mind?: boolean;
+  };
+}
+
 export interface SessionState {
   sessionId: string | null;
   isActive: boolean;
@@ -141,6 +154,7 @@ export interface SessionState {
   alignments: AlignmentMatch[];
   verdicts: TribunalVerdict[];
   debugInfo: AgentDebateResult | null;
+  debateLogs: DebateLogEntry[] | null;
 }
 
 export interface ConnectionState {

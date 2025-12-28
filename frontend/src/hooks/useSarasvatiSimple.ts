@@ -68,6 +68,7 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
     alignments: [],
     verdicts: [],
     debugInfo: null,
+    debateLogs: null,
   });
 
   const socketRef = useRef<WebSocket | null>(null);
@@ -195,6 +196,7 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
         console.log("⚖️ TRIBUNAL VERDICT:", event.data);
         const verdictErrors = event.data.errors || [];
         const verdictIsAccurate = event.data.verdict_is_accurate || false;
+        const debateLog = event.data.debate_log || [];
 
         setSessionState((prev) => {
           // If verdict is accurate, clear all existing errors
@@ -217,6 +219,7 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
             ...prev,
             verdicts: [...(prev.verdicts || []), event.data].slice(-20),
             errors: newErrors,
+            debateLogs: debateLog.length > 0 ? debateLog : prev.debateLogs,
           };
         });
         break;

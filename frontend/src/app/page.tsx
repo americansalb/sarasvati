@@ -27,7 +27,6 @@ import {
   StreamRole,
   TranscriptSegment,
   ClinicalError,
-  DebateTurn,
   DebateLogEntry,
 } from "@/types/sarasvati";
 
@@ -233,14 +232,16 @@ function CompactTranscript({
 
 function DetailsTab({
   transcripts,
-  debate,
+  debateLogs,
   errors,
+  latestVerdict,
 }: {
   transcripts: TranscriptSegment[];
-  debate?: DebateLogEntry | null;
+  debateLogs: DebateLogEntry[] | null;
   errors: ClinicalError[];
+  latestVerdict?: { arbiter_decision?: string; verdict_is_accurate?: boolean } | null;
 }) {
-  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set([1]));
+  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set([1, 2]));
 
   const toggleRound = (round: number) => {
     const newSet = new Set(expandedRounds);
@@ -252,26 +253,25 @@ function DetailsTab({
     setExpandedRounds(newSet);
   };
 
-  // Group turns by round
-  const roundsMap = new Map<number, DebateTurn[]>();
-  debate?.turns.forEach((turn) => {
-    const roundTurns = roundsMap.get(turn.round) || [];
-    roundTurns.push(turn);
-    roundsMap.set(turn.round, roundTurns);
+  // Group debate entries by round
+  const roundsMap = new Map<number, DebateLogEntry[]>();
+  debateLogs?.forEach((entry) => {
+    const roundEntries = roundsMap.get(entry.round) || [];
+    roundEntries.push(entry);
+    roundsMap.set(entry.round, roundEntries);
   });
   const rounds = Array.from(roundsMap.entries()).sort((a, b) => a[0] - b[0]);
 
   const getPhaseLabel = (roundNum: number): string => {
-    if (roundNum === 1) return "OPENING STATEMENTS";
-    if (roundNum <= 3) return `CROSS-EXAMINATION`;
-    return "CLOSING ARGUMENTS";
+    if (roundNum === 1) return "INDEPENDENT ANALYSIS";
+    return "PEER REVIEW";
   };
 
-  const verdictColor = (position: string) =>
-    position === "accurate" ? "text-green-400" :
-    position === "minor_issues" ? "text-yellow-400" :
-    position === "significant_errors" ? "text-orange-400" :
-    position === "critical_errors" ? "text-red-400" : "text-gray-400";
+  const verdictColor = (verdict?: string) =>
+    verdict === "accurate" ? "text-green-400" :
+    verdict === "minor_issues" ? "text-yellow-400" :
+    verdict === "significant_errors" ? "text-orange-400" :
+    verdict === "critical_errors" ? "text-red-400" : "text-gray-400";
 
   return (
     <div className="space-y-6">
@@ -303,13 +303,13 @@ function DetailsTab({
       </div>
 
       {/* Debate Log */}
-      {debate && (
+      {debateLogs && debateLogs.length > 0 && (
         <div>
           <h3 className="text-sm font-bold text-gray-400 mb-2">
-            TRIBUNAL DEBATE ({debate.rounds_taken} rounds, {debate.consensus_reached ? "consensus" : "majority vote"})
+            TRIBUNAL DEBATE ({rounds.length} round{rounds.length > 1 ? "s" : ""})
           </h3>
           <div className="bg-gray-900 rounded-lg border border-gray-700 overflow-hidden">
-            {rounds.map(([roundNum, turns]) => (
+            {rounds.map(([roundNum, entries]) => (
               <div key={roundNum} className="border-b border-gray-700 last:border-0">
                 <button
                   onClick={() => toggleRound(roundNum)}
@@ -322,28 +322,44 @@ function DetailsTab({
                   )}
                   <span className="text-sm font-medium">Round {roundNum}</span>
                   <span className="text-xs text-gray-500">{getPhaseLabel(roundNum)}</span>
+                  <span className="text-xs text-gray-600 ml-auto">{entries.length} agents</span>
                 </button>
                 {expandedRounds.has(roundNum) && (
-                  <div className="px-4 pb-3 space-y-2">
-                    {turns.map((turn, idx) => {
-                      const agentName = turn.agent.split("(")[0].trim();
+                  <div className="px-4 pb-3 space-y-3">
+                    {entries.map((entry, idx) => {
+                      const opinion = entry.opinion || {};
                       return (
-                        <div key={idx} className="pl-4 border-l-2 border-gray-700 py-1">
-                          <div className="flex items-center gap-2 flex-wrap text-sm">
-                            <span className="font-medium text-gray-300">{agentName}</span>
-                            <span className={`font-medium ${verdictColor(turn.position)}`}>
-                              {turn.position}
+                        <div key={idx} className="pl-4 border-l-2 border-purple-700 py-2 bg-gray-800/50 rounded-r">
+                          <div className="flex items-center gap-2 flex-wrap text-sm mb-2">
+                            <span className="font-medium text-purple-300">{entry.agent}</span>
+                            <span className={`font-medium px-2 py-0.5 rounded text-xs ${verdictColor(opinion.verdict)}`}>
+                              {opinion.verdict || "analyzing"}
                             </span>
-                            {turn.changed_mind && (
+                            {opinion.changed_mind && (
                               <span className="text-xs bg-yellow-800 text-yellow-200 px-1.5 py-0.5 rounded">
-                                CHANGED
+                                CHANGED MIND
                               </span>
                             )}
                           </div>
-                          {turn.statement && (
-                            <p className="text-gray-500 text-xs mt-1">
-                              {turn.statement.slice(0, 200)}...
+                          {opinion.reasoning && (
+                            <p className="text-gray-400 text-sm mb-2">
+                              {opinion.reasoning.slice(0, 300)}{opinion.reasoning.length > 300 ? "..." : ""}
                             </p>
+                          )}
+                          {opinion.errors && opinion.errors.length > 0 && (
+                            <div className="text-xs text-red-400 mt-1">
+                              Found {opinion.errors.length} error(s): {opinion.errors.map(e => e.type).join(", ")}
+                            </div>
+                          )}
+                          {(opinion.agrees_with?.length || opinion.disagrees_with?.length) && (
+                            <div className="flex gap-2 mt-2 text-xs">
+                              {opinion.agrees_with?.length > 0 && (
+                                <span className="text-green-400">Agrees: {opinion.agrees_with.join(", ")}</span>
+                              )}
+                              {opinion.disagrees_with?.length > 0 && (
+                                <span className="text-red-400">Disagrees: {opinion.disagrees_with.join(", ")}</span>
+                              )}
+                            </div>
                           )}
                         </div>
                       );
@@ -352,20 +368,27 @@ function DetailsTab({
                 )}
               </div>
             ))}
-            {/* Final verdict */}
-            <div className="p-3 bg-gray-800">
-              <div className="flex items-center gap-2">
-                {debate.final_consensus === "accurate" ? (
-                  <CheckCircle size={16} className="text-green-500" />
-                ) : (
-                  <AlertTriangle size={16} className="text-yellow-500" />
+            {/* Final verdict from arbiter */}
+            {latestVerdict && (
+              <div className="p-3 bg-gray-800">
+                <div className="flex items-center gap-2">
+                  {latestVerdict.verdict_is_accurate ? (
+                    <CheckCircle size={16} className="text-green-500" />
+                  ) : (
+                    <AlertTriangle size={16} className="text-yellow-500" />
+                  )}
+                  <span className="text-sm font-medium">Final Verdict:</span>
+                  <span className={`font-bold ${latestVerdict.verdict_is_accurate ? "text-green-400" : "text-yellow-400"}`}>
+                    {latestVerdict.verdict_is_accurate ? "ACCURATE" : "ERRORS FOUND"}
+                  </span>
+                </div>
+                {latestVerdict.arbiter_decision && (
+                  <p className="text-gray-500 text-xs mt-2">
+                    {latestVerdict.arbiter_decision.slice(0, 200)}...
+                  </p>
                 )}
-                <span className="text-sm font-medium">Final Verdict:</span>
-                <span className={`font-bold ${verdictColor(debate.final_consensus || "")}`}>
-                  {debate.final_consensus?.toUpperCase()}
-                </span>
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -397,7 +420,7 @@ function DetailsTab({
         </div>
       )}
 
-      {!debate && errors.length === 0 && (
+      {(!debateLogs || debateLogs.length === 0) && errors.length === 0 && (
         <p className="text-gray-500 text-center py-8">
           No tribunal data yet. Record a provider-interpreter exchange to see the debate.
         </p>
@@ -636,7 +659,11 @@ export default function DashboardPage() {
   const clinicalErrors = sessionState.errors.filter((e) => !e.is_system_error);
   const uniqueErrors = Array.from(new Map(clinicalErrors.map((e) => [e.error_id, e])).values());
   const activeErrors = uniqueErrors.filter((e) => !dismissedErrors.has(e.error_id));
-  const latestDebate = sessionState.debateLogs?.error_evaluation;
+
+  // Get latest verdict for Details tab
+  const latestVerdict = sessionState.verdicts?.length > 0
+    ? sessionState.verdicts[sessionState.verdicts.length - 1]
+    : null;
 
   // Get source/interpreter text for error context
   const lastPatient = [...sessionState.transcripts].reverse().find((t) => t.role === "patient");
@@ -767,8 +794,9 @@ export default function DashboardPage() {
             /* DETAILS TAB */
             <DetailsTab
               transcripts={sessionState.transcripts}
-              debate={latestDebate}
+              debateLogs={sessionState.debateLogs}
               errors={uniqueErrors}
+              latestVerdict={latestVerdict}
             />
           )}
         </div>
