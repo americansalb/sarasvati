@@ -36,6 +36,7 @@ from .state import (
 )
 from .alignment import AlignmentEngine, BatchAligner, create_alignment_engine
 from .agent import ClinicalDebateOrchestrator
+from .tribunal import DualTribunalOrchestrator
 
 
 class SarasvatiGraph:
@@ -59,15 +60,43 @@ class SarasvatiGraph:
             similarity_threshold=config["alignment_threshold"],
         )
         self.batch_aligner = BatchAligner(self.alignment_engine)
+        # Import configurable defaults from agent module
+        from .agent import (
+            DEFAULT_MODEL_A, DEFAULT_MODEL_B, DEFAULT_MODEL_C,
+            DEFAULT_PROVIDER_A, DEFAULT_PROVIDER_B, DEFAULT_PROVIDER_C,
+        )
+
         self.debate_orchestrator = ClinicalDebateOrchestrator(
+            # API Keys - set via environment variables
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
-            # 3 UNIQUE MODELS - EQUAL CAPABILITY, ALL CHEAP!
-            model_a=config["groq_model_extractor"],  # Llama 8B (Groq) - FREE
-            model_b="gpt-4o-mini",                    # GPT-4o-mini (OpenAI) - $0.15/1M
-            model_c="gpt-3.5-turbo",                  # GPT-3.5-turbo (OpenAI) - $0.50/1M
+            deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            # Models - configurable via TRIBUNAL_MODEL_A/B/C env vars
+            model_a=DEFAULT_MODEL_A,
+            model_b=DEFAULT_MODEL_B,
+            model_c=DEFAULT_MODEL_C,
+            # Providers - configurable via TRIBUNAL_PROVIDER_A/B/C env vars
+            provider_a=DEFAULT_PROVIDER_A,
+            provider_b=DEFAULT_PROVIDER_B,
+            provider_c=DEFAULT_PROVIDER_C,
         )
+
+        # NEW: Dual Tribunal Orchestrator (Translation + Error with visible debate)
+        # This is the NEW two-stage tribunal architecture with visible debate logs
+        self.dual_tribunal = None
+        try:
+            self.dual_tribunal = DualTribunalOrchestrator(
+                groq_api_key=os.environ.get("GROQ_API_KEY", ""),
+                openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+                deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+                model_a=DEFAULT_MODEL_A,
+                model_b=DEFAULT_MODEL_B,
+                model_c=DEFAULT_MODEL_C,
+            )
+            print("✅ Dual Tribunal (Translation + Error) initialized")
+        except Exception as e:
+            print(f"⚠️ Dual Tribunal init failed, using legacy orchestrator: {e}")
 
         # Build the graph
         self.graph = self._build_graph()
@@ -229,11 +258,89 @@ class SarasvatiGraph:
         # Run debate for each NEW case (matched, omission, or fabrication)
         for case in new_cases:
             case_type = case.get("case_type", "unknown")
-            provider_text = case['provider_segment']['text'][:40] if case['provider_segment'] else 'NONE'
-            interp_text = case['interpreter_segment']['text'][:40] if case['interpreter_segment'] else 'NONE'
+            provider_seg = case.get('provider_segment')
+            interp_seg = case.get('interpreter_segment')
+            provider_text = provider_seg['text'][:40] if provider_seg else 'NONE'
+            interp_text = interp_seg['text'][:40] if interp_seg else 'NONE'
 
             print(f"      🔍 [{case_type}] P='{provider_text}...' vs I='{interp_text}...'")
-            debate_result = await self.debate_orchestrator.run_debate(case, patient_text)
+
+            # ═══════════════════════════════════════════════════════════
+            # TWO-TRIBUNAL ARCHITECTURE (if available)
+            # Stage 1: Translation Tribunal - 3 agents debate on meaning
+            # Stage 2: Error Tribunal - 3 agents debate on errors
+            # ═══════════════════════════════════════════════════════════
+            debate_result = None
+            if self.dual_tribunal and provider_seg and interp_seg:
+                # Extract raw text and detected languages
+                raw_source = provider_seg.get("text", "")
+                raw_interp = interp_seg.get("text", "")
+                source_lang = provider_seg.get("detected_language", "en")
+                interp_lang = interp_seg.get("detected_language", "en")
+
+                # Determine source role based on case type
+                if "inbound" in str(case_type).lower():
+                    source_role = "patient"
+                else:
+                    source_role = "provider"
+
+                try:
+                    print(f"      🏛️  DUAL TRIBUNAL: Translation + Error (with visible debate)")
+                    tribunal_result = await self.dual_tribunal.evaluate_interpretation(
+                        raw_source_text=raw_source,
+                        raw_interpreter_text=raw_interp,
+                        source_language=source_lang,
+                        interpreter_language=interp_lang,
+                        source_role=source_role,
+                    )
+
+                    # Convert tribunal result to AgentDebateResult format
+                    from .state import ClinicalError, ErrorSeverity
+                    detected_errors = []
+                    for err in tribunal_result.get("errors", []):
+                        severity_map = {
+                            "critical": ErrorSeverity.CRITICAL,
+                            "high": ErrorSeverity.HIGH,
+                            "medium": ErrorSeverity.MEDIUM,
+                            "low": ErrorSeverity.LOW,
+                        }
+                        detected_errors.append(ClinicalError(
+                            error_id=f"err_{datetime.utcnow().timestamp()}_{err.get('type', 'unknown')}",
+                            severity=severity_map.get(err.get("severity", "medium"), ErrorSeverity.MEDIUM),
+                            error_type=err.get("type", "unknown"),
+                            provider_entity=None,
+                            interpreter_entity=None,
+                            description=err.get("description", ""),
+                            arbiter_reasoning=f"Tribunal verdict: {tribunal_result.get('verdict', 'unknown')}",
+                            confidence=0.9 if tribunal_result.get("consensus_reached", False) else 0.6,
+                            detected_at=datetime.utcnow(),
+                            alignment_info=case,
+                            is_system_error=False,
+                            source_role=source_role,
+                            interpreter_quote=tribunal_result.get("interpreter_meaning", ""),
+                            source_quote=tribunal_result.get("source_meaning", ""),
+                            ideal_interpretation=None,
+                        ))
+
+                    debate_result = {
+                        "extractor_entities": [],
+                        "monitor_findings": [f"Tribunal verdict: {tribunal_result.get('verdict', 'unknown')}"],
+                        "arbiter_decision": f"[{tribunal_result.get('verdict', 'unknown').upper()}] Consensus: {tribunal_result.get('consensus_reached', False)}. Source meaning: {tribunal_result.get('source_meaning', '')[:100]}... Interpreter meaning: {tribunal_result.get('interpreter_meaning', '')[:100]}...",
+                        "detected_errors": detected_errors,
+                        "processing_time_ms": 0,
+                        "debate_logs": tribunal_result.get("debate_logs", {}),
+                    }
+                    print(f"      📋 Dual Tribunal verdict: {tribunal_result.get('verdict', '?')}, consensus: {tribunal_result.get('consensus_reached', '?')}")
+                except Exception as e:
+                    print(f"      ⚠️ Dual tribunal failed, falling back: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    debate_result = None
+
+            # Fallback to legacy orchestrator
+            if debate_result is None:
+                debate_result = await self.debate_orchestrator.run_debate(case, patient_text)
+                debate_result["debate_logs"] = None  # Legacy doesn't have structured debate logs
 
             # Store result
             state["last_debate_result"] = debate_result

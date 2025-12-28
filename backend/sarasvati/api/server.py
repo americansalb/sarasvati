@@ -79,17 +79,40 @@ def parse_redis_url() -> tuple[str, int, int]:
 
 _redis_host, _redis_port, _redis_db = parse_redis_url()
 
-# Independent Tribunal: 3 UNIQUE MODELS - EQUAL CAPABILITY, ALL CHEAP!
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRIBUNAL CONFIGURATION - STRICT MODE
+# ═══════════════════════════════════════════════════════════════════════════════
 #
-# 3 UNIQUE MODELS (all "efficient tier" - similar capability):
-# - Node A: Llama 8B (Groq) - FREE, Meta architecture
-# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI architecture
-# - Node C: GPT-3.5-turbo (OpenAI) - $0.50/1M, older OpenAI (different training)
+# REQUIREMENTS (enforced - system fails if not met):
+#   - 3 UNIQUE providers (groq, openai, deepseek - all different)
+#   - 3 UNIQUE models (all different model names)
+#   - NO FALLBACKS - missing API keys cause hard failure
 #
-# All equal capability but DIFFERENT training data and architectures!
-_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.1-8b-instant")     # Node A: Llama 8B - FREE
-_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "llama-3.1-8b-instant")         # Groq fallback
-_model_arbiter = os.getenv("OPENAI_MODEL_ARBITER", "gpt-3.5-turbo")              # Node C: GPT-3.5-turbo
+# Environment Variables:
+#   TRIBUNAL_MODEL_A    = Model for Agent A (default: llama-3.1-8b-instant)
+#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-4o-mini)
+#   TRIBUNAL_MODEL_C    = Model for Agent C (default: deepseek-chat)
+#
+#   TRIBUNAL_PROVIDER_A = Provider for Agent A (default: groq)
+#   TRIBUNAL_PROVIDER_B = Provider for Agent B (default: openai)
+#   TRIBUNAL_PROVIDER_C = Provider for Agent C (default: deepseek)
+#
+# API Keys (ALL REQUIRED for default config):
+#   GROQ_API_KEY     = For Groq models (FREE)
+#   OPENAI_API_KEY   = For OpenAI models (~$0.15/1M tokens)
+#   DEEPSEEK_API_KEY = For DeepSeek models (~$0.14/1M tokens)
+#
+# Default tribunal (3 unique providers, 3 unique models):
+#   Agent A: llama-3.1-8b-instant (Groq/Meta) - FREE
+#   Agent B: gpt-4o-mini (OpenAI) - $0.15/1M
+#   Agent C: deepseek-chat (DeepSeek) - $0.14/1M
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Legacy config (kept for backwards compatibility - actual config via agent.py defaults)
+_model_extractor = os.getenv("GROQ_MODEL_EXTRACTOR", "llama-3.1-8b-instant")
+_model_monitor = os.getenv("GROQ_MODEL_MONITOR", "llama-3.1-8b-instant")
+_model_arbiter = os.getenv("OPENAI_MODEL_ARBITER", "gpt-3.5-turbo")
 
 DEFAULT_CONFIG = GraphConfig(
     max_buffer_size=50,
@@ -434,6 +457,10 @@ async def emit_error_loop() -> None:
 
                         confidence = compute_confidence(severity, num_errors)
 
+                        # NEW: Include debate logs for visibility (user wants to see the debate!)
+                        debate_logs = debate_result.get("debate_logs")
+                        has_debate_logs = debate_logs is not None
+
                         verdict_payload = {
                             "confidence": confidence,
                             "severity": severity,
@@ -448,11 +475,20 @@ async def emit_error_loop() -> None:
                                 }
                                 for e in valid_errors
                             ],
+                            # Visible debate logs from two-tribunal architecture
+                            "debate_logs": debate_logs,
+                            "has_debate_logs": has_debate_logs,
                         }
 
                         message = build_ws_message("tribunal_verdict", verdict_payload)
                         await manager.broadcast(message)
-                        print(f"📢 Broadcast tribunal_verdict: confidence={confidence:.2f}, severity={severity}, issues={num_errors}")
+                        print(f"📢 Broadcast tribunal_verdict: confidence={confidence:.2f}, severity={severity}, issues={num_errors}, debate_visible={has_debate_logs}")
+
+                        # NEW: Broadcast debate logs as separate message for UI (visible debate section)
+                        if has_debate_logs:
+                            debate_message = build_ws_message("debate_log", debate_logs)
+                            await manager.broadcast(debate_message)
+                            print(f"📢 Broadcast debate_log: {len(debate_logs)} tribunal logs")
 
                     last_verdict_count = current_verdict_count
 
@@ -1373,8 +1409,9 @@ async def get_asr_config():
     return {
         "current_config": asr_config.get_all(),
         "current_mode": asr_config.get_mode(),
-        "available_modes": ["ensemble", "groq", "openai"],
-        "note": "ENSEMBLE mode (default) runs both Groq + OpenAI in parallel and picks the best result using consensus logic",
+        "groq_model": asr_config.get_groq_model(),
+        "available_modes": ["groq-turbo", "groq-large", "ensemble", "openai"],
+        "note": "Groq Whisper: Turbo=$0.04/hr (fast), Large=$0.111/hr (accurate). Ensemble runs Groq+OpenAI in parallel.",
     }
 
 
@@ -1384,13 +1421,36 @@ async def switch_default_asr(request: ASRSwitchRequest):
     Switch ASR mode.
 
     Modes:
-    - "ensemble" (default): Run both Groq + OpenAI in parallel, pick best (tribunal pattern)
-    - "groq": Use only Groq Whisper Large V3
-    - "openai": Use only OpenAI Whisper-1
+    - "groq-turbo": Groq Whisper Turbo ($0.04/hr, 228x speed) - DEFAULT
+    - "groq-large": Groq Whisper Large ($0.111/hr, most accurate)
+    - "ensemble": Run both Groq + OpenAI in parallel, pick best
+    - "openai": Use only OpenAI gpt-4o-transcribe
     """
     backend = request.backend
 
-    if backend == "ensemble":
+    if backend == "groq-turbo" or backend == "groq":
+        asr_config.set_default("groq-turbo")
+        asr_config.set_groq_model("whisper-large-v3-turbo")
+        asr_config.set_backend("provider", "en", "groq-turbo")
+        asr_config.set_backend("patient", "auto", "groq-turbo")
+        asr_config.set_backend("interpreter", "auto", "groq-turbo")
+        return {
+            "status": "success",
+            "message": "Switched to Groq Whisper TURBO ($0.04/hr, 228x speed)",
+            "config": asr_config.get_all()
+        }
+    elif backend == "groq-large":
+        asr_config.set_default("groq-large")
+        asr_config.set_groq_model("whisper-large-v3")
+        asr_config.set_backend("provider", "en", "groq-large")
+        asr_config.set_backend("patient", "auto", "groq-large")
+        asr_config.set_backend("interpreter", "auto", "groq-large")
+        return {
+            "status": "success",
+            "message": "Switched to Groq Whisper LARGE ($0.111/hr, most accurate)",
+            "config": asr_config.get_all()
+        }
+    elif backend == "ensemble":
         asr_config.set_default("ensemble")
         asr_config.set_backend("provider", "en", "ensemble")
         asr_config.set_backend("patient", "auto", "ensemble")
@@ -1400,16 +1460,6 @@ async def switch_default_asr(request: ASRSwitchRequest):
             "message": "Switched to ENSEMBLE mode (Groq + OpenAI in parallel)",
             "config": asr_config.get_all()
         }
-    elif backend == "groq":
-        asr_config.set_default("groq")
-        asr_config.set_backend("provider", "en", "groq")
-        asr_config.set_backend("patient", "auto", "groq")
-        asr_config.set_backend("interpreter", "auto", "groq")
-        return {
-            "status": "success",
-            "message": "Switched to Groq Whisper Large V3 only",
-            "config": asr_config.get_all()
-        }
     elif backend == "openai":
         asr_config.set_default("openai-gpt4o-transcribe")
         asr_config.set_backend("provider", "en", "openai-gpt4o-transcribe")
@@ -1417,11 +1467,11 @@ async def switch_default_asr(request: ASRSwitchRequest):
         asr_config.set_backend("interpreter", "auto", "openai-gpt4o-transcribe")
         return {
             "status": "success",
-            "message": "Switched to OpenAI Whisper-1 only",
+            "message": "Switched to OpenAI gpt-4o-transcribe",
             "config": asr_config.get_all()
         }
     else:
-        raise HTTPException(status_code=400, detail=f"Invalid backend: {backend}. Use 'ensemble', 'groq', or 'openai'")
+        raise HTTPException(status_code=400, detail=f"Invalid backend: {backend}. Use 'groq-turbo', 'groq-large', 'ensemble', or 'openai'")
 
 
 @app.post("/admin/asr-config/update")

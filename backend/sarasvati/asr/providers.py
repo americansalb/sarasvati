@@ -123,8 +123,18 @@ class ASRProvider(ABC):
         pass
 
 
+# Groq Whisper Model Options
+# - whisper-large-v3-turbo: $0.04/hr, 228x speed (faster, cheaper, slightly less accurate)
+# - whisper-large-v3: $0.111/hr, 217x speed (full model, most accurate)
+GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
+
+
 class GroqProvider(ASRProvider):
-    """Groq Whisper Large V3 provider."""
+    """Groq Whisper provider with configurable model."""
+
+    def __init__(self, api_key: str, model: str = GROQ_WHISPER_MODEL):
+        super().__init__(api_key)
+        self.model = model
 
     async def transcribe(
         self,
@@ -133,8 +143,8 @@ class GroqProvider(ASRProvider):
         content_type: str,
         language: Optional[str] = None,
     ) -> ASRResult:
-        """Transcribe using Groq Whisper Large V3 with medical vocabulary hints."""
-        whisper_data: dict = {"model": "whisper-large-v3", "response_format": "json"}
+        """Transcribe using Groq Whisper with medical vocabulary hints."""
+        whisper_data: dict = {"model": self.model, "response_format": "json"}
 
         # Add language hint if provided
         if language and language != "auto":
@@ -166,11 +176,12 @@ class GroqProvider(ASRProvider):
                     )
 
                 result = response.json()
+                print(f"🎤 Groq Whisper ({self.model}): transcribed {result.get('duration', 0.0):.1f}s audio")
                 return ASRResult(
                     text=result.get("text", "").strip(),
                     duration=result.get("duration", 0.0),
                     language=result.get("language", "unknown"),
-                    provider="groq",
+                    provider=f"groq-{self.model}",
                 )
             except Exception as e:
                 return ASRResult(
@@ -268,8 +279,12 @@ class ASRProviderFactory:
         Returns:
             ASRProvider instance
         """
-        if backend == "groq":
-            return GroqProvider(groq_key)
+        if backend == "groq" or backend == "groq-turbo":
+            # Groq Whisper Turbo: $0.04/hr, 228x speed
+            return GroqProvider(groq_key, model="whisper-large-v3-turbo")
+        elif backend == "groq-large":
+            # Groq Whisper Large: $0.111/hr, 217x speed (most accurate)
+            return GroqProvider(groq_key, model="whisper-large-v3")
         elif backend == "openai-gpt4o-transcribe":
             # Use gpt-4o-transcribe for high-quality transcription (better for Gujarati, etc.)
             return OpenAIProvider(openai_key, model="gpt-4o-transcribe")
@@ -500,24 +515,25 @@ class ASRConfig:
 
     def __init__(self):
         # Default configuration
+        # DEFAULT: Groq Whisper ($0.04/hr for Turbo, $0.111/hr for Large)
+        # User can switch to ensemble or OpenAI via UI if needed
         self.config = {
-            # Global mode
-            "mode": "ensemble",  # "ensemble" | specific backend
-            "default": "ensemble",
+            # Global mode - DEFAULT TO GROQ WHISPER
+            "mode": "groq",  # "groq" | "ensemble" | "openai"
+            "default": "groq",
 
             # Per-language defaults (applies to all roles)
-            # For high-quality languages, use ensemble (Groq + OpenAI gpt-4o-transcribe)
-            # This enables the debate + referee pattern for best accuracy
-            "gu": "ensemble",  # Gujarati → Ensemble (Groq + OpenAI gpt-4o-transcribe)
-            "hi": "ensemble",  # Hindi → Ensemble
-            "es": "ensemble",  # Spanish → Ensemble
-            "en": "ensemble",  # English → Ensemble
-            "ar": "ensemble",  # Arabic → Ensemble
-            "zh": "ensemble",  # Chinese → Ensemble
-            "auto": "ensemble",  # Auto-detect → Ensemble
+            # Groq Whisper works well for most languages
+            "gu": "groq",  # Gujarati → Groq Whisper
+            "hi": "groq",  # Hindi → Groq Whisper
+            "es": "groq",  # Spanish → Groq Whisper
+            "en": "groq",  # English → Groq Whisper
+            "ar": "groq",  # Arabic → Groq Whisper
+            "zh": "groq",  # Chinese → Groq Whisper
+            "auto": "groq",  # Auto-detect → Groq Whisper
 
             # Per-role defaults (overrides language defaults if specified)
-            "provider": "ensemble",  # Provider (usually English) → Ensemble
+            "provider": "groq",  # Provider (usually English) → Groq Whisper
             "patient": None,  # Patient → Use language default
             "interpreter": None,  # Interpreter → Use language default
 
@@ -554,7 +570,7 @@ class ASRConfig:
             return self.config[language]
 
         # Priority 4: Global default
-        return self.config.get("default", "ensemble")
+        return self.config.get("default", "groq")
 
     def set_backend(self, role: str, language: str, backend: str) -> None:
         key = f"{role}_{language}"
@@ -565,11 +581,21 @@ class ASRConfig:
         self.config["mode"] = backend
 
     def get_mode(self) -> str:
-        """Get current mode: 'ensemble', 'groq', or 'openai'"""
-        return self.config.get("mode", "ensemble")
+        """Get current mode: 'groq', 'groq-turbo', 'groq-large', 'ensemble', or 'openai'"""
+        return self.config.get("mode", "groq")
+
+    def get_groq_model(self) -> str:
+        """Get current Groq Whisper model."""
+        return self.config.get("groq_model", "whisper-large-v3-turbo")
+
+    def set_groq_model(self, model: str) -> None:
+        """Set Groq Whisper model: 'whisper-large-v3-turbo' or 'whisper-large-v3'"""
+        self.config["groq_model"] = model
 
     def get_all(self) -> dict:
-        return self.config.copy()
+        result = self.config.copy()
+        result["groq_model"] = self.get_groq_model()
+        return result
 
     def update(self, config: dict) -> None:
         self.config.update(config)

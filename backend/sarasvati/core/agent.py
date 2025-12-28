@@ -53,6 +53,9 @@ try:
 except ImportError:
     AsyncOpenAI = None
 
+# DeepSeek uses OpenAI-compatible API
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
 from .state import (
     MedicalEntity,
     TranscriptSegment,
@@ -64,20 +67,46 @@ from .state import (
 )
 
 
-# ===== Default Models (can be overridden via env) =====
-# ALL CHEAP MODELS - ALL EQUAL CAPABILITY (small/efficient tier)
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRIBUNAL CONFIGURATION - STRICT UNIQUENESS ENFORCED
+# ═══════════════════════════════════════════════════════════════════════════════
 #
-# 3 UNIQUE MODELS - EQUAL but DIFFERENT:
-# - Node A: Llama 3.1 8B (Groq) - FREE, Meta architecture
-# - Node B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI architecture
-# - Node C: GPT-3.5-turbo (OpenAI) - $0.50/1M, older OpenAI (different training)
+# REQUIREMENTS:
+#   - 3 UNIQUE providers (groq, openai, deepseek - all different companies)
+#   - 3 UNIQUE models (all different model names)
+#   - NO FALLBACKS - if a provider/model can't be initialized, system FAILS
 #
-# All 3 are "efficient tier" models with similar capability but different training!
+# Environment Variables:
+#   TRIBUNAL_MODEL_A    = Model for Agent A (default: llama-3.1-8b-instant)
+#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-4o-mini)
+#   TRIBUNAL_MODEL_C    = Model for Agent C (default: deepseek-chat)
+#
+#   TRIBUNAL_PROVIDER_A = Provider for Agent A (default: groq)
+#   TRIBUNAL_PROVIDER_B = Provider for Agent B (default: openai)
+#   TRIBUNAL_PROVIDER_C = Provider for Agent C (default: deepseek)
+#
+# API Keys (ALL REQUIRED for default config):
+#   GROQ_API_KEY     = For Groq models (FREE)
+#   OPENAI_API_KEY   = For OpenAI models (~$0.15-0.50/1M tokens)
+#   DEEPSEEK_API_KEY = For DeepSeek models (~$0.14/1M tokens)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
 
-DEFAULT_MODEL_EXTRACTOR = "llama-3.1-8b-instant"          # Node A: Llama 8B (Groq) - FREE
-DEFAULT_MODEL_MONITOR = "llama-3.1-8b-instant"            # Node B: Groq fallback
-DEFAULT_MODEL_MONITOR_OPENAI = "gpt-4o-mini"              # Node B: GPT-4o-mini - CHEAP
-DEFAULT_MODEL_ARBITER = "gpt-3.5-turbo"                   # Node C: GPT-3.5-turbo (OpenAI) - different training
+# 3 UNIQUE MODELS - each from a different AI company
+DEFAULT_MODEL_A = os.getenv("TRIBUNAL_MODEL_A", "llama-3.1-8b-instant")  # Meta (via Groq)
+DEFAULT_MODEL_B = os.getenv("TRIBUNAL_MODEL_B", "gpt-4o-mini")            # OpenAI
+DEFAULT_MODEL_C = os.getenv("TRIBUNAL_MODEL_C", "deepseek-chat")          # DeepSeek
+
+# 3 UNIQUE PROVIDERS - maximum independence
+DEFAULT_PROVIDER_A = os.getenv("TRIBUNAL_PROVIDER_A", "groq").lower()     # Groq (FREE)
+DEFAULT_PROVIDER_B = os.getenv("TRIBUNAL_PROVIDER_B", "openai").lower()   # OpenAI
+DEFAULT_PROVIDER_C = os.getenv("TRIBUNAL_PROVIDER_C", "deepseek").lower() # DeepSeek
+
+# Legacy defaults (for backwards compatibility)
+DEFAULT_MODEL_EXTRACTOR = DEFAULT_MODEL_A
+DEFAULT_MODEL_MONITOR = DEFAULT_MODEL_A  # Fallback
+DEFAULT_MODEL_MONITOR_OPENAI = DEFAULT_MODEL_B
+DEFAULT_MODEL_ARBITER = DEFAULT_MODEL_C
 
 # Future Claude integration (disabled by default - expensive)
 DEFAULT_MODEL_MONITOR_CLAUDE = "claude-sonnet-4-20250514"
@@ -1075,15 +1104,15 @@ class ClinicalDebateOrchestrator:
     """
     Consensus-Based Tribunal Orchestrator
 
+    STRICT REQUIREMENTS:
+    - 3 UNIQUE providers (groq, openai, deepseek)
+    - 3 UNIQUE models (all different)
+    - NO FALLBACKS - fails hard if requirements not met
+
     Implements TRUE DEBATE between 3 agents:
     1. ROUND 1: All 3 analyze independently (no peer visibility)
     2. ROUND 2: All 3 see each other's opinions, refine positions
     3. VOTE: Majority verdict wins (2/3 agreement)
-
-    Provider Diversity (3 different model families):
-    - Agent A: Mistral Mixtral (via Groq)
-    - Agent B: OpenAI GPT-4o-mini
-    - Agent C: Meta Llama 70B (via Groq)
     """
 
     def __init__(
@@ -1091,100 +1120,187 @@ class ClinicalDebateOrchestrator:
         groq_api_key: str,
         openai_api_key: str = "",
         anthropic_api_key: str = "",
-        model_a: str = DEFAULT_MODEL_EXTRACTOR,  # Mistral Mixtral
-        model_b: str = DEFAULT_MODEL_MONITOR_OPENAI,  # OpenAI GPT-4o-mini
-        model_c: str = DEFAULT_MODEL_ARBITER,  # Meta Llama 70B
+        deepseek_api_key: str = "",
+        model_a: str = DEFAULT_MODEL_A,
+        model_b: str = DEFAULT_MODEL_B,
+        model_c: str = DEFAULT_MODEL_C,
+        provider_a: str = DEFAULT_PROVIDER_A,
+        provider_b: str = DEFAULT_PROVIDER_B,
+        provider_c: str = DEFAULT_PROVIDER_C,
     ):
-        if AsyncGroq is None:
-            raise ImportError("groq package not installed. Install with: pip install groq")
+        """
+        Initialize the tribunal with 3 UNIQUE providers and 3 UNIQUE models.
 
-        # Initialize clients
-        self.groq_client = AsyncGroq(api_key=groq_api_key)
+        NO FALLBACKS - system fails if requirements not met.
+
+        Args:
+            groq_api_key: API key for Groq (REQUIRED if provider uses groq)
+            openai_api_key: API key for OpenAI (REQUIRED if provider uses openai)
+            anthropic_api_key: API key for Anthropic (REQUIRED if provider uses anthropic)
+            deepseek_api_key: API key for DeepSeek (REQUIRED if provider uses deepseek)
+            model_a: Model name for Agent A (default: llama-3.1-8b-instant)
+            model_b: Model name for Agent B (default: gpt-4o-mini)
+            model_c: Model name for Agent C (default: deepseek-chat)
+            provider_a: Provider for Agent A (default: groq)
+            provider_b: Provider for Agent B (default: openai)
+            provider_c: Provider for Agent C (default: deepseek)
+
+        Raises:
+            ValueError: If providers or models are not unique, or if API keys missing
+        """
+        print(f"\n{'='*70}")
+        print(f"🏛️  TRIBUNAL INITIALIZATION - STRICT MODE")
+        print(f"{'='*70}")
+
+        # Normalize providers
+        provider_a = provider_a.lower()
+        provider_b = provider_b.lower()
+        provider_c = provider_c.lower()
+
+        # ═══════════════════════════════════════════════════════════
+        # STRICT VALIDATION: 3 UNIQUE PROVIDERS
+        # ═══════════════════════════════════════════════════════════
+        providers = [provider_a, provider_b, provider_c]
+        unique_providers = set(providers)
+
+        if len(unique_providers) != 3:
+            duplicate_providers = [p for p in providers if providers.count(p) > 1]
+            raise ValueError(
+                f"🚨 TRIBUNAL REQUIRES 3 UNIQUE PROVIDERS!\n"
+                f"   Configured: A={provider_a}, B={provider_b}, C={provider_c}\n"
+                f"   Duplicate: {set(duplicate_providers)}\n"
+                f"   Fix: Set TRIBUNAL_PROVIDER_A, TRIBUNAL_PROVIDER_B, TRIBUNAL_PROVIDER_C to 3 different values\n"
+                f"   Valid providers: groq, openai, deepseek, anthropic"
+            )
+
+        print(f"✅ Provider uniqueness validated: {provider_a}, {provider_b}, {provider_c}")
+
+        # ═══════════════════════════════════════════════════════════
+        # STRICT VALIDATION: 3 UNIQUE MODELS
+        # ═══════════════════════════════════════════════════════════
+        models = [model_a, model_b, model_c]
+        unique_models = set(models)
+
+        if len(unique_models) != 3:
+            duplicate_models = [m for m in models if models.count(m) > 1]
+            raise ValueError(
+                f"🚨 TRIBUNAL REQUIRES 3 UNIQUE MODELS!\n"
+                f"   Configured: A={model_a}, B={model_b}, C={model_c}\n"
+                f"   Duplicate: {set(duplicate_models)}\n"
+                f"   Fix: Set TRIBUNAL_MODEL_A, TRIBUNAL_MODEL_B, TRIBUNAL_MODEL_C to 3 different values"
+            )
+
+        print(f"✅ Model uniqueness validated: {model_a}, {model_b}, {model_c}")
+
+        # ═══════════════════════════════════════════════════════════
+        # INITIALIZE CLIENTS - NO FALLBACKS
+        # ═══════════════════════════════════════════════════════════
+        self.groq_client = None
         self.openai_client = None
         self.anthropic_client = None
+        self.deepseek_client = None
 
-        # Initialize OpenAI client if key provided
-        if openai_api_key and AsyncOpenAI is not None:
-            try:
-                self.openai_client = AsyncOpenAI(api_key=openai_api_key)
-            except Exception as e:
-                print(f"⚠️ Failed to initialize OpenAI client: {e}")
+        # Initialize only the clients we need
+        needed_providers = unique_providers
 
-        # Initialize Anthropic client if key provided (for future use)
-        if anthropic_api_key and AsyncAnthropic is not None:
-            try:
-                self.anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
-            except Exception as e:
-                print(f"⚠️ Failed to initialize Anthropic client: {e}")
+        if "groq" in needed_providers:
+            if not groq_api_key:
+                raise ValueError("🚨 GROQ_API_KEY required but not set!")
+            if AsyncGroq is None:
+                raise ImportError("🚨 groq package not installed. Install with: pip install groq")
+            self.groq_client = AsyncGroq(api_key=groq_api_key)
+            print(f"✅ Groq client initialized")
+
+        if "openai" in needed_providers:
+            if not openai_api_key:
+                raise ValueError("🚨 OPENAI_API_KEY required but not set!")
+            if AsyncOpenAI is None:
+                raise ImportError("🚨 openai package not installed. Install with: pip install openai")
+            self.openai_client = AsyncOpenAI(api_key=openai_api_key)
+            print(f"✅ OpenAI client initialized")
+
+        if "deepseek" in needed_providers:
+            if not deepseek_api_key:
+                raise ValueError("🚨 DEEPSEEK_API_KEY required but not set!")
+            if AsyncOpenAI is None:
+                raise ImportError("🚨 openai package not installed (needed for DeepSeek). Install with: pip install openai")
+            self.deepseek_client = AsyncOpenAI(
+                api_key=deepseek_api_key,
+                base_url=DEEPSEEK_BASE_URL,
+            )
+            print(f"✅ DeepSeek client initialized")
+
+        if "anthropic" in needed_providers:
+            if not anthropic_api_key:
+                raise ValueError("🚨 ANTHROPIC_API_KEY required but not set!")
+            if AsyncAnthropic is None:
+                raise ImportError("🚨 anthropic package not installed. Install with: pip install anthropic")
+            self.anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
+            print(f"✅ Anthropic client initialized")
 
         # ═══════════════════════════════════════════════════════════
-        # CREATE 3 UNIQUE DEBATE AGENTS (3 different models!)
+        # GET CLIENT FOR PROVIDER - NO FALLBACKS
         # ═══════════════════════════════════════════════════════════
+        def get_client(provider: str):
+            """Get client for provider. Raises if not available."""
+            if provider == "groq":
+                return self.groq_client
+            elif provider == "openai":
+                return self.openai_client
+            elif provider == "deepseek":
+                return self.deepseek_client
+            elif provider == "anthropic":
+                return self.anthropic_client
+            else:
+                raise ValueError(f"Unknown provider: {provider}")
 
-        # Agent A: Meta Llama 8B (via Groq) - fast extraction
+        # ═══════════════════════════════════════════════════════════
+        # CREATE 3 UNIQUE DEBATE AGENTS
+        # ═══════════════════════════════════════════════════════════
         self.agent_a = DebateAgent(
-            name="Agent-A (Llama-8B)",
-            client=self.groq_client,
+            name=f"Agent-A ({model_a})",
+            client=get_client(provider_a),
             model=model_a,
-            provider="groq"
+            provider=provider_a,
         )
-        print(f"✅ TRIBUNAL: Agent A using Groq ({model_a})")
+        print(f"✅ Agent A: {model_a} via {provider_a}")
 
-        # Agent B: OpenAI GPT-4o-mini (or fallback to Groq)
-        if self.openai_client:
-            self.agent_b = DebateAgent(
-                name="Agent-B (GPT-4o-mini)",
-                client=self.openai_client,
-                model=model_b,
-                provider="openai"
-            )
-            print(f"✅ TRIBUNAL: Agent B using OpenAI ({model_b})")
-        else:
-            # Fallback to Groq Llama if no OpenAI
-            self.agent_b = DebateAgent(
-                name="Agent-B (Llama-fallback)",
-                client=self.groq_client,
-                model=DEFAULT_MODEL_MONITOR,  # llama-3.1-8b
-                provider="groq"
-            )
-            print(f"⚠️ TRIBUNAL: Agent B falling back to Groq (no OpenAI key)")
+        self.agent_b = DebateAgent(
+            name=f"Agent-B ({model_b})",
+            client=get_client(provider_b),
+            model=model_b,
+            provider=provider_b,
+        )
+        print(f"✅ Agent B: {model_b} via {provider_b}")
 
-        # Agent C: GPT-3.5-turbo (via OpenAI) - different training from GPT-4o-mini
-        if self.openai_client:
-            self.agent_c = DebateAgent(
-                name="Agent-C (GPT-3.5)",
-                client=self.openai_client,
-                model=model_c,  # gpt-3.5-turbo
-                provider="openai"
-            )
-            print(f"✅ TRIBUNAL: Agent C using OpenAI ({model_c})")
-        else:
-            # Fallback to Groq Llama 8B if no OpenAI (equal to Node A)
-            self.agent_c = DebateAgent(
-                name="Agent-C (Llama-fallback)",
-                client=self.groq_client,
-                model="llama-3.1-8b-instant",
-                provider="groq"
-            )
-            print(f"⚠️ TRIBUNAL: Agent C falling back to Groq (no OpenAI key)")
+        self.agent_c = DebateAgent(
+            name=f"Agent-C ({model_c})",
+            client=get_client(provider_c),
+            model=model_c,
+            provider=provider_c,
+        )
+        print(f"✅ Agent C: {model_c} via {provider_c}")
 
         self.agents = [self.agent_a, self.agent_b, self.agent_c]
 
         # Store model info for debugging
         self.models = {
-            "agent_a": {"name": self.agent_a.name, "model": self.agent_a.model, "provider": self.agent_a.provider},
-            "agent_b": {"name": self.agent_b.name, "model": self.agent_b.model, "provider": self.agent_b.provider},
-            "agent_c": {"name": self.agent_c.name, "model": self.agent_c.model, "provider": self.agent_c.provider},
+            "agent_a": {"name": self.agent_a.name, "model": model_a, "provider": provider_a},
+            "agent_b": {"name": self.agent_b.name, "model": model_b, "provider": provider_b},
+            "agent_c": {"name": self.agent_c.name, "model": model_c, "provider": provider_c},
         }
 
-        print(f"✅ TRIBUNAL initialized with 3 agents:")
-        for name, info in self.models.items():
-            print(f"   {info['name']}: {info['model']} via {info['provider']}")
+        print(f"{'='*70}")
+        print(f"🏛️  TRIBUNAL READY: 3 unique providers, 3 unique models")
+        print(f"   Agent A: {model_a} ({provider_a})")
+        print(f"   Agent B: {model_b} ({provider_b})")
+        print(f"   Agent C: {model_c} ({provider_c})")
+        print(f"{'='*70}\n")
 
         # Keep legacy references for backward compatibility
-        self.extractor = NodeAExtractor(self.groq_client, model_a)
-        self.monitor = NodeBMonitor(self.groq_client, DEFAULT_MODEL_MONITOR)
-        self.arbiter = NodeCArbiter(self.groq_client, model_c)
+        self.extractor = NodeAExtractor(get_client(provider_a), model_a)
+        self.monitor = NodeBMonitor(get_client(provider_a), model_a)
+        self.arbiter = NodeCArbiter(get_client(provider_c), model_c)
 
     async def run_consensus_debate(
         self,
@@ -1423,15 +1539,74 @@ class ClinicalDebateOrchestrator:
         # Example: "Lo siento porque yo escucho" → "I'm sorry because I listen" (NOT "I'm sorry to hear that")
         # FIXED: Explicit precedence to avoid operator precedence bugs
         if interpreter_segment:
+            raw_text = interpreter_segment.get("text", "")
             interpreter_text = (
                 interpreter_segment.get("text_english_literal")  # Priority 1: literal for interpreter eval
                 or interpreter_segment.get("text_english_smooth")  # Priority 2: smooth if literal not available
                 or interpreter_segment.get("text_english")  # Priority 3: backwards compat
-                or interpreter_segment.get("text")  # Priority 4: raw text
-                or "[NO INTERPRETATION]"
             )
+
+            # Check if we're falling back to non-English raw text
+            if not interpreter_text:
+                # Detect non-Latin scripts (Gujarati, Hindi, Arabic, etc.)
+                def has_non_latin(text: str) -> bool:
+                    """Check if text contains non-Latin characters."""
+                    if not text:
+                        return False
+                    for char in text:
+                        # Latin characters, digits, punctuation, spaces
+                        if ord(char) < 128 or char.isspace():
+                            continue
+                        # Extended Latin (accented chars)
+                        if 0x00C0 <= ord(char) <= 0x024F:
+                            continue
+                        return True
+                    return False
+
+                if has_non_latin(raw_text):
+                    # Non-Latin text without translation - DON'T use raw text
+                    interpreter_text = f"[TRANSLATION MISSING - Raw: {raw_text[:100]}...]"
+                    print(f"⚠️ TRIBUNAL: Interpreter text has no English translation!")
+                    print(f"   Raw text (non-Latin): {raw_text[:80]}...")
+                    print(f"   This segment should have been translated before tribunal.")
+                else:
+                    # Latin text (might be English already)
+                    interpreter_text = raw_text or "[NO INTERPRETATION]"
         else:
             interpreter_text = "[NO INTERPRETATION]"
+
+        # ═══════════════════════════════════════════════════════════
+        # TRANSLATION MISSING CHECK: Skip tribunal if no English translation
+        # ═══════════════════════════════════════════════════════════
+        if interpreter_text and interpreter_text.startswith("[TRANSLATION MISSING"):
+            print(f"⚠️ SKIPPING TRIBUNAL: Interpreter text has no English translation")
+            processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+            system_error = ClinicalError(
+                error_id=f"err_{datetime.utcnow().timestamp()}_no_translation",
+                severity=ErrorSeverity.MEDIUM,
+                error_type="system_translation_missing",
+                provider_entity=None,
+                interpreter_entity=None,
+                description="Translation missing for interpreter segment. Cannot evaluate without English translation.",
+                arbiter_reasoning="Translation pipeline did not provide English translation for interpreter segment. Tribunal cannot run on non-English text.",
+                confidence=0.5,
+                detected_at=datetime.utcnow(),
+                alignment_info=alignment,
+                is_system_error=True,
+                source_role=None,
+                interpreter_quote=interpreter_text,
+                source_quote=source_text,
+                ideal_interpretation=None,
+            )
+
+            return AgentDebateResult(
+                extractor_entities=[],
+                monitor_findings=["Translation missing - tribunal skipped"],
+                arbiter_decision="Cannot evaluate: interpreter text not translated to English",
+                detected_errors=[system_error],
+                processing_time_ms=processing_time,
+            )
 
         # ═══════════════════════════════════════════════════════════
         # ALIGNMENT SANITY CHECK: ALIGNED cases must have valid source

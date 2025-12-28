@@ -117,6 +117,32 @@ class BufferEntry(TypedDict):
     alignment_attempts: int    # How many times we've tried to align this
 
 
+class DebateTurnRecord(TypedDict):
+    """Single turn in a tribunal debate - for visibility."""
+    round_num: int
+    agent_name: str
+    agent_model: str
+    agent_provider: str
+    statement: str          # What the agent said
+    position: str           # Their verdict/translation
+    reasoning: str
+    agrees_with: List[str]
+    disagrees_with: List[str]
+    changed_mind: bool
+    timestamp: str
+
+
+class DebateLogRecord(TypedDict):
+    """Complete debate log for a tribunal."""
+    tribunal_type: str      # "translation" or "error"
+    input_text: str
+    turns: List[DebateTurnRecord]
+    final_consensus: Optional[str]
+    consensus_reached: bool
+    rounds_taken: int
+    duration_ms: Optional[float]
+
+
 class AgentDebateResult(TypedDict):
     """Result of the adversarial agent debate (Extractor vs Monitor)."""
     extractor_entities: List[MedicalEntity]     # What Node A found
@@ -124,6 +150,8 @@ class AgentDebateResult(TypedDict):
     arbiter_decision: str                       # Final verdict
     detected_errors: List[ClinicalError]
     processing_time_ms: float
+    # NEW: Visible debate logs from two-tribunal architecture
+    debate_logs: Optional[Dict[str, Optional[DebateLogRecord]]]  # {source_translation, interpreter_translation, error_evaluation}
 
 
 class SarasvatiState(TypedDict):

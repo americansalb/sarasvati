@@ -130,6 +130,39 @@ export interface TribunalVerdict {
     error_type: string;
     description: string;
   }>;
+  debate_logs?: DebateLogs | null;
+  has_debate_logs?: boolean;
+}
+
+// Visible debate log types - shows the actual back-and-forth tribunal debate
+export interface DebateTurn {
+  round: number;
+  agent: string;
+  model: string;
+  provider: string;
+  statement: string;
+  position: string;
+  reasoning: string;
+  agrees_with: string[];
+  disagrees_with: string[];
+  changed_mind: boolean;
+  timestamp: string;
+}
+
+export interface DebateLogEntry {
+  tribunal_type: string; // "translation" or "error"
+  input_text: string;
+  turns: DebateTurn[];
+  final_consensus: string | null;
+  consensus_reached: boolean;
+  rounds_taken: number;
+  duration_ms: number | null;
+}
+
+export interface DebateLogs {
+  source_translation: DebateLogEntry | null;
+  interpreter_translation: DebateLogEntry | null;
+  error_evaluation: DebateLogEntry | null;
 }
 
 export interface SessionState {
@@ -141,6 +174,7 @@ export interface SessionState {
   alignments: AlignmentMatch[];
   verdicts: TribunalVerdict[];
   debugInfo: AgentDebateResult | null;
+  debateLogs: DebateLogs | null; // Visible debate logs from two-tribunal architecture
 }
 
 export interface ConnectionState {
