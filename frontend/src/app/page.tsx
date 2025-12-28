@@ -353,10 +353,10 @@ function DetailsTab({
                           )}
                           {(opinion.agrees_with?.length || opinion.disagrees_with?.length) && (
                             <div className="flex gap-2 mt-2 text-xs">
-                              {opinion.agrees_with?.length > 0 && (
+                              {(opinion.agrees_with?.length ?? 0) > 0 && (
                                 <span className="text-green-400">Agrees: {opinion.agrees_with.join(", ")}</span>
                               )}
-                              {opinion.disagrees_with?.length > 0 && (
+                              {(opinion.disagrees_with?.length ?? 0) > 0 && (
                                 <span className="text-red-400">Disagrees: {opinion.disagrees_with.join(", ")}</span>
                               )}
                             </div>
