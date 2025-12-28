@@ -459,84 +459,176 @@ export default function DashboardPage() {
         <div className="mt-6 bg-gray-800/50 rounded-xl p-6 border border-gray-700">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
             <span className="text-2xl">🏛️</span>
-            Tribunal Debate Log
+            Tribunal Debate
           </h2>
-          <p className="text-sm text-gray-400 mb-4">
-            The two-tribunal system debates translation meaning and error detection. Each round shows agents arguing their positions.
-          </p>
 
-          {/* Error Tribunal */}
+          {/* Error Tribunal - The Main Debate */}
           {sessionState.debateLogs.error_evaluation && (
             <div className="mb-6">
-              <h3 className="text-lg font-semibold text-red-400 mb-3 flex items-center gap-2">
-                ⚖️ Error Tribunal
-                <span className={`text-xs px-2 py-1 rounded ${
-                  sessionState.debateLogs.error_evaluation.consensus_reached
-                    ? "bg-green-700"
-                    : "bg-yellow-700"
-                }`}>
-                  {sessionState.debateLogs.error_evaluation.consensus_reached ? "Consensus" : "No Consensus"}
-                </span>
-              </h3>
-              <p className="text-xs text-gray-500 mb-2">
-                Rounds: {sessionState.debateLogs.error_evaluation.rounds_taken} |
-                Verdict: <span className="text-yellow-300">{sessionState.debateLogs.error_evaluation.final_consensus}</span>
-              </p>
-              <div className="space-y-3 max-h-64 overflow-y-auto">
-                {sessionState.debateLogs.error_evaluation.turns.map((turn, idx) => (
-                  <div key={idx} className={`p-3 rounded-lg border ${
-                    turn.changed_mind ? "border-yellow-600 bg-yellow-900/20" : "border-gray-600 bg-gray-900/50"
+              <div className="flex items-center justify-between mb-4 pb-2 border-b border-gray-600">
+                <h3 className="text-lg font-semibold text-red-400">⚖️ Error Detection Tribunal</h3>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-400">
+                    {sessionState.debateLogs.error_evaluation.rounds_taken} round{sessionState.debateLogs.error_evaluation.rounds_taken > 1 ? 's' : ''}
+                  </span>
+                  <span className={`text-xs px-2 py-1 rounded font-medium ${
+                    sessionState.debateLogs.error_evaluation.consensus_reached
+                      ? "bg-green-700 text-green-100"
+                      : "bg-yellow-700 text-yellow-100"
                   }`}>
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="font-medium text-purple-300">
-                        {turn.agent}
-                        <span className="text-xs text-gray-500 ml-2">Round {turn.round}</span>
-                      </span>
-                      <span className={`text-xs px-2 py-0.5 rounded ${
-                        turn.position === "accurate" ? "bg-green-700" :
-                        turn.position === "critical_errors" ? "bg-red-700" :
-                        "bg-yellow-700"
+                    {sessionState.debateLogs.error_evaluation.consensus_reached ? "✓ CONSENSUS" : "⚠ NO CONSENSUS"}
+                  </span>
+                  <span className={`text-sm font-bold px-3 py-1 rounded ${
+                    sessionState.debateLogs.error_evaluation.final_consensus === "accurate" ? "bg-green-800 text-green-200" :
+                    sessionState.debateLogs.error_evaluation.final_consensus === "critical_errors" ? "bg-red-800 text-red-200" :
+                    "bg-yellow-800 text-yellow-200"
+                  }`}>
+                    {sessionState.debateLogs.error_evaluation.final_consensus?.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+
+              {/* Debate Conversation */}
+              <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2">
+                {sessionState.debateLogs.error_evaluation.turns.map((turn, idx) => {
+                  const isNewRound = idx === 0 || turn.round !== sessionState.debateLogs!.error_evaluation!.turns[idx - 1].round;
+                  return (
+                    <div key={idx}>
+                      {/* Round Separator */}
+                      {isNewRound && (
+                        <div className="flex items-center gap-2 my-4">
+                          <div className="flex-1 h-px bg-gray-600"></div>
+                          <span className="text-xs font-bold text-gray-400 px-3 py-1 bg-gray-700 rounded-full">
+                            ROUND {turn.round}
+                          </span>
+                          <div className="flex-1 h-px bg-gray-600"></div>
+                        </div>
+                      )}
+
+                      {/* Agent Speech Bubble */}
+                      <div className={`relative pl-4 ${
+                        turn.changed_mind ? "border-l-4 border-yellow-500" : "border-l-4 border-gray-600"
                       }`}>
-                        {turn.position}
-                      </span>
+                        {/* Agent Header */}
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-lg">🤖</span>
+                          <span className="font-bold text-purple-300">{turn.agent}</span>
+                          <span className="text-xs text-gray-500">({turn.model} via {turn.provider})</span>
+                          <span className={`ml-auto text-xs font-medium px-2 py-0.5 rounded ${
+                            turn.position === "accurate" ? "bg-green-800 text-green-200" :
+                            turn.position === "critical_errors" ? "bg-red-800 text-red-200" :
+                            turn.position === "significant_errors" ? "bg-orange-800 text-orange-200" :
+                            "bg-yellow-800 text-yellow-200"
+                          }`}>
+                            Verdict: {turn.position}
+                          </span>
+                        </div>
+
+                        {/* Changed Mind Alert */}
+                        {turn.changed_mind && (
+                          <div className="mb-2 p-2 bg-yellow-900/30 border border-yellow-700 rounded text-sm text-yellow-300">
+                            🔄 <strong>Changed position!</strong> This agent was convinced by peer arguments.
+                          </div>
+                        )}
+
+                        {/* Main Statement */}
+                        <div className="bg-gray-900/70 rounded-lg p-4 mb-2">
+                          <p className="text-gray-200 whitespace-pre-wrap">{turn.statement || turn.reasoning}</p>
+                        </div>
+
+                        {/* Position Details */}
+                        {turn.position && (
+                          <div className="mb-2 p-2 bg-gray-900/50 rounded border border-gray-700">
+                            <p className="text-sm">
+                              <span className="text-gray-400">My position: </span>
+                              <span className="text-white font-medium">{turn.position}</span>
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Agreement/Disagreement */}
+                        {(turn.agrees_with.length > 0 || turn.disagrees_with.length > 0) && (
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            {turn.agrees_with.length > 0 && (
+                              <span className="text-xs bg-green-900/50 text-green-300 px-2 py-1 rounded border border-green-700">
+                                ✓ Agrees with: {turn.agrees_with.join(", ")}
+                              </span>
+                            )}
+                            {turn.disagrees_with.length > 0 && (
+                              <span className="text-xs bg-red-900/50 text-red-300 px-2 py-1 rounded border border-red-700">
+                                ✗ Disagrees with: {turn.disagrees_with.join(", ")}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <p className="text-sm text-gray-300 mb-1">{turn.statement.slice(0, 200)}...</p>
-                    {turn.changed_mind && (
-                      <p className="text-xs text-yellow-400">🔄 Changed position this round</p>
-                    )}
-                    {turn.agrees_with.length > 0 && (
-                      <p className="text-xs text-green-400">✓ Agrees with: {turn.agrees_with.join(", ")}</p>
-                    )}
-                    {turn.disagrees_with.length > 0 && (
-                      <p className="text-xs text-red-400">✗ Disagrees with: {turn.disagrees_with.join(", ")}</p>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
 
           {/* Translation Tribunals */}
           {(sessionState.debateLogs.source_translation || sessionState.debateLogs.interpreter_translation) && (
-            <details className="mt-4">
-              <summary className="cursor-pointer text-sm text-gray-400 hover:text-gray-200">
-                🌐 Translation Debates (click to expand)
+            <details className="mt-6 border-t border-gray-600 pt-4">
+              <summary className="cursor-pointer text-lg font-semibold text-blue-400 hover:text-blue-300">
+                🌐 Translation Tribunal Debates
               </summary>
-              <div className="mt-3 space-y-4">
+              <div className="mt-4 space-y-6">
+                {/* Source Translation */}
                 {sessionState.debateLogs.source_translation && (
-                  <div className="p-3 bg-gray-900/50 rounded-lg border border-gray-700">
-                    <h4 className="text-sm font-medium text-blue-300 mb-2">Source Translation Tribunal</h4>
-                    <p className="text-xs text-gray-500 mb-2">
-                      Consensus: {sessionState.debateLogs.source_translation.final_consensus?.slice(0, 100)}...
+                  <div className="p-4 bg-gray-900/50 rounded-lg border border-blue-800">
+                    <h4 className="font-semibold text-blue-300 mb-2 flex items-center justify-between">
+                      <span>📝 Source Translation Debate</span>
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        sessionState.debateLogs.source_translation.consensus_reached ? "bg-green-700" : "bg-yellow-700"
+                      }`}>
+                        {sessionState.debateLogs.source_translation.consensus_reached ? "Consensus" : "No Consensus"}
+                      </span>
+                    </h4>
+                    <p className="text-sm text-gray-300 mb-3 p-2 bg-gray-800 rounded">
+                      <strong>Final Translation:</strong> {sessionState.debateLogs.source_translation.final_consensus}
                     </p>
+                    <div className="space-y-3 max-h-64 overflow-y-auto">
+                      {sessionState.debateLogs.source_translation.turns.map((turn, idx) => (
+                        <div key={idx} className="p-3 bg-gray-800/50 rounded border-l-2 border-blue-600">
+                          <div className="flex justify-between items-start mb-1">
+                            <span className="font-medium text-blue-300 text-sm">{turn.agent} <span className="text-gray-500">R{turn.round}</span></span>
+                            {turn.changed_mind && <span className="text-xs text-yellow-400">🔄 Changed</span>}
+                          </div>
+                          <p className="text-sm text-gray-300">{turn.statement || turn.position}</p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
+
+                {/* Interpreter Translation */}
                 {sessionState.debateLogs.interpreter_translation && (
-                  <div className="p-3 bg-gray-900/50 rounded-lg border border-gray-700">
-                    <h4 className="text-sm font-medium text-purple-300 mb-2">Interpreter Translation Tribunal</h4>
-                    <p className="text-xs text-gray-500 mb-2">
-                      Consensus: {sessionState.debateLogs.interpreter_translation.final_consensus?.slice(0, 100)}...
+                  <div className="p-4 bg-gray-900/50 rounded-lg border border-purple-800">
+                    <h4 className="font-semibold text-purple-300 mb-2 flex items-center justify-between">
+                      <span>🎙️ Interpreter Translation Debate</span>
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        sessionState.debateLogs.interpreter_translation.consensus_reached ? "bg-green-700" : "bg-yellow-700"
+                      }`}>
+                        {sessionState.debateLogs.interpreter_translation.consensus_reached ? "Consensus" : "No Consensus"}
+                      </span>
+                    </h4>
+                    <p className="text-sm text-gray-300 mb-3 p-2 bg-gray-800 rounded">
+                      <strong>Final Translation:</strong> {sessionState.debateLogs.interpreter_translation.final_consensus}
                     </p>
+                    <div className="space-y-3 max-h-64 overflow-y-auto">
+                      {sessionState.debateLogs.interpreter_translation.turns.map((turn, idx) => (
+                        <div key={idx} className="p-3 bg-gray-800/50 rounded border-l-2 border-purple-600">
+                          <div className="flex justify-between items-start mb-1">
+                            <span className="font-medium text-purple-300 text-sm">{turn.agent} <span className="text-gray-500">R{turn.round}</span></span>
+                            {turn.changed_mind && <span className="text-xs text-yellow-400">🔄 Changed</span>}
+                          </div>
+                          <p className="text-sm text-gray-300">{turn.statement || turn.position}</p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
