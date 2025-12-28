@@ -54,68 +54,167 @@ function StatusIndicator({ errorCount }: { errorCount: number }) {
 }
 
 // ===========================================================================
-// ERROR ALERT - Prominent dismissible error card
+// GROUPED ERROR CARD - Groups multiple findings per utterance pair
 // ===========================================================================
-function ErrorAlert({
-  error,
+interface GroupedError {
+  sourceQuote: string;
+  interpreterQuote: string;
+  highestSeverity: string;
+  issues: Array<{
+    type: string;
+    severity: string;
+    description: string;
+  }>;
+  errorIds: string[];
+}
+
+// Map backend error types to user-friendly labels
+function formatErrorType(type: string): string {
+  const typeMap: Record<string, string> = {
+    unknown: "Translation Issue",
+    omission: "Omission",
+    fabrication: "Added Content",
+    fabrication_medical: "Medical Fabrication",
+    distortion: "Distortion",
+    distortion_medical: "Medical Distortion",
+    register_shift: "Tone/Register Shift",
+    negation_mismatch: "Negation Error",
+    dosage_error: "Dosage Error",
+    asr_unreliable: "Speech Recognition Issue",
+    system_error: "System Error",
+  };
+  const key = (type || "unknown").toLowerCase().replace(/[^a-z_]/g, "_");
+  return typeMap[key] || type.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// Get severity badge color
+function getSeverityBadge(severity: string): { bg: string; text: string } {
+  const s = (severity || "medium").toLowerCase();
+  switch (s) {
+    case "critical": return { bg: "bg-red-600", text: "CRITICAL" };
+    case "high": return { bg: "bg-orange-600", text: "HIGH" };
+    case "medium": return { bg: "bg-yellow-600", text: "MEDIUM" };
+    case "low": return { bg: "bg-blue-600", text: "LOW" };
+    default: return { bg: "bg-gray-600", text: s.toUpperCase() };
+  }
+}
+
+// Get card border based on highest severity
+function getCardStyle(severity: string): string {
+  const s = (severity || "medium").toLowerCase();
+  switch (s) {
+    case "critical": return "border-l-4 border-l-red-500 bg-red-950/50";
+    case "high": return "border-l-4 border-l-orange-500 bg-orange-950/30";
+    case "medium": return "border-l-4 border-l-yellow-500 bg-yellow-950/30";
+    case "low": return "border-l-4 border-l-blue-500 bg-blue-950/30";
+    default: return "border-l-4 border-l-gray-500 bg-gray-800/50";
+  }
+}
+
+function GroupedErrorCard({
+  group,
   onDismiss,
 }: {
-  error: ClinicalError;
+  group: GroupedError;
   onDismiss: () => void;
 }) {
-  const severityColors: Record<string, string> = {
-    critical: "border-red-500 bg-red-950",
-    high: "border-orange-500 bg-orange-950",
-    medium: "border-yellow-500 bg-yellow-950",
-    low: "border-blue-500 bg-blue-950",
-  };
-
-  const severity = (error.severity || "medium").toLowerCase();
-  const colors = severityColors[severity] || severityColors.medium;
+  const badge = getSeverityBadge(group.highestSeverity);
+  const cardStyle = getCardStyle(group.highestSeverity);
 
   return (
-    <div className={`border-2 ${colors} rounded-xl p-4 mb-3`}>
+    <div className={`${cardStyle} rounded-lg p-4 mb-3`}>
+      {/* Header with severity and dismiss */}
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2">
-          <AlertTriangle className="text-red-400" size={20} />
-          <span className="font-bold text-lg text-white">
-            {(error.error_type || "issue").toUpperCase()}
+          <AlertTriangle className="text-yellow-400" size={18} />
+          <span className={`text-xs px-2 py-1 rounded font-bold ${badge.bg}`}>
+            {badge.text}
           </span>
-          <span className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300">
-            {severity}
+          <span className="text-gray-400 text-sm">
+            {group.issues.length} issue{group.issues.length > 1 ? "s" : ""} found
           </span>
         </div>
         <button
           onClick={onDismiss}
           className="text-gray-400 hover:text-white transition-colors"
-          title="Dismiss"
+          title="Dismiss all issues for this utterance"
         >
-          <X size={20} />
+          <X size={18} />
         </button>
       </div>
 
-      <div className="space-y-2 text-sm">
-        {error.source_quote && (
-          <div className="p-2 bg-gray-800/50 rounded">
-            <span className="text-gray-400">Source said: </span>
-            <span className="text-green-300">"{error.source_quote}"</span>
+      {/* Source and Interpreter quotes */}
+      <div className="space-y-2 mb-3">
+        {group.sourceQuote && (
+          <div className="flex gap-2 text-sm">
+            <span className="text-blue-400 font-medium shrink-0">Provider:</span>
+            <span className="text-gray-200">"{group.sourceQuote}"</span>
           </div>
         )}
-        {error.interpreter_quote && (
-          <div className="p-2 bg-gray-800/50 rounded">
-            <span className="text-gray-400">Interpreter said: </span>
-            <span className="text-purple-300">"{error.interpreter_quote}"</span>
-          </div>
-        )}
-        {error.description && (
-          <div className="p-2 bg-gray-800/50 rounded">
-            <span className="text-gray-400">Issue: </span>
-            <span className="text-white">{error.description}</span>
+        {group.interpreterQuote && (
+          <div className="flex gap-2 text-sm">
+            <span className="text-purple-400 font-medium shrink-0">Interpreter:</span>
+            <span className="text-gray-200">"{group.interpreterQuote}"</span>
           </div>
         )}
       </div>
+
+      {/* Issues list */}
+      <div className="bg-gray-900/50 rounded p-3 space-y-2">
+        {group.issues.map((issue, idx) => (
+          <div key={idx} className="flex items-start gap-2 text-sm">
+            <span className="text-yellow-500 mt-0.5">•</span>
+            <div>
+              <span className="text-gray-400 font-medium">{formatErrorType(issue.type)}: </span>
+              <span className="text-gray-300">{issue.description}</span>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
+}
+
+// Group errors by source+interpreter quote pair
+function groupErrorsByUtterance(errors: ClinicalError[]): GroupedError[] {
+  const groups = new Map<string, GroupedError>();
+  const severityRank: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+
+  for (const err of errors) {
+    const key = `${err.source_quote || ""}|||${err.interpreter_quote || ""}`;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        sourceQuote: err.source_quote || "",
+        interpreterQuote: err.interpreter_quote || "",
+        highestSeverity: err.severity || "medium",
+        issues: [],
+        errorIds: [],
+      });
+    }
+
+    const group = groups.get(key)!;
+    group.issues.push({
+      type: err.error_type || "unknown",
+      severity: err.severity || "medium",
+      description: err.description || "Issue detected",
+    });
+    group.errorIds.push(err.error_id);
+
+    // Update highest severity
+    const currentRank = severityRank[(group.highestSeverity || "medium").toLowerCase()] || 2;
+    const newRank = severityRank[(err.severity || "medium").toLowerCase()] || 2;
+    if (newRank > currentRank) {
+      group.highestSeverity = err.severity || "medium";
+    }
+  }
+
+  // Sort by severity (highest first)
+  return Array.from(groups.values()).sort((a, b) => {
+    const rankA = severityRank[a.highestSeverity.toLowerCase()] || 2;
+    const rankB = severityRank[b.highestSeverity.toLowerCase()] || 2;
+    return rankB - rankA;
+  });
 }
 
 // ===========================================================================
@@ -174,79 +273,87 @@ function CompactTranscript({ transcripts }: { transcripts: TranscriptSegment[] }
 }
 
 // ===========================================================================
-// DEBATE PANEL - Collapsible tribunal debate
+// SINGLE DEBATE SECTION - Shows one tribunal's debate
 // ===========================================================================
-function DebatePanel({ debateLogs }: { debateLogs: any }) {
+function SingleDebateSection({
+  title,
+  debate,
+  icon
+}: {
+  title: string;
+  debate: any;
+  icon: string;
+}) {
   const [expanded, setExpanded] = useState(false);
 
-  if (!debateLogs?.error_evaluation) {
-    return (
-      <div className="text-gray-500 italic text-center py-4">
-        No tribunal debates yet
-      </div>
-    );
+  if (!debate || !debate.turns || debate.turns.length === 0) {
+    return null;
   }
 
-  const debate = debateLogs.error_evaluation;
+  // Get position color
+  const getPositionColor = (position: string) => {
+    const p = (position || "").toLowerCase();
+    if (p === "accurate" || p.includes("agree")) return "bg-green-800";
+    if (p === "critical_errors" || p.includes("critical")) return "bg-red-800";
+    if (p === "significant_errors" || p.includes("significant")) return "bg-orange-800";
+    return "bg-yellow-800";
+  };
 
   return (
-    <div className="bg-gray-900/50 rounded-lg border border-gray-700">
+    <div className="bg-gray-800/50 rounded-lg border border-gray-700 mb-3">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between p-4 hover:bg-gray-800/50 transition-colors"
+        className="w-full flex items-center justify-between p-3 hover:bg-gray-700/50 transition-colors"
       >
-        <div className="flex items-center gap-3">
-          {expanded ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
-          <span className="font-semibold">🏛️ Tribunal Debate</span>
-          <span className="text-xs text-gray-400">
-            {debate.rounds_taken} round{debate.rounds_taken > 1 ? 's' : ''}
+        <div className="flex items-center gap-2">
+          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          <span className="text-lg">{icon}</span>
+          <span className="font-medium text-sm">{title}</span>
+          <span className="text-xs text-gray-500">
+            {debate.rounds_taken || debate.turns?.length || 0} round{(debate.rounds_taken || 1) > 1 ? 's' : ''}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-1 rounded ${
-            debate.consensus_reached ? "bg-green-800" : "bg-yellow-800"
-          }`}>
-            {debate.consensus_reached ? "CONSENSUS" : "NO CONSENSUS"}
-          </span>
-          <span className={`text-sm font-bold px-3 py-1 rounded ${
-            debate.final_consensus === "accurate" ? "bg-green-700" :
-            debate.final_consensus === "critical_errors" ? "bg-red-700" :
-            "bg-yellow-700"
-          }`}>
-            {(debate.final_consensus || "").toUpperCase()}
-          </span>
+          {debate.consensus_reached !== undefined && (
+            <span className={`text-xs px-2 py-0.5 rounded ${
+              debate.consensus_reached ? "bg-green-900 text-green-300" : "bg-yellow-900 text-yellow-300"
+            }`}>
+              {debate.consensus_reached ? "✓ Consensus" : "No Consensus"}
+            </span>
+          )}
+          {debate.final_consensus && (
+            <span className={`text-xs px-2 py-0.5 rounded font-medium ${getPositionColor(debate.final_consensus)}`}>
+              {debate.final_consensus.replace(/_/g, ' ').toUpperCase()}
+            </span>
+          )}
         </div>
       </button>
 
-      {expanded && debate.turns && (
-        <div className="p-4 border-t border-gray-700 max-h-96 overflow-y-auto">
+      {expanded && (
+        <div className="p-3 border-t border-gray-700 max-h-64 overflow-y-auto space-y-2">
           {debate.turns.map((turn: any, idx: number) => {
             const isNewRound = idx === 0 || turn.round !== debate.turns[idx - 1]?.round;
             return (
               <div key={idx}>
-                {isNewRound && (
-                  <div className="flex items-center gap-2 my-3">
+                {isNewRound && idx > 0 && (
+                  <div className="flex items-center gap-2 my-2">
                     <div className="flex-1 h-px bg-gray-600" />
-                    <span className="text-xs text-gray-400 px-2">Round {turn.round}</span>
+                    <span className="text-xs text-gray-500">Round {turn.round}</span>
                     <div className="flex-1 h-px bg-gray-600" />
                   </div>
                 )}
-                <div className={`mb-3 p-3 rounded-lg ${turn.changed_mind ? "bg-yellow-900/30 border border-yellow-700" : "bg-gray-800/50"}`}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="font-medium text-purple-300">{turn.agent}</span>
-                    <span className="text-xs text-gray-500">({turn.model})</span>
+                <div className={`p-2 rounded text-sm ${turn.changed_mind ? "bg-yellow-900/20 border border-yellow-800" : "bg-gray-900/50"}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-medium text-purple-300 text-xs">{turn.agent}</span>
+                    <span className="text-xs text-gray-600">({turn.model || turn.provider})</span>
                     {turn.changed_mind && (
-                      <span className="text-xs text-yellow-400">🔄 Changed</span>
+                      <span className="text-xs text-yellow-400">🔄</span>
                     )}
-                    <span className={`ml-auto text-xs px-2 py-0.5 rounded ${
-                      turn.position === "accurate" ? "bg-green-800" :
-                      turn.position === "critical_errors" ? "bg-red-800" :
-                      "bg-yellow-800"
-                    }`}>
-                      {turn.position}
+                    <span className={`ml-auto text-xs px-1.5 py-0.5 rounded ${getPositionColor(turn.position)}`}>
+                      {(turn.position || "").substring(0, 20)}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-300">
+                  <p className="text-xs text-gray-400 line-clamp-2">
                     {turn.statement || turn.reasoning || "No statement"}
                   </p>
                 </div>
@@ -254,6 +361,61 @@ function DebatePanel({ debateLogs }: { debateLogs: any }) {
             );
           })}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ===========================================================================
+// DEBATE PANEL - Shows all tribunal debates
+// ===========================================================================
+function DebatePanel({ debateLogs }: { debateLogs: any }) {
+  // Check if we have any debates at all
+  const hasSourceTranslation = debateLogs?.source_translation?.turns?.length > 0;
+  const hasInterpreterTranslation = debateLogs?.interpreter_translation?.turns?.length > 0;
+  const hasErrorEvaluation = debateLogs?.error_evaluation?.turns?.length > 0;
+
+  const hasAnyDebate = hasSourceTranslation || hasInterpreterTranslation || hasErrorEvaluation;
+
+  if (!debateLogs || !hasAnyDebate) {
+    return (
+      <div className="bg-gray-900/50 rounded-lg border border-gray-700 p-6 text-center">
+        <div className="text-gray-500 text-4xl mb-2">🏛️</div>
+        <p className="text-gray-400 font-medium">No tribunal debates yet</p>
+        <p className="text-gray-500 text-sm mt-1">
+          Debates will appear here when the system evaluates interpretations
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Source Translation Tribunal */}
+      {hasSourceTranslation && (
+        <SingleDebateSection
+          title="Source Translation"
+          debate={debateLogs.source_translation}
+          icon="🌐"
+        />
+      )}
+
+      {/* Interpreter Translation Tribunal */}
+      {hasInterpreterTranslation && (
+        <SingleDebateSection
+          title="Interpreter Translation"
+          debate={debateLogs.interpreter_translation}
+          icon="🗣️"
+        />
+      )}
+
+      {/* Error Evaluation Tribunal */}
+      {hasErrorEvaluation && (
+        <SingleDebateSection
+          title="Error Evaluation"
+          debate={debateLogs.error_evaluation}
+          icon="⚖️"
+        />
       )}
     </div>
   );
@@ -275,20 +437,21 @@ export default function DashboardPage() {
 
   const [activeTab, setActiveTab] = useState<"monitor" | "details">("monitor");
   const [selectedRole, setSelectedRole] = useState<StreamRole>("provider");
-  const [dismissedErrors, setDismissedErrors] = useState<Set<string>>(new Set());
+  const [dismissedGroups, setDismissedGroups] = useState<Set<string>>(new Set());
   const [showSettings, setShowSettings] = useState(false);
   const [providerLang, setProviderLang] = useState("en");
   const [patientLang, setPatientLang] = useState("es");
 
-  // Get unique clinical errors
+  // Get clinical errors and group by utterance
   const clinicalErrors = sessionState.errors.filter((e) => !e.is_system_error);
-  const uniqueErrors = Array.from(
-    new Map(clinicalErrors.map((e) => [e.error_id, e])).values()
+  const groupedErrors = groupErrorsByUtterance(clinicalErrors);
+  const activeGroups = groupedErrors.filter(
+    (g) => !dismissedGroups.has(`${g.sourceQuote}|||${g.interpreterQuote}`)
   );
-  const activeErrors = uniqueErrors.filter((e) => !dismissedErrors.has(e.error_id));
 
-  const handleDismissError = (errorId: string) => {
-    setDismissedErrors((prev) => new Set([...prev, errorId]));
+  const handleDismissGroup = (group: GroupedError) => {
+    const key = `${group.sourceQuote}|||${group.interpreterQuote}`;
+    setDismissedGroups((prev) => new Set([...prev, key]));
   };
 
   const handleToggleRecording = () => {
@@ -422,17 +585,19 @@ export default function DashboardPage() {
           /* ================ MONITOR TAB ================ */
           <div className="space-y-6">
             {/* Status Indicator */}
-            <StatusIndicator errorCount={activeErrors.length} />
+            <StatusIndicator errorCount={activeGroups.length} />
 
-            {/* Error Alerts */}
-            {activeErrors.length > 0 && (
+            {/* Grouped Error Cards */}
+            {activeGroups.length > 0 && (
               <div>
-                <h3 className="text-lg font-semibold mb-3 text-red-400">Errors Requiring Attention</h3>
-                {activeErrors.map((error) => (
-                  <ErrorAlert
-                    key={error.error_id}
-                    error={error}
-                    onDismiss={() => handleDismissError(error.error_id)}
+                <h3 className="text-lg font-semibold mb-3 text-red-400">
+                  Interpretation Issues ({activeGroups.length} utterance{activeGroups.length > 1 ? "s" : ""})
+                </h3>
+                {activeGroups.map((group, idx) => (
+                  <GroupedErrorCard
+                    key={`${group.sourceQuote}-${idx}`}
+                    group={group}
+                    onDismiss={() => handleDismissGroup(group)}
                   />
                 ))}
               </div>
@@ -485,22 +650,43 @@ export default function DashboardPage() {
               <DebatePanel debateLogs={sessionState.debateLogs} />
             </div>
 
-            {/* All Errors */}
+            {/* All Error Groups */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">All Detected Errors ({uniqueErrors.length})</h3>
+              <h3 className="text-lg font-semibold mb-3">All Detected Issues ({groupedErrors.length} utterances, {clinicalErrors.length} total findings)</h3>
               <div className="bg-gray-900/50 rounded-lg p-4 max-h-80 overflow-y-auto space-y-3">
-                {uniqueErrors.length === 0 ? (
+                {groupedErrors.length === 0 ? (
                   <p className="text-gray-500 italic">No errors detected</p>
                 ) : (
-                  uniqueErrors.map((error) => (
-                    <div key={error.error_id} className="p-3 bg-gray-800/50 rounded-lg border-l-4 border-red-600">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="font-medium text-red-400">{error.error_type}</span>
-                        <span className="text-xs px-2 py-0.5 rounded bg-gray-700">{error.severity}</span>
+                  groupedErrors.map((group, idx) => {
+                    const badge = getSeverityBadge(group.highestSeverity);
+                    return (
+                      <div key={idx} className={`p-3 rounded-lg ${getCardStyle(group.highestSeverity)}`}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className={`text-xs px-2 py-0.5 rounded font-bold ${badge.bg}`}>
+                            {badge.text}
+                          </span>
+                          <span className="text-gray-400 text-xs">
+                            {group.issues.length} finding{group.issues.length > 1 ? "s" : ""}
+                          </span>
+                        </div>
+                        {group.sourceQuote && (
+                          <p className="text-sm text-gray-300 mb-1">
+                            <span className="text-blue-400">Provider:</span> "{group.sourceQuote}"
+                          </p>
+                        )}
+                        {group.interpreterQuote && (
+                          <p className="text-sm text-gray-300 mb-2">
+                            <span className="text-purple-400">Interpreter:</span> "{group.interpreterQuote}"
+                          </p>
+                        )}
+                        <div className="text-xs text-gray-400 space-y-1">
+                          {group.issues.map((issue, i) => (
+                            <div key={i}>• {formatErrorType(issue.type)}: {issue.description}</div>
+                          ))}
+                        </div>
                       </div>
-                      <p className="text-sm text-gray-300">{error.description || "No description"}</p>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
