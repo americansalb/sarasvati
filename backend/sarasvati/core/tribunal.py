@@ -673,10 +673,10 @@ class DualTribunalOrchestrator:
         self,
         groq_api_key: str,
         openai_api_key: str,
-        deepseek_api_key: str,
-        model_a: str = "llama-3.1-8b-instant",
-        model_b: str = "gpt-4o-mini",
-        model_c: str = "deepseek-chat",
+        anthropic_api_key: str,
+        model_a: str = "meta-llama/llama-4-scout-17b-16e-instruct",
+        model_b: str = "gpt-5-mini",
+        model_c: str = "claude-haiku-4-5",
     ):
         # Import here to avoid circular imports
         try:
@@ -689,33 +689,36 @@ class DualTribunalOrchestrator:
         except ImportError:
             AsyncOpenAI = None
 
-        DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+        try:
+            from anthropic import AsyncAnthropic
+        except ImportError:
+            AsyncAnthropic = None
 
         # Validate API keys
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY required")
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY required")
-        if not deepseek_api_key:
-            raise ValueError("DEEPSEEK_API_KEY required")
+        if not anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY required")
 
         # Initialize clients
         groq_client = AsyncGroq(api_key=groq_api_key) if AsyncGroq else None
         openai_client = AsyncOpenAI(api_key=openai_api_key) if AsyncOpenAI else None
-        deepseek_client = AsyncOpenAI(api_key=deepseek_api_key, base_url=DEEPSEEK_BASE_URL) if AsyncOpenAI else None
+        anthropic_client = AsyncAnthropic(api_key=anthropic_api_key) if AsyncAnthropic else None
 
         # Create agents for TRANSLATION tribunal
         self.translation_agents = [
             TribunalAgent(f"Translator-A ({model_a})", groq_client, model_a, "groq"),
             TribunalAgent(f"Translator-B ({model_b})", openai_client, model_b, "openai"),
-            TribunalAgent(f"Translator-C ({model_c})", deepseek_client, model_c, "deepseek"),
+            TribunalAgent(f"Translator-C ({model_c})", anthropic_client, model_c, "anthropic"),
         ]
 
         # Create agents for ERROR tribunal (same models, fresh instances)
         self.error_agents = [
             TribunalAgent(f"Evaluator-A ({model_a})", groq_client, model_a, "groq"),
             TribunalAgent(f"Evaluator-B ({model_b})", openai_client, model_b, "openai"),
-            TribunalAgent(f"Evaluator-C ({model_c})", deepseek_client, model_c, "deepseek"),
+            TribunalAgent(f"Evaluator-C ({model_c})", anthropic_client, model_c, "anthropic"),
         ]
 
         self.translation_tribunal = TranslationTribunal(self.translation_agents)

@@ -583,30 +583,97 @@ export default function DashboardPage() {
       <div className="max-w-7xl mx-auto p-6">
         {activeTab === "monitor" ? (
           /* ================ MONITOR TAB ================ */
-          <div className="space-y-6">
-            {/* Status Indicator */}
-            <StatusIndicator errorCount={activeGroups.length} />
-
-            {/* Grouped Error Cards */}
-            {activeGroups.length > 0 && (
-              <div>
-                <h3 className="text-lg font-semibold mb-3 text-red-400">
-                  Interpretation Issues ({activeGroups.length} utterance{activeGroups.length > 1 ? "s" : ""})
-                </h3>
-                {activeGroups.map((group, idx) => (
-                  <GroupedErrorCard
-                    key={`${group.sourceQuote}-${idx}`}
-                    group={group}
-                    onDismiss={() => handleDismissGroup(group)}
-                  />
-                ))}
+          <div className="space-y-4">
+            {/* Collapsible Error Summary - Small bar at top */}
+            {activeGroups.length > 0 ? (
+              <details className="bg-red-950/50 border border-red-800 rounded-lg">
+                <summary className="px-4 py-3 cursor-pointer flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <AlertTriangle className="text-red-400" size={18} />
+                    <span className="font-medium text-red-300">
+                      {activeGroups.length} issue{activeGroups.length > 1 ? "s" : ""} detected
+                    </span>
+                    <span className="text-red-400/70 text-sm">
+                      ({clinicalErrors.length} total findings)
+                    </span>
+                  </div>
+                  <span className="text-xs text-red-400">Click to expand</span>
+                </summary>
+                <div className="px-4 pb-4 space-y-2 max-h-48 overflow-y-auto">
+                  {activeGroups.map((group, idx) => (
+                    <div key={idx} className="p-2 bg-gray-900/50 rounded text-sm flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="text-gray-300 mb-1">
+                          "{group.sourceQuote?.substring(0, 40)}{group.sourceQuote?.length > 40 ? "..." : ""}"
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {group.issues.length} finding{group.issues.length > 1 ? "s" : ""}: {group.issues.map(i => formatErrorType(i.type)).join(", ")}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDismissGroup(group)}
+                        className="text-gray-500 hover:text-white ml-2"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : (
+              <div className="flex items-center gap-2 px-4 py-3 bg-green-950/50 border border-green-800 rounded-lg">
+                <CheckCircle className="text-green-400" size={18} />
+                <span className="font-medium text-green-300">All clear - no interpretation issues detected</span>
               </div>
             )}
 
-            {/* Compact Transcript */}
-            <div>
-              <h3 className="text-lg font-semibold mb-3">Live Transcript</h3>
-              <CompactTranscript transcripts={sessionState.transcripts} />
+            {/* Main Transcript View - Full style like Details page */}
+            <div className="bg-gray-900/50 rounded-lg p-4 space-y-3" style={{ maxHeight: "calc(100vh - 320px)", overflowY: "auto" }}>
+              {sessionState.transcripts.length === 0 ? (
+                <div className="text-center py-12">
+                  <p className="text-gray-500 text-lg">Waiting for speech...</p>
+                  <p className="text-gray-600 text-sm mt-2">Select a role below and click Record to start</p>
+                </div>
+              ) : (
+                sessionState.transcripts.map((t, idx) => {
+                  // Check if this transcript has associated errors
+                  const hasError = clinicalErrors.some(
+                    e => e.source_quote?.includes(t.text?.substring(0, 20)) ||
+                         e.interpreter_quote?.includes(t.text?.substring(0, 20))
+                  );
+                  return (
+                    <div
+                      key={idx}
+                      className={`p-3 rounded-lg ${
+                        hasError
+                          ? "bg-red-950/30 border-l-2 border-l-red-500"
+                          : "bg-gray-800/50"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`text-xs px-2 py-0.5 rounded capitalize font-medium ${
+                          t.role === "provider" ? "bg-blue-700" :
+                          t.role === "interpreter" ? "bg-purple-700" : "bg-green-700"
+                        }`}>
+                          {t.role}
+                        </span>
+                        {t.detected_language && (
+                          <span className="text-xs text-gray-500">[{t.detected_language}]</span>
+                        )}
+                        {hasError && (
+                          <span className="text-xs text-red-400 ml-auto">⚠ Issue flagged</span>
+                        )}
+                      </div>
+                      <p className="text-gray-200">{t.english_translation || t.text}</p>
+                      {t.english_translation && t.english_translation !== t.text && (
+                        <p className="text-gray-500 text-sm mt-1">
+                          Original: {t.text}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         ) : (
