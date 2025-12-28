@@ -1149,7 +1149,7 @@ class ClinicalDebateOrchestrator:
             ValueError: If providers or models are not unique, or if API keys missing
         """
         print(f"\n{'='*70}")
-        print(f"🏛️  TRIBUNAL INITIALIZATION")
+        print(f"🏛️  TRIBUNAL INITIALIZATION - STRICT MODE")
         print(f"{'='*70}")
 
         # Normalize providers
@@ -1158,30 +1158,25 @@ class ClinicalDebateOrchestrator:
         provider_c = provider_c.lower()
 
         # ═══════════════════════════════════════════════════════════
-        # GRACEFUL FALLBACK: Check if DeepSeek is needed but unavailable
-        # ═══════════════════════════════════════════════════════════
-        self._deepseek_fallback = False
-        if provider_c == "deepseek" and not deepseek_api_key:
-            print(f"⚠️ DeepSeek requested but DEEPSEEK_API_KEY not set")
-            print(f"   Falling back to OpenAI gpt-3.5-turbo for Agent C")
-            provider_c = "openai"
-            model_c = "gpt-3.5-turbo"  # Different from gpt-4o-mini
-            self._deepseek_fallback = True
-
-        # ═══════════════════════════════════════════════════════════
-        # VALIDATION: Check model uniqueness (providers can share if models differ)
+        # STRICT VALIDATION: 3 UNIQUE PROVIDERS
         # ═══════════════════════════════════════════════════════════
         providers = [provider_a, provider_b, provider_c]
         unique_providers = set(providers)
 
-        if len(unique_providers) == 3:
-            print(f"✅ Provider uniqueness: {provider_a}, {provider_b}, {provider_c}")
-        else:
-            print(f"⚠️ Provider diversity reduced: {provider_a}, {provider_b}, {provider_c}")
-            print(f"   (Using {len(unique_providers)} unique providers - acceptable with unique models)")
+        if len(unique_providers) != 3:
+            duplicate_providers = [p for p in providers if providers.count(p) > 1]
+            raise ValueError(
+                f"🚨 TRIBUNAL REQUIRES 3 UNIQUE PROVIDERS!\n"
+                f"   Configured: A={provider_a}, B={provider_b}, C={provider_c}\n"
+                f"   Duplicate: {set(duplicate_providers)}\n"
+                f"   Fix: Set TRIBUNAL_PROVIDER_A, TRIBUNAL_PROVIDER_B, TRIBUNAL_PROVIDER_C to 3 different values\n"
+                f"   Valid providers: groq, openai, deepseek, anthropic"
+            )
+
+        print(f"✅ Provider uniqueness validated: {provider_a}, {provider_b}, {provider_c}")
 
         # ═══════════════════════════════════════════════════════════
-        # STRICT VALIDATION: 3 UNIQUE MODELS (always required)
+        # STRICT VALIDATION: 3 UNIQUE MODELS
         # ═══════════════════════════════════════════════════════════
         models = [model_a, model_b, model_c]
         unique_models = set(models)
@@ -1225,8 +1220,8 @@ class ClinicalDebateOrchestrator:
             print(f"✅ OpenAI client initialized")
 
         if "deepseek" in needed_providers:
-            # If fallback was triggered, deepseek won't be in needed_providers
-            # This only runs when DEEPSEEK_API_KEY is actually available
+            if not deepseek_api_key:
+                raise ValueError("🚨 DEEPSEEK_API_KEY required but not set!")
             if AsyncOpenAI is None:
                 raise ImportError("🚨 openai package not installed (needed for DeepSeek). Install with: pip install openai")
             self.deepseek_client = AsyncOpenAI(
