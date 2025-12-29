@@ -79,7 +79,7 @@ from .state import (
 #
 # Environment Variables:
 #   TRIBUNAL_MODEL_A    = Model for Agent A (default: llama-4-scout)
-#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-5-mini)
+#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-4o-mini)
 #   TRIBUNAL_MODEL_C    = Model for Agent C (default: claude-haiku-4-5)
 #
 #   TRIBUNAL_PROVIDER_A = Provider for Agent A (default: groq)
@@ -1141,7 +1141,7 @@ class ClinicalDebateOrchestrator:
             anthropic_api_key: API key for Anthropic (REQUIRED if provider uses anthropic)
             deepseek_api_key: API key for DeepSeek (optional, for legacy configs)
             model_a: Model name for Agent A (default: llama-4-scout via Groq)
-            model_b: Model name for Agent B (default: gpt-5-mini via OpenAI)
+            model_b: Model name for Agent B (default: gpt-4o-mini via OpenAI)
             model_c: Model name for Agent C (default: claude-haiku-4-5 via Anthropic)
             provider_a: Provider for Agent A (default: groq)
             provider_b: Provider for Agent B (default: openai)
