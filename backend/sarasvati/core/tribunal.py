@@ -448,50 +448,75 @@ class TranslationTribunal:
                 )
                 debate_log.add_turn(turn)
 
-            # Check for consensus (2/3 agreement) - BUT only after round 2
+            # Check for FULL consensus (3/3 agreement) - only after round 2
             # This ensures at least one round of actual debate happens
             if round_num >= 2:
                 translation_values = list(translations.values())
                 for trans in translation_values:
                     count = sum(1 for t in translation_values if self._similar(t, trans))
-                    if count >= 2:
+                    if count >= 3:  # FULL consensus - all 3 agents agree
                         debate_log.consensus_reached = True
                         debate_log.final_consensus = trans
                         debate_log.rounds_taken = round_num
                         debate_log.end_time = datetime.utcnow()
 
-                        print(f"\n✅ CONSENSUS REACHED in Round {round_num}!")
+                        print(f"\n✅ FULL CONSENSUS REACHED in Round {round_num}!")
                         print(f"   Translation: {trans[:100]}...")
 
                         return {
                             "consensus_translation": trans,
                             "consensus_reached": True,
+                            "consensus_type": "full",  # All 3 agreed
+                            "confidence": 1.0,  # High confidence
                             "debate_log": debate_log,
                             "individual_translations": translations,
                         }
 
-            # No consensus yet - continue debate if minds are changing
+            # No full consensus yet - continue debate if minds are changing
             if round_num > 1:
                 any_changed = any(r.get("changed_mind", False) for r in results)
-                if not any_changed and round_num >= 2:
-                    print(f"\n⚠️ No minds changed - forcing majority vote")
-                    break
+                if not any_changed and round_num >= 3:
+                    print(f"\n⚠️ No minds changed after {round_num} rounds")
+                    # Don't break early - keep trying until MAX_ROUNDS
 
-        # No consensus - pick majority or first
+        # No full consensus after max rounds - check for majority (2/3)
         debate_log.rounds_taken = round_num
         debate_log.end_time = datetime.utcnow()
-        debate_log.consensus_reached = False
 
-        # Pick most common translation
         from collections import Counter
+        translation_values = list(translations.values())
+
+        # Check for majority (2/3)
+        for trans in translation_values:
+            count = sum(1 for t in translation_values if self._similar(t, trans))
+            if count >= 2:
+                debate_log.consensus_reached = True  # Partial consensus
+                debate_log.final_consensus = trans
+
+                print(f"\n⚠️ MAJORITY CONSENSUS (2/3) after {round_num} rounds")
+                print(f"   Translation: {trans[:100]}...")
+
+                return {
+                    "consensus_translation": trans,
+                    "consensus_reached": True,
+                    "consensus_type": "majority",  # Only 2/3 agreed
+                    "confidence": 0.5,  # Lower confidence for majority-only
+                    "debate_log": debate_log,
+                    "individual_translations": translations,
+                }
+
+        # No majority - complete disagreement (rare)
+        debate_log.consensus_reached = False
         final = Counter(translations.values()).most_common(1)[0][0]
         debate_log.final_consensus = final
 
-        print(f"\n⚠️ No consensus after {round_num} rounds. Using majority: {final[:100]}...")
+        print(f"\n❌ NO CONSENSUS after {round_num} rounds. Using first: {final[:100]}...")
 
         return {
             "consensus_translation": final,
             "consensus_reached": False,
+            "consensus_type": "none",  # No agreement
+            "confidence": 0.25,  # Very low confidence
             "debate_log": debate_log,
             "individual_translations": translations,
         }
@@ -591,17 +616,16 @@ class ErrorTribunal:
                 )
                 debate_log.add_turn(turn)
 
-            # Check for verdict consensus (2/3) - BUT only after round 2
+            # Check for FULL verdict consensus (3/3) - only after round 2
             # This ensures at least one round of actual debate happens
             if round_num >= 2:
                 verdicts = [e.get("verdict", "") for e in evaluations.values()]
                 for verdict in set(verdicts):
-                    if verdicts.count(verdict) >= 2:
-                        # Consensus on verdict - merge errors from agreeing agents
-                        agreeing_evals = [e for e in evaluations.values() if e.get("verdict") == verdict]
+                    if verdicts.count(verdict) >= 3:  # FULL consensus - all 3 agree
+                        # Merge errors from all agents
                         merged_errors = []
                         seen_descriptions = set()
-                        for e in agreeing_evals:
+                        for e in evaluations.values():
                             for err in e.get("errors", []):
                                 desc = err.get("description", "")
                                 if desc not in seen_descriptions:
@@ -613,7 +637,7 @@ class ErrorTribunal:
                         debate_log.rounds_taken = round_num
                         debate_log.end_time = datetime.utcnow()
 
-                        print(f"\n✅ CONSENSUS REACHED in Round {round_num}!")
+                        print(f"\n✅ FULL CONSENSUS REACHED in Round {round_num}!")
                         print(f"   Verdict: {verdict}")
                         print(f"   Errors: {len(merged_errors)}")
 
@@ -621,23 +645,58 @@ class ErrorTribunal:
                             "consensus_verdict": verdict,
                             "consensus_errors": merged_errors,
                             "consensus_reached": True,
+                            "consensus_type": "full",  # All 3 agreed
+                            "confidence": 1.0,  # High confidence
                             "debate_log": debate_log,
                             "individual_evaluations": evaluations,
                         }
 
-            # Check if anyone changed mind
+            # No full consensus yet - continue debate if minds are changing
             if round_num > 1:
                 any_changed = any(r.get("changed_mind", False) for r in results)
-                if not any_changed:
-                    print(f"\n⚠️ No minds changed - forcing majority vote")
-                    break
+                if not any_changed and round_num >= 3:
+                    print(f"\n⚠️ No minds changed after {round_num} rounds")
+                    # Don't break early - keep trying until MAX_ROUNDS
 
-        # No consensus
+        # No full consensus after max rounds - check for majority (2/3)
         debate_log.rounds_taken = round_num
         debate_log.end_time = datetime.utcnow()
 
         from collections import Counter
         verdicts = [e.get("verdict", "") for e in evaluations.values()]
+
+        # Check for majority (2/3)
+        for verdict in set(verdicts):
+            if verdicts.count(verdict) >= 2:
+                # Majority on verdict - merge errors from agreeing agents
+                agreeing_evals = [e for e in evaluations.values() if e.get("verdict") == verdict]
+                merged_errors = []
+                seen_descriptions = set()
+                for e in agreeing_evals:
+                    for err in e.get("errors", []):
+                        desc = err.get("description", "")
+                        if desc not in seen_descriptions:
+                            merged_errors.append(err)
+                            seen_descriptions.add(desc)
+
+                debate_log.consensus_reached = True  # Partial consensus
+                debate_log.final_consensus = verdict
+
+                print(f"\n⚠️ MAJORITY CONSENSUS (2/3) after {round_num} rounds")
+                print(f"   Verdict: {verdict}")
+                print(f"   Errors: {len(merged_errors)}")
+
+                return {
+                    "consensus_verdict": verdict,
+                    "consensus_errors": merged_errors,
+                    "consensus_reached": True,
+                    "consensus_type": "majority",  # Only 2/3 agreed
+                    "confidence": 0.5,  # Lower confidence for majority-only
+                    "debate_log": debate_log,
+                    "individual_evaluations": evaluations,
+                }
+
+        # No majority - complete disagreement (rare)
         final_verdict = Counter(verdicts).most_common(1)[0][0]
 
         # Get errors from agents with that verdict
@@ -646,14 +705,17 @@ class ErrorTribunal:
             if e.get("verdict") == final_verdict:
                 final_errors.extend(e.get("errors", []))
 
+        debate_log.consensus_reached = False
         debate_log.final_consensus = final_verdict
 
-        print(f"\n⚠️ No consensus after {round_num} rounds. Majority verdict: {final_verdict}")
+        print(f"\n❌ NO CONSENSUS after {round_num} rounds. Using first: {final_verdict}")
 
         return {
             "consensus_verdict": final_verdict,
             "consensus_errors": final_errors,
             "consensus_reached": False,
+            "consensus_type": "none",  # No agreement
+            "confidence": 0.25,  # Very low confidence
             "debate_log": debate_log,
             "individual_evaluations": evaluations,
         }
