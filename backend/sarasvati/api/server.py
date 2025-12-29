@@ -1646,13 +1646,71 @@ async def upload_recording(
 
         diarization_task = asyncio.create_task(safe_diarize())
 
+        # Compress audio if too large for Groq (25MB limit)
+        # Use ffmpeg to convert to mono 16kHz MP3 which is much smaller
+        transcribe_data = audio_data
+        transcribe_filename = filename
+        transcribe_content_type = content_type
+
+        if len(audio_data) > 20 * 1024 * 1024:  # > 20MB, compress it
+            print(f"📦 Audio too large ({len(audio_data) / 1024 / 1024:.1f}MB), compressing...")
+            try:
+                import subprocess
+                import tempfile
+
+                # Detect input format
+                input_ext = ".mp4"
+                if audio_data[:3] == b'ID3' or audio_data[:2] == b'\xff\xfb':
+                    input_ext = ".mp3"
+                elif audio_data[:4] == b'OggS':
+                    input_ext = ".ogg"
+                elif audio_data[:4] == b'RIFF':
+                    input_ext = ".wav"
+                elif len(audio_data) > 8 and audio_data[4:8] == b'ftyp':
+                    input_ext = ".mp4"
+
+                with tempfile.NamedTemporaryFile(suffix=input_ext, delete=False) as f_in:
+                    f_in.write(audio_data)
+                    input_path = f_in.name
+
+                output_path = input_path.replace(input_ext, "_compressed.mp3")
+
+                # Compress to mono 16kHz MP3 at 64kbps (good for speech)
+                result_compress = subprocess.run([
+                    "ffmpeg", "-y", "-i", input_path,
+                    "-ac", "1",  # mono
+                    "-ar", "16000",  # 16kHz sample rate
+                    "-b:a", "64k",  # 64kbps bitrate
+                    "-f", "mp3",
+                    output_path
+                ], capture_output=True, timeout=120)
+
+                if result_compress.returncode == 0:
+                    with open(output_path, "rb") as f_out:
+                        transcribe_data = f_out.read()
+                    transcribe_filename = "audio_compressed.mp3"
+                    transcribe_content_type = "audio/mpeg"
+                    print(f"✅ Compressed: {len(audio_data)/1024/1024:.1f}MB → {len(transcribe_data)/1024/1024:.1f}MB")
+                else:
+                    print(f"⚠️ Compression failed: {result_compress.stderr.decode()[:200]}")
+
+                # Cleanup temp files
+                try:
+                    os.unlink(input_path)
+                    os.unlink(output_path)
+                except:
+                    pass
+
+            except Exception as compress_err:
+                print(f"⚠️ Compression error: {compress_err}, using original file")
+
         # Transcribe with Groq Whisper - request verbose JSON for timestamps
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(
                     "https://api.groq.com/openai/v1/audio/transcriptions",
                     headers={"Authorization": f"Bearer {groq_api_key}"},
-                    files={"file": (filename, audio_data, content_type)},
+                    files={"file": (transcribe_filename, transcribe_data, transcribe_content_type)},
                     data={
                         "model": "whisper-large-v3",
                         "response_format": "verbose_json",
