@@ -1,24 +1,29 @@
 """
-Speaker Diarization Service using pyannote-audio.
+Speaker Diarization Service using Resemblyzer (FREE, no API key).
 
 Uses neural network-based voice embeddings to identify unique speakers
 based on their voice characteristics (pitch, timbre, speaking patterns).
 
 This replaces the naive pause-based speaker detection with proper
-voice fingerprinting.
+voice fingerprinting using Resemblyzer's d-vector embeddings.
+
+No API keys or paid services required.
 """
 
 import os
 import tempfile
 import logging
+import io
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
-# Thread pool for CPU-bound diarization (pyannote uses PyTorch)
+# Thread pool for CPU-bound diarization
 _executor = ThreadPoolExecutor(max_workers=2)
 
 
@@ -37,76 +42,51 @@ class DiarizationResult:
     segments: List[DiarizedSegment]
     num_speakers: int
     duration: float
-    method: str  # "pyannote" or "fallback"
+    method: str  # "resemblyzer" or "fallback"
 
 
 class SpeakerDiarizer:
     """
-    Speaker diarization using pyannote-audio neural embeddings.
+    Speaker diarization using Resemblyzer voice embeddings (FREE).
 
-    Uses voice characteristics (pitch, timbre, speaking patterns) as
-    fingerprints to identify unique speakers, rather than relying on
-    pause duration which fails when speakers talk in rapid succession.
+    Uses d-vector embeddings to create voice "fingerprints" for each speaker.
+    No API keys, no paid services, runs entirely locally.
 
     Requirements:
-    - pyannote.audio>=3.1.0
-    - torchaudio>=2.0.0
-    - Hugging Face token (HF_TOKEN env var) for model access
+    - resemblyzer (pip install resemblyzer)
+    - librosa (for audio processing)
+    - scikit-learn (for clustering)
 
-    Falls back to pause-based detection if pyannote unavailable.
+    Falls back to pause-based detection if dependencies unavailable.
     """
 
-    _pipeline = None
+    _encoder = None
     _initialized = False
     _init_error = None
 
     @classmethod
-    def _init_pipeline(cls):
-        """Initialize pyannote pipeline (lazy loading)."""
+    def _init_encoder(cls):
+        """Initialize Resemblyzer encoder (lazy loading)."""
         if cls._initialized:
-            return cls._pipeline is not None
+            return cls._encoder is not None
 
         cls._initialized = True
 
         try:
-            from pyannote.audio import Pipeline
-            import torch
+            from resemblyzer import VoiceEncoder
 
-            # Get Hugging Face token for model access
-            hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
-            if not hf_token:
-                logger.warning(
-                    "⚠️ No HF_TOKEN found. Speaker diarization requires a Hugging Face token. "
-                    "Get one at https://huggingface.co/settings/tokens and accept the model license at "
-                    "https://huggingface.co/pyannote/speaker-diarization-3.1"
-                )
-                cls._init_error = "Missing HF_TOKEN"
-                return False
-
-            # Load the speaker diarization pipeline
-            # Uses pyannote/speaker-diarization-3.1 (state-of-the-art)
-            logger.info("🔊 Loading pyannote speaker diarization pipeline...")
-
-            cls._pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=hf_token,
-            )
-
-            # Move to GPU if available
-            if torch.cuda.is_available():
-                cls._pipeline.to(torch.device("cuda"))
-                logger.info("✅ Pyannote pipeline loaded (GPU)")
-            else:
-                logger.info("✅ Pyannote pipeline loaded (CPU)")
-
+            logger.info("🔊 Loading Resemblyzer voice encoder (FREE, no API key)...")
+            cls._encoder = VoiceEncoder()
+            logger.info("✅ Resemblyzer encoder loaded successfully")
             return True
 
         except ImportError as e:
-            logger.warning(f"⚠️ pyannote.audio not installed: {e}")
+            logger.warning(f"⚠️ Resemblyzer not installed: {e}")
+            logger.warning("   Install with: pip install resemblyzer librosa")
             cls._init_error = f"Import error: {e}"
             return False
         except Exception as e:
-            logger.warning(f"⚠️ Failed to load pyannote pipeline: {e}")
+            logger.warning(f"⚠️ Failed to load Resemblyzer: {e}")
             cls._init_error = str(e)
             return False
 
@@ -151,74 +131,132 @@ class SpeakerDiarizer:
     ) -> DiarizationResult:
         """Synchronous diarization (runs in thread pool)."""
 
-        # Try to initialize pipeline
-        if not cls._init_pipeline():
+        # Try to initialize encoder
+        if not cls._init_encoder():
             logger.warning(f"⚠️ Falling back to pause-based detection: {cls._init_error}")
             return cls._fallback_diarization(audio_data)
 
-        # Write audio to temp file (pyannote requires file path)
+        try:
+            import librosa
+            from sklearn.cluster import SpectralClustering, AgglomerativeClustering
+            from resemblyzer import preprocess_wav
+        except ImportError as e:
+            logger.warning(f"⚠️ Missing dependency: {e}")
+            return cls._fallback_diarization(audio_data)
+
+        # Write audio to temp file
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             temp_path = f.name
             f.write(audio_data)
 
         try:
-            import torchaudio
+            # Load and preprocess audio
+            logger.info("🔊 Loading audio for diarization...")
+            wav, sr = librosa.load(temp_path, sr=16000)
+            duration = len(wav) / sr
 
-            # Load audio info for duration
-            waveform, sample_rate = torchaudio.load(temp_path)
-            duration = waveform.shape[1] / sample_rate
+            if duration < 1.0:
+                logger.warning("⚠️ Audio too short for diarization")
+                return DiarizationResult(
+                    segments=[DiarizedSegment("speaker_1", 0, duration)],
+                    num_speakers=1,
+                    duration=duration,
+                    method="resemblyzer",
+                )
 
-            # Run diarization
-            logger.info(f"🔊 Running speaker diarization on {duration:.1f}s audio...")
+            # Preprocess for Resemblyzer
+            wav_preprocessed = preprocess_wav(temp_path)
 
-            # Configure speaker count hints
+            # Segment audio into chunks for embedding
+            # Use overlapping windows for better accuracy
+            segment_duration = 1.5  # seconds per segment
+            hop_duration = 0.75  # hop between segments
+            segment_samples = int(segment_duration * sr)
+            hop_samples = int(hop_duration * sr)
+
+            segments_info = []  # (start_time, end_time, embedding)
+
+            for start_sample in range(0, len(wav_preprocessed) - segment_samples // 2, hop_samples):
+                end_sample = min(start_sample + segment_samples, len(wav_preprocessed))
+                segment_wav = wav_preprocessed[start_sample:end_sample]
+
+                # Skip silent segments
+                if np.abs(segment_wav).mean() < 0.01:
+                    continue
+
+                # Get embedding for this segment
+                try:
+                    embedding = cls._encoder.embed_utterance(segment_wav)
+                    start_time = start_sample / sr
+                    end_time = end_sample / sr
+                    segments_info.append((start_time, end_time, embedding))
+                except Exception as e:
+                    logger.debug(f"Skipping segment: {e}")
+                    continue
+
+            if len(segments_info) < 2:
+                logger.warning("⚠️ Not enough voiced segments for clustering")
+                return DiarizationResult(
+                    segments=[DiarizedSegment("speaker_1", 0, duration)],
+                    num_speakers=1,
+                    duration=duration,
+                    method="resemblyzer",
+                )
+
+            # Stack embeddings for clustering
+            embeddings = np.array([s[2] for s in segments_info])
+
+            # Determine number of clusters
             if num_speakers is not None:
-                diarization = cls._pipeline(
-                    temp_path,
-                    num_speakers=num_speakers,
-                )
+                n_clusters = num_speakers
             else:
-                diarization = cls._pipeline(
-                    temp_path,
-                    min_speakers=min_speakers,
-                    max_speakers=max_speakers,
+                # Estimate from embedding similarity
+                n_clusters = cls._estimate_num_speakers(
+                    embeddings, min_speakers, max_speakers
                 )
 
-            # Convert pyannote output to our format
-            segments = []
-            speaker_mapping = {}  # Map pyannote speaker IDs to speaker_1, speaker_2, etc.
+            logger.info(f"🔊 Clustering {len(embeddings)} segments into {n_clusters} speakers...")
 
-            for turn, _, speaker in diarization.itertracks(yield_label=True):
-                # Map speaker ID to consistent format
-                if speaker not in speaker_mapping:
-                    speaker_mapping[speaker] = f"speaker_{len(speaker_mapping) + 1}"
-
-                segment = DiarizedSegment(
-                    speaker_id=speaker_mapping[speaker],
-                    start_time=turn.start,
-                    end_time=turn.end,
-                    confidence=1.0,  # pyannote doesn't provide per-segment confidence
+            # Cluster embeddings using Agglomerative Clustering
+            # (more robust than spectral for small datasets)
+            if len(embeddings) >= n_clusters:
+                clustering = AgglomerativeClustering(
+                    n_clusters=n_clusters,
+                    metric="cosine",
+                    linkage="average",
                 )
-                segments.append(segment)
+                labels = clustering.fit_predict(embeddings)
+            else:
+                labels = [0] * len(embeddings)
 
-            # Sort by start time
-            segments.sort(key=lambda s: s.start_time)
+            # Build diarized segments
+            diarized_segments = []
+            for i, (start_time, end_time, _) in enumerate(segments_info):
+                speaker_id = f"speaker_{labels[i] + 1}"
+                diarized_segments.append(DiarizedSegment(
+                    speaker_id=speaker_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    confidence=0.8,
+                ))
 
-            # Merge very short gaps (< 0.3s) between same speaker
-            merged_segments = cls._merge_adjacent_segments(segments)
+            # Merge adjacent segments from same speaker
+            merged = cls._merge_adjacent_segments(diarized_segments)
 
-            num_detected = len(speaker_mapping)
-            logger.info(f"✅ Diarization complete: {num_detected} speakers, {len(merged_segments)} segments")
+            unique_speakers = len(set(labels))
+            logger.info(f"✅ Diarization complete: {unique_speakers} speakers, {len(merged)} segments")
 
             return DiarizationResult(
-                segments=merged_segments,
-                num_speakers=num_detected,
+                segments=merged,
+                num_speakers=unique_speakers,
                 duration=duration,
-                method="pyannote",
+                method="resemblyzer",
             )
 
         except Exception as e:
             logger.error(f"❌ Diarization failed: {e}")
+            import traceback
+            traceback.print_exc()
             return cls._fallback_diarization(audio_data)
         finally:
             # Clean up temp file
@@ -228,15 +266,55 @@ class SpeakerDiarizer:
                 pass
 
     @classmethod
+    def _estimate_num_speakers(
+        cls,
+        embeddings: np.ndarray,
+        min_speakers: int,
+        max_speakers: int,
+    ) -> int:
+        """
+        Estimate number of speakers from embedding similarity.
+
+        Uses the eigenvalue gap heuristic from spectral clustering.
+        """
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        # Compute similarity matrix
+        sim_matrix = cosine_similarity(embeddings)
+
+        # Convert to affinity (0-1 range)
+        affinity = (sim_matrix + 1) / 2
+
+        # Compute eigenvalues
+        eigenvalues = np.linalg.eigvalsh(affinity)
+        eigenvalues = np.sort(eigenvalues)[::-1]  # Descending
+
+        # Find largest gap in top eigenvalues
+        gaps = []
+        for k in range(min_speakers, min(max_speakers + 1, len(eigenvalues))):
+            if k < len(eigenvalues):
+                gap = eigenvalues[k - 1] - eigenvalues[k]
+                gaps.append((k, gap))
+
+        if gaps:
+            # Return k with largest gap
+            best_k = max(gaps, key=lambda x: x[1])[0]
+            return best_k
+
+        return min_speakers
+
+    @classmethod
     def _merge_adjacent_segments(
         cls,
         segments: List[DiarizedSegment],
-        max_gap: float = 0.3,
+        max_gap: float = 0.5,
     ) -> List[DiarizedSegment]:
         """Merge adjacent segments from same speaker with small gaps."""
         if not segments:
             return segments
 
+        # Sort by start time
+        segments = sorted(segments, key=lambda s: s.start_time)
         merged = [segments[0]]
 
         for seg in segments[1:]:
@@ -258,23 +336,19 @@ class SpeakerDiarizer:
     @classmethod
     def _fallback_diarization(cls, audio_data: bytes) -> DiarizationResult:
         """
-        Fallback to basic diarization when pyannote unavailable.
+        Fallback to basic diarization when Resemblyzer unavailable.
 
-        This is a placeholder that returns a single speaker.
-        The actual transcription endpoint should use Whisper's segments
-        and apply basic heuristics.
+        Returns a single speaker - actual segmentation done by Whisper.
         """
         logger.warning("⚠️ Using fallback diarization (single speaker assumed)")
 
-        # Return a single segment covering the whole audio
-        # The actual segmentation will be done by Whisper
         return DiarizationResult(
             segments=[
                 DiarizedSegment(
                     speaker_id="speaker_1",
                     start_time=0.0,
-                    end_time=0.0,  # Will be updated by caller
-                    confidence=0.5,  # Low confidence for fallback
+                    end_time=0.0,
+                    confidence=0.5,
                 )
             ],
             num_speakers=1,
@@ -300,7 +374,7 @@ def align_transcription_with_diarization(
     Returns:
         List of (whisper_segment, speaker_id) tuples
     """
-    if diarization.method == "fallback":
+    if diarization.method == "fallback" or not diarization.segments:
         # Fallback: all segments get speaker_1
         return [(seg, "speaker_1") for seg in whisper_segments]
 
@@ -333,7 +407,17 @@ def align_transcription_with_diarization(
         if speaker_overlaps:
             best_speaker = max(speaker_overlaps, key=speaker_overlaps.get)
         else:
-            best_speaker = "speaker_1"  # Default if no overlap found
+            # No overlap - find nearest speaker segment
+            best_speaker = "speaker_1"
+            min_distance = float("inf")
+            seg_mid = (seg_start + seg_end) / 2
+
+            for dseg in diarization.segments:
+                dseg_mid = (dseg.start_time + dseg.end_time) / 2
+                distance = abs(seg_mid - dseg_mid)
+                if distance < min_distance:
+                    min_distance = distance
+                    best_speaker = dseg.speaker_id
 
         aligned.append((wseg, best_speaker))
 

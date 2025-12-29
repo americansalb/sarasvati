@@ -1673,7 +1673,7 @@ async def upload_recording(
         )
 
     # Align transcription with diarization
-    if diarization.method == "pyannote" and diarization.segments:
+    if diarization.method == "resemblyzer" and diarization.segments:
         # Use voice-based speaker assignment
         aligned = align_transcription_with_diarization(whisper_segments, diarization)
         speakers_seen = set(speaker for _, speaker in aligned)

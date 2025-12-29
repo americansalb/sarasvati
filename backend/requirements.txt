@@ -40,9 +40,10 @@ typing-extensions>=4.8.0
 python-dotenv>=1.0.0  # For environment variables
 pydantic>=2.0.0       # For data validation
 
-# Speaker Diarization (voice fingerprinting)
-pyannote.audio>=3.1.0
-torchaudio>=2.0.0
+# Speaker Diarization (FREE, no API key needed)
+resemblyzer>=0.1.3      # Voice embeddings (d-vectors)
+librosa>=0.10.0         # Audio processing
+scikit-learn>=1.3.0     # Clustering for speaker separation
 
 # Testing (for future)
 pytest>=7.4.0
