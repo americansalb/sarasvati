@@ -1776,7 +1776,36 @@ export default function DashboardPage() {
 
       {/* Fixed Bottom Input Bar */}
       <div className="fixed bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur border-t border-gray-700 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-center gap-4">
+        <div className="max-w-7xl mx-auto flex items-center gap-4 flex-wrap">
+          {/* Language Selectors - Always Visible */}
+          <div className="flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="text-blue-400 text-sm font-medium">🩺</span>
+              <select
+                value={providerLang}
+                onChange={(e) => setProviderLang(e.target.value)}
+                className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm min-w-[120px]"
+              >
+                {LANGUAGES.filter(l => l.code !== "auto").map((lang) => (
+                  <option key={lang.code} value={lang.code}>{lang.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="text-gray-500">↔</div>
+            <div className="flex items-center gap-2">
+              <span className="text-green-400 text-sm font-medium">👤</span>
+              <select
+                value={patientLang}
+                onChange={(e) => setPatientLang(e.target.value)}
+                className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm min-w-[120px]"
+              >
+                {LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>{lang.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           {/* Role Selector */}
           <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
             {(["provider", "interpreter", "patient"] as StreamRole[]).map((role) => (
