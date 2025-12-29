@@ -16,7 +16,7 @@ services:
     runtime: python
     plan: free
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt
     startCommand: chmod +x start.sh && ./start.sh
     healthCheckPath: /health
     envVars:
