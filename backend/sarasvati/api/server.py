@@ -1614,13 +1614,9 @@ async def upload_recording(
         filename = audio.filename or "recording.webm"
         content_type = audio.content_type or "audio/webm"
 
-        # Log file size for debugging
+        # Log file size for debugging - NO SIZE LIMIT, we compress for Groq
         file_size_mb = len(audio_data) / 1024 / 1024
         print(f"📁 Received audio upload: {filename} ({len(audio_data)} bytes, {file_size_mb:.1f}MB)")
-
-        # Only reject truly massive files (500MB+)
-        if len(audio_data) > 500 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail=f"File too large ({file_size_mb:.0f}MB). Maximum is 500MB.")
 
         if len(audio_data) < 100:
             raise HTTPException(status_code=400, detail="File empty or too small.")
