@@ -525,11 +525,12 @@ export default function DashboardPage() {
       segment_count: number;
       sample_text: string;
     }>;
-    roleMappings: Record<string, string>;
+    roleMappings: Record<string, string | string[]>;
     results: {
       transcripts: Array<unknown>;
       errors: Array<unknown>;
       verdicts: Array<unknown>;
+      line_analyses?: Array<unknown>;
     } | null;
     error: string | null;
   }>({
@@ -728,7 +729,8 @@ export default function DashboardPage() {
     setUploadState(prev => ({ ...prev, isUploading: true, error: null, results: null }));
 
     // Get languages present from state or default to English
-    const languagesPresent = uploadState.roleMappings._languagesPresent || ["en"];
+    const storedLanguages = uploadState.roleMappings._languagesPresent;
+    const languagesPresent = Array.isArray(storedLanguages) ? storedLanguages : ["en"];
 
     const formData = new FormData();
     formData.append("audio", file);
@@ -823,7 +825,8 @@ export default function DashboardPage() {
     setUploadState(prev => ({ ...prev, isAnalyzing: true, error: null }));
 
     // Get languages present
-    const languagesPresent = uploadState.roleMappings._languagesPresent || ["en"];
+    const storedLangs = uploadState.roleMappings._languagesPresent;
+    const languagesPresent = Array.isArray(storedLangs) ? storedLangs : ["en"];
 
     try {
       const response = await fetch(`${BACKEND_URL}/analyze-recording`, {
@@ -1396,23 +1399,29 @@ export default function DashboardPage() {
                     { code: "ru", name: "Russian" },
                     { code: "fr", name: "French" },
                   ].map(lang => {
-                    const isSelected = uploadState.roleMappings._languagesPresent?.includes(lang.code) ||
-                      (lang.code === "en" && !uploadState.roleMappings._languagesPresent);
+                    const storedLangs = uploadState.roleMappings._languagesPresent;
+                    const currentLangs = Array.isArray(storedLangs) ? storedLangs : ["en"];
+                    const isSelected = currentLangs.includes(lang.code) ||
+                      (lang.code === "en" && !storedLangs);
                     return (
                       <button
                         key={lang.code}
                         onClick={() => {
-                          const current = uploadState.roleMappings._languagesPresent || ["en"];
-                          const updated = isSelected
-                            ? current.filter((l: string) => l !== lang.code)
-                            : [...current, lang.code];
-                          setUploadState(prev => ({
-                            ...prev,
-                            roleMappings: {
-                              ...prev.roleMappings,
-                              _languagesPresent: updated.length > 0 ? updated : ["en"],
-                            },
-                          }));
+                          setUploadState(prev => {
+                            const prevStoredLangs = prev.roleMappings._languagesPresent;
+                            const prevCurrentLangs = Array.isArray(prevStoredLangs) ? prevStoredLangs : ["en"];
+                            const wasSelected = prevCurrentLangs.includes(lang.code);
+                            const updated = wasSelected
+                              ? prevCurrentLangs.filter((l: string) => l !== lang.code)
+                              : [...prevCurrentLangs, lang.code];
+                            return {
+                              ...prev,
+                              roleMappings: {
+                                ...prev.roleMappings,
+                                _languagesPresent: updated.length > 0 ? updated : ["en"],
+                              },
+                            };
+                          });
                         }}
                         className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                           isSelected
