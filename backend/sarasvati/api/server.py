@@ -1614,14 +1614,16 @@ async def upload_recording(
         filename = audio.filename or "recording.webm"
         content_type = audio.content_type or "audio/webm"
 
-        # Validate file size (max 100MB)
-        if len(audio_data) > 100 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="File too large. Maximum size is 100MB.")
+        # Log file size for debugging
+        file_size_mb = len(audio_data) / 1024 / 1024
+        print(f"📁 Received audio upload: {filename} ({len(audio_data)} bytes, {file_size_mb:.1f}MB)")
 
-        if len(audio_data) < 1000:
-            raise HTTPException(status_code=400, detail="File too small. Please upload a valid audio file.")
+        # Only reject truly massive files (500MB+)
+        if len(audio_data) > 500 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail=f"File too large ({file_size_mb:.0f}MB). Maximum is 500MB.")
 
-        print(f"📁 Received audio upload: {filename} ({len(audio_data)} bytes)")
+        if len(audio_data) < 100:
+            raise HTTPException(status_code=400, detail="File empty or too small.")
 
         # Get API key
         groq_api_key = os.getenv("GROQ_API_KEY", "")
@@ -1668,8 +1670,8 @@ async def upload_recording(
         transcribe_filename = filename
         transcribe_content_type = content_type
 
-        if len(audio_data) > 20 * 1024 * 1024:  # > 20MB, compress it
-            print(f"📦 Audio too large ({len(audio_data) / 1024 / 1024:.1f}MB), compressing...")
+        if len(audio_data) > 10 * 1024 * 1024:  # > 10MB, compress for Groq's 25MB limit
+            print(f"📦 Compressing audio ({len(audio_data) / 1024 / 1024:.1f}MB) for Groq API...")
             try:
                 import subprocess
                 import tempfile
