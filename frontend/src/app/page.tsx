@@ -727,10 +727,12 @@ export default function DashboardPage() {
   const handleFileUpload = async (file: File) => {
     setUploadState(prev => ({ ...prev, isUploading: true, error: null, results: null }));
 
+    // Get languages present from state or default to English
+    const languagesPresent = uploadState.roleMappings._languagesPresent || ["en"];
+
     const formData = new FormData();
     formData.append("audio", file);
-    formData.append("provider_language", providerLang);
-    formData.append("patient_language", patientLang);
+    formData.append("languages_present", languagesPresent.join(","));
 
     try {
       const response = await fetch(`${BACKEND_URL}/upload-recording`, {
@@ -820,6 +822,9 @@ export default function DashboardPage() {
 
     setUploadState(prev => ({ ...prev, isAnalyzing: true, error: null }));
 
+    // Get languages present
+    const languagesPresent = uploadState.roleMappings._languagesPresent || ["en"];
+
     try {
       const response = await fetch(`${BACKEND_URL}/analyze-recording`, {
         method: "POST",
@@ -827,8 +832,7 @@ export default function DashboardPage() {
         body: JSON.stringify({
           upload_id: uploadState.uploadId,
           role_mappings: assignedMappings,
-          provider_language: providerLang,
-          patient_language: patientLang,
+          languages_present: languagesPresent,
         }),
       });
 
@@ -1370,34 +1374,56 @@ export default function DashboardPage() {
           /* ================ UPLOAD TAB ================ */
           <div className="space-y-6">
             <div className="max-w-4xl mx-auto">
-              {/* Language Settings for Upload */}
+              {/* Languages Present in Recording */}
               <div className="bg-gray-800/50 rounded-lg p-4 mb-6">
-                <h3 className="text-lg font-semibold mb-3">Recording Settings</h3>
-                <div className="flex gap-4">
-                  <div className="flex-1">
-                    <label className="block text-sm text-gray-400 mb-1">Provider Language</label>
-                    <select
-                      value={providerLang}
-                      onChange={(e) => setProviderLang(e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 rounded-lg text-white"
-                    >
-                      {LANGUAGES.filter(l => l.code !== "auto").map(lang => (
-                        <option key={lang.code} value={lang.code}>{lang.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex-1">
-                    <label className="block text-sm text-gray-400 mb-1">Patient Language</label>
-                    <select
-                      value={patientLang}
-                      onChange={(e) => setPatientLang(e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 rounded-lg text-white"
-                    >
-                      {LANGUAGES.filter(l => l.code !== "auto").map(lang => (
-                        <option key={lang.code} value={lang.code}>{lang.name}</option>
-                      ))}
-                    </select>
-                  </div>
+                <h3 className="text-lg font-semibold mb-3">Languages in Recording</h3>
+                <p className="text-gray-400 text-sm mb-3">
+                  Select all languages spoken in this recording. This helps match speakers to languages.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { code: "en", name: "English" },
+                    { code: "es", name: "Spanish" },
+                    { code: "fa", name: "Farsi/Persian" },
+                    { code: "ar", name: "Arabic" },
+                    { code: "zh", name: "Chinese" },
+                    { code: "vi", name: "Vietnamese" },
+                    { code: "ko", name: "Korean" },
+                    { code: "tl", name: "Tagalog" },
+                    { code: "hi", name: "Hindi" },
+                    { code: "gu", name: "Gujarati" },
+                    { code: "pt", name: "Portuguese" },
+                    { code: "ru", name: "Russian" },
+                    { code: "fr", name: "French" },
+                  ].map(lang => {
+                    const isSelected = uploadState.roleMappings._languagesPresent?.includes(lang.code) ||
+                      (lang.code === "en" && !uploadState.roleMappings._languagesPresent);
+                    return (
+                      <button
+                        key={lang.code}
+                        onClick={() => {
+                          const current = uploadState.roleMappings._languagesPresent || ["en"];
+                          const updated = isSelected
+                            ? current.filter((l: string) => l !== lang.code)
+                            : [...current, lang.code];
+                          setUploadState(prev => ({
+                            ...prev,
+                            roleMappings: {
+                              ...prev.roleMappings,
+                              _languagesPresent: updated.length > 0 ? updated : ["en"],
+                            },
+                          }));
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                          isSelected
+                            ? "bg-blue-600 text-white"
+                            : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                        }`}
+                      >
+                        {lang.name}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1611,53 +1637,135 @@ export default function DashboardPage() {
                   <div className="grid grid-cols-3 gap-4">
                     <div className="bg-gray-800/50 rounded-lg p-4 text-center">
                       <div className="text-3xl font-bold text-blue-400">
-                        {uploadState.results.transcripts.length}
+                        {uploadState.results.transcripts?.length || 0}
                       </div>
                       <div className="text-sm text-gray-400">Segments</div>
                     </div>
                     <div className="bg-gray-800/50 rounded-lg p-4 text-center">
                       <div className="text-3xl font-bold text-purple-400">
-                        {uploadState.results.verdicts.length}
+                        {(uploadState.results as { line_analyses?: unknown[] }).line_analyses?.length || 0}
                       </div>
-                      <div className="text-sm text-gray-400">Evaluations</div>
+                      <div className="text-sm text-gray-400">Lines Analyzed</div>
                     </div>
                     <div className="bg-gray-800/50 rounded-lg p-4 text-center">
                       <div className={`text-3xl font-bold ${
-                        uploadState.results.errors.length > 0 ? "text-red-400" : "text-green-400"
+                        (uploadState.results.errors?.length || 0) > 0 ? "text-red-400" : "text-green-400"
                       }`}>
-                        {uploadState.results.errors.length}
+                        {uploadState.results.errors?.length || 0}
                       </div>
                       <div className="text-sm text-gray-400">Issues Found</div>
                     </div>
                   </div>
 
-                  {/* Errors List */}
-                  {uploadState.results.errors.length > 0 && (
+                  {/* Line-by-Line Analysis */}
+                  {(uploadState.results as { line_analyses?: Array<{
+                    segment_id: string;
+                    source_role: string;
+                    source_text: string;
+                    interpreter_text: string;
+                    is_accurate: boolean;
+                    overall_assessment: string;
+                    issues: Array<{
+                      type: string;
+                      severity: string;
+                      description: string;
+                      correction?: string;
+                    }>;
+                    what_was_preserved: string;
+                  }> }).line_analyses && (uploadState.results as { line_analyses: unknown[] }).line_analyses.length > 0 && (
                     <div className="bg-gray-800/50 rounded-lg p-4">
-                      <h4 className="font-semibold mb-3">Detected Issues</h4>
-                      <div className="space-y-3">
-                        {(uploadState.results.errors as Array<{
-                          error_type?: string;
-                          severity?: string;
-                          description?: string;
-                        }>).map((err, idx) => (
-                          <div key={idx} className={`p-3 rounded-lg ${getCardStyle(err.severity || "medium")}`}>
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className={`text-xs px-2 py-0.5 rounded font-bold ${getSeverityBadge(err.severity || "medium").bg}`}>
-                                {getSeverityBadge(err.severity || "medium").text}
-                              </span>
-                              <span className="text-sm font-medium text-white">
-                                {formatErrorType(err.error_type || "unknown")}
+                      <h4 className="font-semibold mb-4">Line-by-Line Analysis</h4>
+                      <div className="space-y-4">
+                        {((uploadState.results as { line_analyses: Array<{
+                          segment_id: string;
+                          source_role: string;
+                          source_text: string;
+                          interpreter_text: string;
+                          is_accurate: boolean;
+                          overall_assessment: string;
+                          issues: Array<{
+                            type: string;
+                            severity: string;
+                            description: string;
+                            correction?: string;
+                          }>;
+                          what_was_preserved: string;
+                        }> }).line_analyses).map((analysis, idx) => (
+                          <div
+                            key={idx}
+                            className={`p-4 rounded-lg border ${
+                              analysis.is_accurate
+                                ? "border-green-700 bg-green-950/30"
+                                : "border-red-700 bg-red-950/30"
+                            }`}
+                          >
+                            {/* Source and Interpreter */}
+                            <div className="grid grid-cols-2 gap-4 mb-3">
+                              <div className="bg-gray-900/50 p-3 rounded">
+                                <div className="text-xs text-blue-400 mb-1">
+                                  SOURCE ({analysis.source_role.toUpperCase()})
+                                </div>
+                                <p className="text-sm text-gray-200">{analysis.source_text}</p>
+                              </div>
+                              <div className="bg-gray-900/50 p-3 rounded">
+                                <div className="text-xs text-purple-400 mb-1">INTERPRETER</div>
+                                <p className="text-sm text-gray-200">{analysis.interpreter_text}</p>
+                              </div>
+                            </div>
+
+                            {/* Assessment */}
+                            <div className={`flex items-center gap-2 mb-2 ${
+                              analysis.is_accurate ? "text-green-400" : "text-red-400"
+                            }`}>
+                              <span className="text-lg">{analysis.is_accurate ? "✓" : "✗"}</span>
+                              <span className="font-medium">
+                                {analysis.is_accurate ? "Accurate" : "Issues Found"}
                               </span>
                             </div>
-                            <p className="text-sm text-gray-300">{err.description}</p>
+
+                            <p className="text-sm text-gray-400 mb-3">{analysis.overall_assessment}</p>
+
+                            {/* Issues */}
+                            {analysis.issues.length > 0 && (
+                              <div className="space-y-2">
+                                {analysis.issues.map((issue, issueIdx) => (
+                                  <div
+                                    key={issueIdx}
+                                    className={`p-2 rounded ${getCardStyle(issue.severity)}`}
+                                  >
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className={`text-xs px-2 py-0.5 rounded font-bold ${getSeverityBadge(issue.severity).bg}`}>
+                                        {getSeverityBadge(issue.severity).text}
+                                      </span>
+                                      <span className="text-xs font-medium text-white">
+                                        {formatErrorType(issue.type)}
+                                      </span>
+                                    </div>
+                                    <p className="text-sm text-gray-300">{issue.description}</p>
+                                    {issue.correction && (
+                                      <p className="text-sm text-green-400 mt-1">
+                                        → Should say: "{issue.correction}"
+                                      </p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* What was preserved */}
+                            {analysis.what_was_preserved && analysis.is_accurate && (
+                              <p className="text-xs text-green-400/70 mt-2">
+                                ✓ {analysis.what_was_preserved}
+                              </p>
+                            )}
                           </div>
                         ))}
                       </div>
                     </div>
                   )}
 
-                  {uploadState.results.errors.length === 0 && (
+                  {/* No issues */}
+                  {(uploadState.results.errors?.length || 0) === 0 && (
                     <div className="bg-green-900/30 border border-green-700 rounded-lg p-6 text-center">
                       <div className="text-4xl mb-2">✅</div>
                       <p className="text-green-400 font-medium">No interpretation errors detected!</p>

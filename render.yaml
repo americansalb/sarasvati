@@ -24,6 +24,8 @@ services:
         value: "3.11"
       - key: GROQ_API_KEY
         sync: false  # Set manually in Render dashboard
+      - key: ANTHROPIC_API_KEY
+        sync: false  # Set manually in Render dashboard - for Claude analysis
       # Independent Tribunal: 3 diverse models
       - key: GROQ_MODEL_EXTRACTOR
         value: "llama-3.1-8b-instant"    # Node A: Meta - Fast/Structured

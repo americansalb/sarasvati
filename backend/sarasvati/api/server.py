@@ -1577,8 +1577,7 @@ class AnalyzeRequest(BaseModel):
     """Request to analyze uploaded recording."""
     upload_id: str
     role_mappings: List[RoleMapping]
-    provider_language: str = "en"
-    patient_language: str = "auto"  # Auto-detect by default
+    languages_present: List[str] = ["en"]  # Languages spoken in the recording
 
 
 # Store uploaded recordings temporarily (in production, use Redis or S3)
@@ -1588,8 +1587,7 @@ uploaded_recordings: Dict[str, Dict] = {}
 @app.post("/upload-recording", response_model=UploadResponse)
 async def upload_recording(
     audio: UploadFile = File(...),
-    provider_language: str = Form(default="en"),
-    patient_language: str = Form(default="auto"),  # Auto-detect by default
+    languages_present: str = Form(default="en"),  # Comma-separated list of languages present
     num_speakers: Optional[int] = Form(default=None),
 ):
     """
@@ -1598,24 +1596,29 @@ async def upload_recording(
     1. Performs speaker diarization using Resemblyzer (voice fingerprinting)
     2. Transcribes the audio using Groq Whisper with segment timestamps
     3. Aligns transcription with speaker diarization
-    4. Returns segments with speaker IDs for role assignment
+    4. Matches speakers to the specified languages present
+    5. Returns segments with speaker IDs for role assignment
 
-    Speaker detection uses neural network-based voice embeddings (Resemblyzer)
-    to identify unique speakers based on voice characteristics (pitch, timbre,
-    speaking patterns), not pause duration. This correctly handles speakers
-    who talk in rapid succession.
-
-    Language support: Whisper supports 99 languages. Use "auto" for automatic
-    language detection, or specify an ISO 639-1 code (e.g., "en", "es", "zh").
-
-    The user can then map speakers to roles (provider, patient, interpreter)
-    and call /analyze-recording to run the tribunal evaluation.
-
-    Optional params:
+    Args:
+        languages_present: Comma-separated list of languages in the recording
+                          (e.g., "en,fa" for English and Farsi). These are used
+                          as strong hints to match speakers to languages.
         num_speakers: If you know the exact number of speakers, provide it
                       for better diarization accuracy
+
+    The system will:
+    - Use the languages_present to determine which language each speaker uses
+    - Group speakers by their detected language
+    - Suggest merging speakers who speak the same language
+    - Allow manual role assignment before analysis
     """
     upload_id = f"upload_{uuid.uuid4().hex[:12]}"
+
+    # Parse languages present (comma-separated)
+    lang_list = [lang.strip().lower() for lang in languages_present.split(",") if lang.strip()]
+    if not lang_list:
+        lang_list = ["en"]  # Default to English
+    print(f"🌐 Languages present: {lang_list}")
 
     try:
         # Read audio file
@@ -1795,21 +1798,32 @@ async def upload_recording(
             "segments": [s.model_dump() for s in segments],
             "duration": duration,
             "detected_language": detected_language,
-            "provider_language": provider_language,
-            "patient_language": patient_language,
+            "languages_present": lang_list,
             "audio_data": audio_data,  # Keep for potential re-processing
             "diarization_method": diarization.method,
         }
 
         detected_speakers = sorted(list(speakers_seen))
 
-        # Build speaker language info for grouping suggestions
-        # Group segments by speaker and detect primary language for each
+        # Build speaker language info by matching to languages_present
+        # Group segments by speaker and match to specified languages
         speaker_segments: Dict[str, List[UploadedSegment]] = {}
         for seg in segments:
             if seg.speaker_id not in speaker_segments:
                 speaker_segments[seg.speaker_id] = []
             speaker_segments[seg.speaker_id].append(seg)
+
+        # Map scripts to potential languages (for matching to languages_present)
+        script_to_langs = {
+            "latin": ["en", "es", "fr", "de", "pt", "it", "nl", "pl", "vi", "id", "tl"],
+            "gujarati": ["gu"],
+            "devanagari": ["hi", "mr", "ne", "sa"],
+            "arabic": ["ar", "fa", "ur", "ps"],  # Arabic script: Arabic, Farsi, Urdu, Pashto
+            "chinese": ["zh", "yue"],
+            "sinhala": ["si"],
+            "thai": ["th"],
+            "unknown": [],
+        }
 
         speaker_language_info: List[SpeakerLanguageInfo] = []
         for speaker_id in detected_speakers:
@@ -1817,33 +1831,38 @@ async def upload_recording(
             if not segs:
                 continue
 
-            # Detect language based on script analysis of segments
-            lang_counts: Dict[str, int] = {}
+            # Count scripts in this speaker's segments
+            script_counts: Dict[str, int] = {}
             sample_text = ""
             for seg in segs:
-                # Use script detection to infer language
                 script = detect_script(seg.text)
-                # Map script to likely language
-                script_to_lang = {
-                    "latin": "en",  # Could be en, es, fr, etc - assume en
-                    "gujarati": "gu",
-                    "devanagari": "hi",
-                    "arabic": "ar",
-                    "chinese": "zh",
-                    "sinhala": "si",
-                    "thai": "th",
-                }
-                lang = script_to_lang.get(script, seg.detected_language or "unknown")
-                lang_counts[lang] = lang_counts.get(lang, 0) + 1
+                script_counts[script] = script_counts.get(script, 0) + 1
                 if not sample_text:
                     sample_text = seg.text[:50]
 
-            # Get primary language (most common)
-            primary_lang = max(lang_counts, key=lambda k: lang_counts[k]) if lang_counts else "unknown"
+            # Get dominant script for this speaker
+            dominant_script = max(script_counts, key=lambda k: script_counts[k]) if script_counts else "unknown"
+
+            # Match to languages_present based on script
+            possible_langs = script_to_langs.get(dominant_script, [])
+            matched_lang = None
+
+            # Find which of the languages_present matches this script
+            for lang in lang_list:
+                if lang in possible_langs:
+                    matched_lang = lang
+                    break
+
+            # If no match in languages_present, use best guess from script
+            if not matched_lang:
+                if possible_langs:
+                    matched_lang = possible_langs[0]  # Default to first possibility
+                else:
+                    matched_lang = detected_language or "unknown"
 
             speaker_language_info.append(SpeakerLanguageInfo(
                 speaker_id=speaker_id,
-                primary_language=primary_lang,
+                primary_language=matched_lang,
                 segment_count=len(segs),
                 sample_text=sample_text + ("..." if len(sample_text) >= 50 else ""),
             ))
@@ -1874,12 +1893,12 @@ async def upload_recording(
 @app.post("/analyze-recording")
 async def analyze_recording(request: AnalyzeRequest):
     """
-    Analyze an uploaded recording with role assignments.
+    Analyze an uploaded recording with role assignments using Claude.
 
-    Takes the upload_id and role mappings (speaker_1 -> provider, etc.)
-    and runs the tribunal evaluation on the interpreted segments.
+    Performs thorough line-by-line analysis of each interpreter segment,
+    comparing it against the source (provider/patient) text.
     """
-    global engine, session_active, session_id
+    import anthropic
 
     # Get stored recording
     recording = uploaded_recordings.get(request.upload_id)
@@ -1910,92 +1929,155 @@ async def analyze_recording(request: AnalyzeRequest):
         )
 
     print(f"🔍 Analyzing recording {request.upload_id} with mappings: {role_map}")
+    print(f"🌐 Languages present: {request.languages_present}")
 
-    # Create a temporary session for analysis
-    analysis_session_id = f"analysis_{uuid.uuid4().hex[:8]}"
+    # Get Anthropic API key
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not anthropic_key:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured for analysis")
 
-    # Initialize engine if needed
-    if engine is None:
-        config = GraphConfig()
-        engine = create_engine(config)
+    client = anthropic.Anthropic(api_key=anthropic_key)
 
-    # Process segments through the engine
-    results = {
-        "upload_id": request.upload_id,
-        "session_id": analysis_session_id,
-        "transcripts": [],
-        "errors": [],
-        "verdicts": [],
-        "debate_logs": {},
-    }
-
-    # Convert segments to TranscriptSegments with assigned roles
-    # Skip segments from unmapped speakers
+    # Build transcript with roles
+    transcript_lines = []
     for seg in segments:
         role = role_map.get(seg["speaker_id"])
         if not role:
-            # Skip unmapped speakers
+            continue
+        transcript_lines.append({
+            "segment_id": seg["segment_id"],
+            "role": role,
+            "text": seg["text"],
+            "start_time": seg["start_time"],
+            "end_time": seg["end_time"],
+        })
+
+    # Process segments and find interpreter-source pairs
+    results = {
+        "upload_id": request.upload_id,
+        "transcripts": transcript_lines,
+        "errors": [],
+        "line_analyses": [],  # Detailed analysis of each line
+    }
+
+    # Build context for analysis
+    languages_str = ", ".join(request.languages_present)
+
+    # Find each interpreter segment and its source
+    for i, line in enumerate(transcript_lines):
+        if line["role"] != "interpreter":
             continue
 
-        transcript = TranscriptSegment(
-            segment_id=seg["segment_id"],
-            role=role,
-            text=seg["text"],
-            timestamp=seg["start_time"],
-            duration=seg["end_time"] - seg["start_time"],
-            detected_language=seg.get("detected_language"),
-            is_final=True,
-        )
-        results["transcripts"].append(transcript.model_dump())
+        # Find preceding source (provider or patient)
+        source_line = None
+        for j in range(i - 1, -1, -1):
+            if transcript_lines[j]["role"] in ["provider", "patient"]:
+                source_line = transcript_lines[j]
+                break
 
-        # For interpreter segments, run through the tribunal
-        if role == "interpreter":
-            # Find the preceding provider/patient segment as source
-            source_segment = None
-            for prev_seg in reversed(results["transcripts"][:-1]):
-                if prev_seg["role"] in ["provider", "patient"]:
-                    source_segment = prev_seg
-                    break
+        if not source_line:
+            continue
 
-            if source_segment:
-                # Run tribunal evaluation
-                try:
-                    from ..core.tribunal import DualTribunalOrchestrator
+        # Thorough line-by-line analysis using Claude
+        analysis_prompt = f"""You are an expert medical interpreter evaluator. Analyze this interpretation for accuracy.
 
-                    groq_key = os.getenv("GROQ_API_KEY", "")
-                    openai_key = os.getenv("OPENAI_API_KEY", "")
-                    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+LANGUAGES PRESENT: {languages_str}
 
-                    orchestrator = DualTribunalOrchestrator(
-                        groq_api_key=groq_key,
-                        openai_api_key=openai_key,
-                        anthropic_api_key=anthropic_key,
-                    )
+SOURCE ({source_line['role'].upper()}):
+"{source_line['text']}"
 
-                    # Determine languages
-                    source_lang = request.provider_language if source_segment["role"] == "provider" else request.patient_language
+INTERPRETER'S RENDITION:
+"{line['text']}"
 
-                    verdict = await orchestrator.evaluate(
-                        source_text=source_segment["text"],
-                        interpreter_text=transcript.text,
-                        source_role=source_segment["role"],
-                        source_language=source_lang,
-                        interpreter_language="auto",
-                    )
+Analyze the interpretation thoroughly. Check for:
+1. OMISSIONS - Any information from the source that was left out
+2. ADDITIONS - Any information the interpreter added that wasn't in the source
+3. DISTORTIONS - Any meaning that was changed or misrepresented
+4. MEDICAL ACCURACY - Any medical terms, dosages, or instructions that were wrong
+5. REGISTER/TONE - Any inappropriate changes in formality or tone
 
-                    results["verdicts"].append(verdict)
+For each issue found, rate its severity:
+- CRITICAL: Could cause patient harm (wrong dosage, wrong medication, missed allergy)
+- HIGH: Significant medical meaning changed
+- MEDIUM: Some meaning lost but not dangerous
+- LOW: Minor stylistic issues
 
-                    # Extract errors
-                    if verdict.get("errors"):
-                        for err in verdict["errors"]:
-                            results["errors"].append(err)
+Respond in this exact JSON format:
+{{
+  "is_accurate": true/false,
+  "overall_assessment": "Brief summary of accuracy",
+  "issues": [
+    {{
+      "type": "omission|addition|distortion|medical_error|register_shift",
+      "severity": "critical|high|medium|low",
+      "description": "What was wrong",
+      "source_text": "The part of source affected",
+      "interpreter_text": "What interpreter said instead",
+      "correction": "What should have been said"
+    }}
+  ],
+  "what_was_preserved": "List key elements correctly interpreted"
+}}
 
-                    # Store debate logs
-                    if verdict.get("debate_logs"):
-                        results["debate_logs"][seg["segment_id"]] = verdict["debate_logs"]
+If the interpretation is accurate, return an empty issues array."""
 
-                except Exception as e:
-                    print(f"⚠️ Tribunal error for segment {seg['segment_id']}: {e}")
+        try:
+            print(f"📝 Analyzing segment {line['segment_id']}...")
+
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",  # Use Sonnet for thorough analysis
+                max_tokens=1500,
+                messages=[
+                    {"role": "user", "content": analysis_prompt}
+                ]
+            )
+
+            # Parse Claude's response
+            response_text = response.content[0].text
+            # Extract JSON from response (handle markdown code blocks)
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+
+            analysis = json.loads(response_text)
+
+            # Store line analysis
+            line_analysis = {
+                "segment_id": line["segment_id"],
+                "source_role": source_line["role"],
+                "source_text": source_line["text"],
+                "interpreter_text": line["text"],
+                "is_accurate": analysis.get("is_accurate", True),
+                "overall_assessment": analysis.get("overall_assessment", ""),
+                "issues": analysis.get("issues", []),
+                "what_was_preserved": analysis.get("what_was_preserved", ""),
+            }
+            results["line_analyses"].append(line_analysis)
+
+            # Add issues to errors list
+            for issue in analysis.get("issues", []):
+                results["errors"].append({
+                    "segment_id": line["segment_id"],
+                    "error_type": issue.get("type", "unknown"),
+                    "severity": issue.get("severity", "medium"),
+                    "description": issue.get("description", ""),
+                    "source_text": issue.get("source_text", ""),
+                    "interpreter_text": issue.get("interpreter_text", ""),
+                    "correction": issue.get("correction", ""),
+                })
+
+            print(f"   ✓ {len(analysis.get('issues', []))} issues found")
+
+        except json.JSONDecodeError as e:
+            print(f"⚠️ Failed to parse Claude response for {line['segment_id']}: {e}")
+            print(f"   Response was: {response_text[:200]}...")
+        except Exception as e:
+            print(f"⚠️ Analysis error for segment {line['segment_id']}: {e}")
 
     # Clean up stored recording after analysis
     # del uploaded_recordings[request.upload_id]  # Keep for debugging
