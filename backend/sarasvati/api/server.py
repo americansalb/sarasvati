@@ -1660,92 +1660,136 @@ async def upload_recording(
 
         diarization_task = asyncio.create_task(safe_diarize())
 
-        # Compress audio if too large for Groq (25MB limit)
-        # Use ffmpeg to convert to mono 16kHz MP3 which is much smaller
-        transcribe_data = audio_data
-        transcribe_filename = filename
-        transcribe_content_type = content_type
+        # Handle large files by splitting into chunks (preserves original quality)
+        # Groq has 25MB limit, so we split into ~20MB chunks
+        CHUNK_SIZE_MB = 20
+        CHUNK_SIZE_BYTES = CHUNK_SIZE_MB * 1024 * 1024
 
-        if len(audio_data) > 10 * 1024 * 1024:  # > 10MB, compress for Groq's 25MB limit
-            print(f"📦 Compressing audio ({len(audio_data) / 1024 / 1024:.1f}MB) for Groq API...")
-            try:
-                import subprocess
-                import tempfile
+        async def transcribe_audio(client, audio_bytes, fname, ctype):
+            """Transcribe a single audio chunk."""
+            response = await client.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {groq_api_key}"},
+                files={"file": (fname, audio_bytes, ctype)},
+                data={
+                    "model": "whisper-large-v3",
+                    "response_format": "verbose_json",
+                    "timestamp_granularities[]": "segment",
+                },
+                timeout=300.0,  # Longer timeout for large files
+            )
+            if response.status_code != 200:
+                raise Exception(f"Groq API error: {response.text[:300]}")
+            return response.json()
 
-                # Detect input format
-                input_ext = ".mp4"
-                if audio_data[:3] == b'ID3' or audio_data[:2] == b'\xff\xfb':
-                    input_ext = ".mp3"
-                elif audio_data[:4] == b'OggS':
-                    input_ext = ".ogg"
-                elif audio_data[:4] == b'RIFF':
-                    input_ext = ".wav"
-                elif len(audio_data) > 8 and audio_data[4:8] == b'ftyp':
-                    input_ext = ".mp4"
-
-                with tempfile.NamedTemporaryFile(suffix=input_ext, delete=False) as f_in:
-                    f_in.write(audio_data)
-                    input_path = f_in.name
-
-                # Create output path (replace extension at end only)
-                output_path = input_path.rsplit(input_ext, 1)[0] + "_compressed.mp3"
-
-                # Compress to mono 16kHz MP3 at 64kbps (good for speech)
-                result_compress = subprocess.run([
-                    "ffmpeg", "-y", "-i", input_path,
-                    "-ac", "1",  # mono
-                    "-ar", "16000",  # 16kHz sample rate
-                    "-b:a", "64k",  # 64kbps bitrate
-                    "-f", "mp3",
-                    output_path
-                ], capture_output=True, timeout=120)
-
-                if result_compress.returncode == 0:
-                    with open(output_path, "rb") as f_out:
-                        transcribe_data = f_out.read()
-                    transcribe_filename = "audio_compressed.mp3"
-                    transcribe_content_type = "audio/mpeg"
-                    print(f"✅ Compressed: {len(audio_data)/1024/1024:.1f}MB → {len(transcribe_data)/1024/1024:.1f}MB")
-                else:
-                    print(f"⚠️ Compression failed: {result_compress.stderr.decode()[:200]}")
-
-                # Cleanup temp files
-                try:
-                    os.unlink(input_path)
-                    os.unlink(output_path)
-                except:
-                    pass
-
-            except Exception as compress_err:
-                print(f"⚠️ Compression error: {compress_err}, using original file")
-
-        # Transcribe with Groq Whisper - request verbose JSON for timestamps
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(
-                    "https://api.groq.com/openai/v1/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {groq_api_key}"},
-                    files={"file": (transcribe_filename, transcribe_data, transcribe_content_type)},
-                    data={
-                        "model": "whisper-large-v3",
-                        "response_format": "verbose_json",
-                        "timestamp_granularities[]": "segment",
-                    },
-                    timeout=120.0,
-                )
+                if len(audio_data) <= CHUNK_SIZE_BYTES:
+                    # Small enough - transcribe directly at original quality
+                    print(f"📝 Transcribing {file_size_mb:.1f}MB at original quality...")
+                    result = await transcribe_audio(client, audio_data, filename, content_type)
+                else:
+                    # Split into chunks using ffmpeg, transcribe each, combine results
+                    print(f"📦 Splitting {file_size_mb:.1f}MB into chunks for transcription...")
+                    import subprocess
+                    import tempfile
+                    import math
 
-                if response.status_code != 200:
-                    error_text = response.text[:500]  # Truncate long errors
-                    print(f"❌ Groq API error: {error_text}")
-                    raise HTTPException(status_code=500, detail=f"Transcription failed: {error_text}")
+                    # Detect input format
+                    input_ext = ".mp4"
+                    if audio_data[:3] == b'ID3' or audio_data[:2] == b'\xff\xfb':
+                        input_ext = ".mp3"
+                    elif audio_data[:4] == b'OggS':
+                        input_ext = ".ogg"
+                    elif audio_data[:4] == b'RIFF':
+                        input_ext = ".wav"
+                    elif len(audio_data) > 8 and audio_data[4:8] == b'ftyp':
+                        input_ext = ".mp4"
 
-                result = response.json()
+                    # Write to temp file
+                    with tempfile.NamedTemporaryFile(suffix=input_ext, delete=False) as f_in:
+                        f_in.write(audio_data)
+                        input_path = f_in.name
+
+                    try:
+                        # Get duration using ffprobe
+                        probe_result = subprocess.run([
+                            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=noprint_wrappers=1:nokey=1", input_path
+                        ], capture_output=True, timeout=30)
+                        total_duration = float(probe_result.stdout.decode().strip())
+
+                        # Calculate chunk duration based on file size ratio
+                        # If 27MB = X seconds, then 20MB = X * (20/27) seconds
+                        chunk_duration = total_duration * (CHUNK_SIZE_MB / file_size_mb)
+                        chunk_duration = max(60, min(chunk_duration, 600))  # Between 1-10 minutes
+                        num_chunks = math.ceil(total_duration / chunk_duration)
+
+                        print(f"📦 Splitting into {num_chunks} chunks of ~{chunk_duration:.0f}s each...")
+
+                        all_segments = []
+                        time_offset = 0.0
+
+                        for i in range(num_chunks):
+                            start_time = i * chunk_duration
+                            chunk_path = f"{input_path}_chunk{i}.mp3"
+
+                            # Extract chunk with ffmpeg (convert to mp3 for consistent handling)
+                            extract_result = subprocess.run([
+                                "ffmpeg", "-y", "-i", input_path,
+                                "-ss", str(start_time),
+                                "-t", str(chunk_duration),
+                                "-acodec", "libmp3lame", "-q:a", "2",  # High quality MP3
+                                chunk_path
+                            ], capture_output=True, timeout=120)
+
+                            if extract_result.returncode != 0:
+                                print(f"⚠️ Failed to extract chunk {i}: {extract_result.stderr.decode()[:100]}")
+                                continue
+
+                            # Read chunk and transcribe
+                            with open(chunk_path, "rb") as f_chunk:
+                                chunk_data = f_chunk.read()
+
+                            print(f"📝 Transcribing chunk {i+1}/{num_chunks} ({len(chunk_data)/1024/1024:.1f}MB)...")
+                            chunk_result = await transcribe_audio(client, chunk_data, f"chunk{i}.mp3", "audio/mpeg")
+
+                            # Adjust segment timestamps by offset
+                            for seg in chunk_result.get("segments", []):
+                                seg["start"] += time_offset
+                                seg["end"] += time_offset
+                                all_segments.append(seg)
+
+                            time_offset = start_time + chunk_duration
+
+                            # Cleanup chunk
+                            try:
+                                os.unlink(chunk_path)
+                            except:
+                                pass
+
+                        # Combine results
+                        result = {
+                            "segments": all_segments,
+                            "duration": total_duration,
+                            "language": chunk_result.get("language", "unknown") if all_segments else "unknown",
+                        }
+                        print(f"✅ Combined {len(all_segments)} segments from {num_chunks} chunks")
+
+                    finally:
+                        # Cleanup input file
+                        try:
+                            os.unlink(input_path)
+                        except:
+                            pass
 
             except httpx.TimeoutException:
                 raise HTTPException(status_code=504, detail="Transcription timed out")
             except HTTPException:
                 raise
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
 
         # Extract segments from Whisper response
