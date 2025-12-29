@@ -1563,7 +1563,7 @@ class AnalyzeRequest(BaseModel):
     upload_id: str
     role_mappings: List[RoleMapping]
     provider_language: str = "en"
-    patient_language: str = "es"
+    patient_language: str = "auto"  # Auto-detect by default
 
 
 # Store uploaded recordings temporarily (in production, use Redis or S3)
@@ -1574,21 +1574,24 @@ uploaded_recordings: Dict[str, Dict] = {}
 async def upload_recording(
     audio: UploadFile = File(...),
     provider_language: str = Form(default="en"),
-    patient_language: str = Form(default="es"),
+    patient_language: str = Form(default="auto"),  # Auto-detect by default
     num_speakers: Optional[int] = Form(default=None),
 ):
     """
     Upload an audio recording for analysis.
 
-    1. Performs speaker diarization using pyannote-audio (voice fingerprinting)
+    1. Performs speaker diarization using Resemblyzer (voice fingerprinting)
     2. Transcribes the audio using Groq Whisper with segment timestamps
     3. Aligns transcription with speaker diarization
     4. Returns segments with speaker IDs for role assignment
 
-    Speaker detection uses neural network-based voice embeddings (pyannote-audio)
+    Speaker detection uses neural network-based voice embeddings (Resemblyzer)
     to identify unique speakers based on voice characteristics (pitch, timbre,
     speaking patterns), not pause duration. This correctly handles speakers
     who talk in rapid succession.
+
+    Language support: Whisper supports 99 languages. Use "auto" for automatic
+    language detection, or specify an ISO 639-1 code (e.g., "en", "es", "zh").
 
     The user can then map speakers to roles (provider, patient, interpreter)
     and call /analyze-recording to run the tribunal evaluation.
