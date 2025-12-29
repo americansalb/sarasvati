@@ -10,6 +10,12 @@ from .providers import (
     GroqProvider,
     OpenAIProvider,
 )
+from .diarization import (
+    SpeakerDiarizer,
+    DiarizedSegment,
+    DiarizationResult,
+    align_transcription_with_diarization,
+)
 
 __all__ = [
     "ASRProvider",
@@ -20,4 +26,8 @@ __all__ = [
     "asr_config",
     "GroqProvider",
     "OpenAIProvider",
+    "SpeakerDiarizer",
+    "DiarizedSegment",
+    "DiarizationResult",
+    "align_transcription_with_diarization",
 ]

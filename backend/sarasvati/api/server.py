@@ -38,6 +38,7 @@ from ..core.state import (
 from ..core.graph import SarasvatiEngine, create_engine
 from ..asr.providers import ASRProviderFactory, asr_config, ASRBackend, EnsembleASR
 from ..asr.translation import TranslationService, EnsembleTranslation
+from ..asr.diarization import SpeakerDiarizer, align_transcription_with_diarization
 
 logger = logging.getLogger(__name__)
 
@@ -1574,16 +1575,27 @@ async def upload_recording(
     audio: UploadFile = File(...),
     provider_language: str = Form(default="en"),
     patient_language: str = Form(default="es"),
+    num_speakers: Optional[int] = Form(default=None),
 ):
     """
     Upload an audio recording for analysis.
 
-    1. Transcribes the audio using Groq Whisper with word-level timestamps
-    2. Detects speaker changes based on pauses and acoustic patterns
-    3. Returns segments with speaker IDs for role assignment
+    1. Performs speaker diarization using pyannote-audio (voice fingerprinting)
+    2. Transcribes the audio using Groq Whisper with segment timestamps
+    3. Aligns transcription with speaker diarization
+    4. Returns segments with speaker IDs for role assignment
+
+    Speaker detection uses neural network-based voice embeddings (pyannote-audio)
+    to identify unique speakers based on voice characteristics (pitch, timbre,
+    speaking patterns), not pause duration. This correctly handles speakers
+    who talk in rapid succession.
 
     The user can then map speakers to roles (provider, patient, interpreter)
     and call /analyze-recording to run the tribunal evaluation.
+
+    Optional params:
+        num_speakers: If you know the exact number of speakers, provide it
+                      for better diarization accuracy
     """
     upload_id = f"upload_{uuid.uuid4().hex[:12]}"
 
@@ -1598,6 +1610,19 @@ async def upload_recording(
     groq_api_key = os.getenv("GROQ_API_KEY", "")
     if not groq_api_key:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+
+    # Run speaker diarization and transcription in parallel
+    print("🔊 Running speaker diarization (voice fingerprinting)...")
+
+    # Start diarization task
+    diarization_task = asyncio.create_task(
+        SpeakerDiarizer.diarize(
+            audio_data,
+            num_speakers=num_speakers,
+            min_speakers=2,  # Medical interpretation: provider, patient, interpreter
+            max_speakers=4,  # Allow for additional participants
+        )
+    )
 
     # Transcribe with Groq Whisper - request verbose JSON for timestamps
     async with httpx.AsyncClient() as client:
@@ -1632,46 +1657,63 @@ async def upload_recording(
 
     print(f"📝 Transcribed {len(whisper_segments)} segments, duration: {duration:.1f}s, language: {detected_language}")
 
-    # Detect speakers based on pause patterns and segment characteristics
-    # Simple heuristic: Long pause (>1.5s) = potential speaker change
+    # Wait for diarization to complete
+    try:
+        diarization = await diarization_task
+        print(f"🔊 Diarization complete: {diarization.num_speakers} speakers detected (method: {diarization.method})")
+    except Exception as e:
+        print(f"⚠️ Diarization failed: {e}, falling back to basic detection")
+        # Create fallback diarization result
+        from ..asr.diarization import DiarizationResult, DiarizedSegment
+        diarization = DiarizationResult(
+            segments=[],
+            num_speakers=1,
+            duration=duration,
+            method="fallback",
+        )
+
+    # Align transcription with diarization
+    if diarization.method == "pyannote" and diarization.segments:
+        # Use voice-based speaker assignment
+        aligned = align_transcription_with_diarization(whisper_segments, diarization)
+        speakers_seen = set(speaker for _, speaker in aligned)
+    else:
+        # Fallback: Use pause-based heuristic (less accurate)
+        print("⚠️ Using fallback pause-based speaker detection")
+        aligned = []
+        current_speaker = "speaker_1"
+        speakers_seen = {"speaker_1"}
+        last_end_time = 0.0
+
+        for i, seg in enumerate(whisper_segments):
+            start_time = seg.get("start", 0.0)
+            pause_duration = start_time - last_end_time
+
+            # Long pause (>1.5s) suggests speaker change
+            if i > 0 and pause_duration > 1.5:
+                speaker_num = (int(current_speaker.split("_")[1]) % 3) + 1
+                current_speaker = f"speaker_{speaker_num}"
+                speakers_seen.add(current_speaker)
+
+            aligned.append((seg, current_speaker))
+            last_end_time = seg.get("end", 0.0)
+
+    # Build output segments
     segments: List[UploadedSegment] = []
-    current_speaker = "speaker_1"
-    speaker_count = 1
-    speakers_seen = {"speaker_1"}
-    last_end_time = 0.0
-
-    for i, seg in enumerate(whisper_segments):
-        start_time = seg.get("start", 0.0)
-        end_time = seg.get("end", 0.0)
+    for i, (seg, speaker_id) in enumerate(aligned):
         text = seg.get("text", "").strip()
-
         if not text:
             continue
 
-        # Check for speaker change based on pause
-        pause_duration = start_time - last_end_time
-
-        # Heuristics for speaker change:
-        # 1. Long pause (>1.5s) suggests speaker change
-        # 2. Very short segments after pause often indicate new speaker
-        if i > 0 and pause_duration > 1.5:
-            # Likely speaker change - cycle through speakers
-            speaker_num = (int(current_speaker.split("_")[1]) % 3) + 1
-            current_speaker = f"speaker_{speaker_num}"
-            if current_speaker not in speakers_seen:
-                speakers_seen.add(current_speaker)
-                speaker_count = max(speaker_count, speaker_num)
-
         segment = UploadedSegment(
             segment_id=f"seg_{i:04d}",
-            speaker_id=current_speaker,
-            start_time=start_time,
-            end_time=end_time,
+            speaker_id=speaker_id,
+            start_time=seg.get("start", 0.0),
+            end_time=seg.get("end", 0.0),
             text=text,
             detected_language=detected_language,
         )
         segments.append(segment)
-        last_end_time = end_time
 
     # Store for later analysis
     uploaded_recordings[upload_id] = {
@@ -1681,11 +1723,12 @@ async def upload_recording(
         "provider_language": provider_language,
         "patient_language": patient_language,
         "audio_data": audio_data,  # Keep for potential re-processing
+        "diarization_method": diarization.method,
     }
 
     detected_speakers = sorted(list(speakers_seen))
 
-    print(f"✅ Upload complete: {upload_id}, {len(segments)} segments, {len(detected_speakers)} speakers detected")
+    print(f"✅ Upload complete: {upload_id}, {len(segments)} segments, {len(detected_speakers)} speakers (via {diarization.method})")
 
     return UploadResponse(
         upload_id=upload_id,

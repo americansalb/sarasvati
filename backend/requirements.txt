@@ -40,6 +40,10 @@ typing-extensions>=4.8.0
 python-dotenv>=1.0.0  # For environment variables
 pydantic>=2.0.0       # For data validation
 
+# Speaker Diarization (voice fingerprinting)
+pyannote.audio>=3.1.0
+torchaudio>=2.0.0
+
 # Testing (for future)
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
