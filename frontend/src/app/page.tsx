@@ -1384,21 +1384,7 @@ export default function DashboardPage() {
                   Select all languages spoken in this recording. This helps match speakers to languages.
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {[
-                    { code: "en", name: "English" },
-                    { code: "es", name: "Spanish" },
-                    { code: "fa", name: "Farsi/Persian" },
-                    { code: "ar", name: "Arabic" },
-                    { code: "zh", name: "Chinese" },
-                    { code: "vi", name: "Vietnamese" },
-                    { code: "ko", name: "Korean" },
-                    { code: "tl", name: "Tagalog" },
-                    { code: "hi", name: "Hindi" },
-                    { code: "gu", name: "Gujarati" },
-                    { code: "pt", name: "Portuguese" },
-                    { code: "ru", name: "Russian" },
-                    { code: "fr", name: "French" },
-                  ].map(lang => {
+                  {LANGUAGES.filter(lang => lang.code !== "auto").map(lang => {
                     const storedLangs = uploadState.roleMappings._languagesPresent;
                     const currentLangs = Array.isArray(storedLangs) ? storedLangs : ["en"];
                     const isSelected = currentLangs.includes(lang.code) ||
