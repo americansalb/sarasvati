@@ -1550,12 +1550,21 @@ class UploadedSegment(BaseModel):
     detected_language: Optional[str] = None
 
 
+class SpeakerLanguageInfo(BaseModel):
+    """Language info for a speaker based on their segments."""
+    speaker_id: str
+    primary_language: str  # Most common language spoken by this speaker
+    segment_count: int
+    sample_text: str  # First bit of text for identification
+
+
 class UploadResponse(BaseModel):
     """Response from audio upload with detected segments."""
     upload_id: str
     duration: float
     segments: List[UploadedSegment]
     detected_speakers: List[str]  # ["speaker_1", "speaker_2", "speaker_3"]
+    speaker_language_info: List[SpeakerLanguageInfo]  # Language info per speaker for grouping
 
 
 class RoleMapping(BaseModel):
@@ -1672,6 +1681,9 @@ async def upload_recording(
 
         async with httpx.AsyncClient() as client:
             try:
+                # CRITICAL: Use language=auto for raw transcription
+                # If we specify a language, Whisper may translate instead of transcribe
+                # We want RAW text in whatever language the speaker used
                 response = await client.post(
                     "https://api.groq.com/openai/v1/audio/transcriptions",
                     headers={"Authorization": f"Bearer {groq_api_key}"},
@@ -1680,6 +1692,8 @@ async def upload_recording(
                         "model": "whisper-large-v3",
                         "response_format": "verbose_json",
                         "timestamp_granularities[]": "segment",
+                        # Do NOT specify language - let Whisper auto-detect
+                        # This ensures we get RAW transcription, not translation
                     },
                     timeout=300.0,
                 )
@@ -1737,10 +1751,12 @@ async def upload_recording(
 
         if use_fallback:
             # Fallback: Use pause-based heuristic (less accurate)
-            print("⚠️ Using fallback pause-based speaker detection")
+            # IMPORTANT: No speaker limit - detect as many as pauses suggest
+            print("⚠️ Using fallback pause-based speaker detection (no speaker limit)")
             aligned = []
             current_speaker = "speaker_1"
             speakers_seen = {"speaker_1"}
+            speaker_count = 1
             last_end_time = 0.0
 
             for i, seg in enumerate(whisper_segments):
@@ -1748,9 +1764,10 @@ async def upload_recording(
                 pause_duration = start_time - last_end_time
 
                 # Long pause (>1.5s) suggests speaker change
+                # Don't limit speakers - could be 2, 3, 4, 5+ speakers
                 if i > 0 and pause_duration > 1.5:
-                    speaker_num = (int(current_speaker.split("_")[1]) % 3) + 1
-                    current_speaker = f"speaker_{speaker_num}"
+                    speaker_count += 1
+                    current_speaker = f"speaker_{speaker_count}"
                     speakers_seen.add(current_speaker)
 
                 aligned.append((seg, current_speaker))
@@ -1786,13 +1803,61 @@ async def upload_recording(
 
         detected_speakers = sorted(list(speakers_seen))
 
+        # Build speaker language info for grouping suggestions
+        # Group segments by speaker and detect primary language for each
+        speaker_segments: Dict[str, List[UploadedSegment]] = {}
+        for seg in segments:
+            if seg.speaker_id not in speaker_segments:
+                speaker_segments[seg.speaker_id] = []
+            speaker_segments[seg.speaker_id].append(seg)
+
+        speaker_language_info: List[SpeakerLanguageInfo] = []
+        for speaker_id in detected_speakers:
+            segs = speaker_segments.get(speaker_id, [])
+            if not segs:
+                continue
+
+            # Detect language based on script analysis of segments
+            lang_counts: Dict[str, int] = {}
+            sample_text = ""
+            for seg in segs:
+                # Use script detection to infer language
+                script = detect_script(seg.text)
+                # Map script to likely language
+                script_to_lang = {
+                    "latin": "en",  # Could be en, es, fr, etc - assume en
+                    "gujarati": "gu",
+                    "devanagari": "hi",
+                    "arabic": "ar",
+                    "chinese": "zh",
+                    "sinhala": "si",
+                    "thai": "th",
+                }
+                lang = script_to_lang.get(script, seg.detected_language or "unknown")
+                lang_counts[lang] = lang_counts.get(lang, 0) + 1
+                if not sample_text:
+                    sample_text = seg.text[:50]
+
+            # Get primary language (most common)
+            primary_lang = max(lang_counts, key=lambda k: lang_counts[k]) if lang_counts else "unknown"
+
+            speaker_language_info.append(SpeakerLanguageInfo(
+                speaker_id=speaker_id,
+                primary_language=primary_lang,
+                segment_count=len(segs),
+                sample_text=sample_text + ("..." if len(sample_text) >= 50 else ""),
+            ))
+
         print(f"✅ Upload complete: {upload_id}, {len(segments)} segments, {len(detected_speakers)} speakers (via {diarization.method})")
+        for info in speaker_language_info:
+            print(f"   {info.speaker_id}: {info.primary_language} ({info.segment_count} segments)")
 
         return UploadResponse(
             upload_id=upload_id,
             duration=duration,
             segments=segments,
             detected_speakers=detected_speakers,
+            speaker_language_info=speaker_language_info,
         )
 
     except HTTPException:
@@ -1821,17 +1886,27 @@ async def analyze_recording(request: AnalyzeRequest):
     if not recording:
         raise HTTPException(status_code=404, detail=f"Recording not found: {request.upload_id}")
 
-    # Build role mapping lookup
-    role_map = {rm.speaker_id: rm.role for rm in request.role_mappings}
+    # Build role mapping lookup (filter out "unassigned" roles)
+    role_map = {
+        rm.speaker_id: rm.role
+        for rm in request.role_mappings
+        if rm.role != "unassigned"
+    }
 
-    # Validate all speakers are mapped
+    # Get segments and filter to only include mapped speakers
     segments = recording["segments"]
     speakers_in_recording = set(s["speaker_id"] for s in segments)
-    unmapped = speakers_in_recording - set(role_map.keys())
+    mapped_speakers = set(role_map.keys())
+
+    # Allow unmapped speakers - they will be skipped during analysis
+    unmapped = speakers_in_recording - mapped_speakers
     if unmapped:
+        print(f"⚠️ Skipping unmapped speakers: {unmapped}")
+
+    if not mapped_speakers:
         raise HTTPException(
             status_code=400,
-            detail=f"Unmapped speakers: {unmapped}. Please assign roles to all speakers."
+            detail="No speakers assigned to roles. Please assign at least one speaker."
         )
 
     print(f"🔍 Analyzing recording {request.upload_id} with mappings: {role_map}")
@@ -1855,8 +1930,12 @@ async def analyze_recording(request: AnalyzeRequest):
     }
 
     # Convert segments to TranscriptSegments with assigned roles
+    # Skip segments from unmapped speakers
     for seg in segments:
-        role = role_map.get(seg["speaker_id"], "unknown")
+        role = role_map.get(seg["speaker_id"])
+        if not role:
+            # Skip unmapped speakers
+            continue
 
         transcript = TranscriptSegment(
             segment_id=seg["segment_id"],

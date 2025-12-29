@@ -519,6 +519,12 @@ export default function DashboardPage() {
       detected_language?: string;
     }>;
     detectedSpeakers: string[];
+    speakerLanguageInfo: Array<{
+      speaker_id: string;
+      primary_language: string;
+      segment_count: number;
+      sample_text: string;
+    }>;
     roleMappings: Record<string, string>;
     results: {
       transcripts: Array<unknown>;
@@ -532,6 +538,7 @@ export default function DashboardPage() {
     uploadId: null,
     segments: [],
     detectedSpeakers: [],
+    speakerLanguageInfo: [],
     roleMappings: {},
     results: null,
     error: null,
@@ -738,11 +745,43 @@ export default function DashboardPage() {
 
       const data = await response.json();
 
-      // Auto-assign roles based on speaker order (can be changed by user)
+      // Smart auto-assign based on language detection:
+      // - English speakers -> likely provider or interpreter
+      // - Non-English speakers -> likely patient or interpreter
+      // But don't assume - let the user confirm
       const autoMappings: Record<string, string> = {};
-      const roles = ["provider", "interpreter", "patient"];
-      data.detected_speakers.forEach((speaker: string, idx: number) => {
-        autoMappings[speaker] = roles[idx % roles.length];
+      const langInfo = data.speaker_language_info || [];
+
+      // Group by language
+      const englishSpeakers: string[] = [];
+      const nonEnglishSpeakers: string[] = [];
+
+      langInfo.forEach((info: { speaker_id: string; primary_language: string }) => {
+        if (info.primary_language === "en") {
+          englishSpeakers.push(info.speaker_id);
+        } else {
+          nonEnglishSpeakers.push(info.speaker_id);
+        }
+      });
+
+      // Auto-suggest roles but leave as "unassigned" for non-obvious cases
+      data.detected_speakers.forEach((speaker: string) => {
+        const isEnglish = englishSpeakers.includes(speaker);
+        // For 2 speakers: likely provider + patient
+        // For 3 speakers: likely provider + interpreter + patient
+        // For 4+: don't assume, leave unassigned
+        if (data.detected_speakers.length <= 3) {
+          const idx = data.detected_speakers.indexOf(speaker);
+          if (data.detected_speakers.length === 2) {
+            autoMappings[speaker] = idx === 0 ? "provider" : "patient";
+          } else if (data.detected_speakers.length === 3) {
+            const roles = ["provider", "interpreter", "patient"];
+            autoMappings[speaker] = roles[idx];
+          }
+        } else {
+          // 4+ speakers - leave unassigned, user must assign
+          autoMappings[speaker] = "unassigned";
+        }
       });
 
       setUploadState(prev => ({
@@ -751,6 +790,7 @@ export default function DashboardPage() {
         uploadId: data.upload_id,
         segments: data.segments,
         detectedSpeakers: data.detected_speakers,
+        speakerLanguageInfo: data.speaker_language_info || [],
         roleMappings: autoMappings,
       }));
     } catch (error) {
@@ -765,6 +805,19 @@ export default function DashboardPage() {
   const handleAnalyzeRecording = async () => {
     if (!uploadState.uploadId) return;
 
+    // Filter out unassigned speakers
+    const assignedMappings = Object.entries(uploadState.roleMappings)
+      .filter(([, role]) => role !== "unassigned")
+      .map(([speaker_id, role]) => ({ speaker_id, role }));
+
+    if (assignedMappings.length === 0) {
+      setUploadState(prev => ({
+        ...prev,
+        error: "Please assign at least one speaker to a role before analyzing.",
+      }));
+      return;
+    }
+
     setUploadState(prev => ({ ...prev, isAnalyzing: true, error: null }));
 
     try {
@@ -773,10 +826,7 @@ export default function DashboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           upload_id: uploadState.uploadId,
-          role_mappings: Object.entries(uploadState.roleMappings).map(([speaker_id, role]) => ({
-            speaker_id,
-            role,
-          })),
+          role_mappings: assignedMappings,
           provider_language: providerLang,
           patient_language: patientLang,
         }),
@@ -816,10 +866,39 @@ export default function DashboardPage() {
       uploadId: null,
       segments: [],
       detectedSpeakers: [],
+      speakerLanguageInfo: [],
       roleMappings: {},
       results: null,
       error: null,
     });
+  };
+
+  // Merge two speakers into one
+  const mergeSpeakers = (keepSpeaker: string, removeSpeaker: string) => {
+    setUploadState(prev => ({
+      ...prev,
+      segments: prev.segments.map(seg =>
+        seg.speaker_id === removeSpeaker
+          ? { ...seg, speaker_id: keepSpeaker }
+          : seg
+      ),
+      detectedSpeakers: prev.detectedSpeakers.filter(s => s !== removeSpeaker),
+      speakerLanguageInfo: prev.speakerLanguageInfo.filter(s => s.speaker_id !== removeSpeaker),
+      roleMappings: Object.fromEntries(
+        Object.entries(prev.roleMappings).filter(([k]) => k !== removeSpeaker)
+      ),
+    }));
+  };
+
+  // Get language info for a speaker
+  const getSpeakerLangInfo = (speakerId: string) => {
+    return uploadState.speakerLanguageInfo.find(s => s.speaker_id === speakerId);
+  };
+
+  // Get language name from code
+  const getLangName = (code: string) => {
+    const lang = LANGUAGES.find(l => l.code === code);
+    return lang?.name || code;
   };
 
   return (
@@ -1395,36 +1474,78 @@ export default function DashboardPage() {
                       </button>
                     </div>
                     <p className="text-gray-400 text-sm mb-4">
-                      We detected {uploadState.detectedSpeakers.length} speakers. Assign each to a role:
+                      We detected {uploadState.detectedSpeakers.length} speaker{uploadState.detectedSpeakers.length !== 1 ? "s" : ""}. Assign each to a role:
                     </p>
-                    <div className="grid gap-3">
-                      {uploadState.detectedSpeakers.map((speaker) => (
-                        <div key={speaker} className="flex items-center gap-4 bg-gray-900/50 p-3 rounded-lg">
-                          <span className="font-medium text-gray-300 w-24">{speaker.replace("_", " ").toUpperCase()}</span>
-                          <div className="flex gap-2">
-                            {["provider", "interpreter", "patient"].map((role) => (
+
+                    {/* Merge suggestion for speakers with same language */}
+                    {uploadState.speakerLanguageInfo.length > 1 && (() => {
+                      const langGroups: Record<string, string[]> = {};
+                      uploadState.speakerLanguageInfo.forEach(info => {
+                        if (!langGroups[info.primary_language]) langGroups[info.primary_language] = [];
+                        langGroups[info.primary_language].push(info.speaker_id);
+                      });
+                      const mergeable = Object.entries(langGroups).filter(([, speakers]) => speakers.length > 1);
+                      if (mergeable.length === 0) return null;
+                      return (
+                        <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 mb-4">
+                          <p className="text-yellow-300 text-sm font-medium mb-2">💡 Same-language speakers detected:</p>
+                          {mergeable.map(([lang, speakers]) => (
+                            <div key={lang} className="flex items-center gap-2 text-sm text-gray-300">
+                              <span>{getLangName(lang)}:</span>
+                              <span>{speakers.join(", ")}</span>
                               <button
-                                key={role}
-                                onClick={() => updateRoleMapping(speaker, role)}
-                                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                                  uploadState.roleMappings[speaker] === role
-                                    ? role === "provider" ? "bg-blue-600 text-white" :
-                                      role === "interpreter" ? "bg-purple-600 text-white" :
-                                      "bg-green-600 text-white"
-                                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                                }`}
+                                onClick={() => mergeSpeakers(speakers[0], speakers[1])}
+                                className="ml-2 px-2 py-1 bg-yellow-600 hover:bg-yellow-700 rounded text-xs"
                               >
-                                {role === "provider" ? "🩺 Provider" :
-                                 role === "interpreter" ? "🗣️ Interpreter" :
-                                 "👤 Patient"}
+                                Merge
                               </button>
-                            ))}
-                          </div>
-                          <span className="text-gray-500 text-sm ml-auto">
-                            {uploadState.segments.filter(s => s.speaker_id === speaker).length} segments
-                          </span>
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      );
+                    })()}
+
+                    <div className="grid gap-3">
+                      {uploadState.detectedSpeakers.map((speaker) => {
+                        const langInfo = getSpeakerLangInfo(speaker);
+                        const currentRole = uploadState.roleMappings[speaker] || "unassigned";
+                        return (
+                          <div key={speaker} className="bg-gray-900/50 p-3 rounded-lg">
+                            <div className="flex items-center gap-4 mb-2">
+                              <span className="font-medium text-gray-300 w-24">{speaker.replace("_", " ").toUpperCase()}</span>
+                              {langInfo && (
+                                <span className="text-xs px-2 py-1 bg-gray-700 rounded text-gray-400">
+                                  {getLangName(langInfo.primary_language)} · {langInfo.segment_count} seg
+                                </span>
+                              )}
+                              <span className="text-gray-500 text-xs ml-auto">
+                                {langInfo?.sample_text || ""}
+                              </span>
+                            </div>
+                            <div className="flex gap-2 flex-wrap">
+                              {["provider", "interpreter", "patient", "unassigned"].map((role) => (
+                                <button
+                                  key={role}
+                                  onClick={() => updateRoleMapping(speaker, role)}
+                                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                                    currentRole === role
+                                      ? role === "provider" ? "bg-blue-600 text-white" :
+                                        role === "interpreter" ? "bg-purple-600 text-white" :
+                                        role === "patient" ? "bg-green-600 text-white" :
+                                        "bg-gray-600 text-white"
+                                      : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                                  }`}
+                                >
+                                  {role === "provider" ? "🩺 Provider" :
+                                   role === "interpreter" ? "🗣️ Interpreter" :
+                                   role === "patient" ? "👤 Patient" :
+                                   "❓ Skip"}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
