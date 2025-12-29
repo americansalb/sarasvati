@@ -787,10 +787,10 @@ export default function DashboardPage() {
                           </span>
                         )}
                       </div>
-                      <p className="text-gray-200">{t.english_translation || t.text}</p>
+                      <p className="text-gray-200">{t.text}</p>
                       {t.english_translation && t.english_translation !== t.text && (
-                        <p className="text-gray-500 text-sm mt-1">
-                          Original: {t.text}
+                        <p className="text-green-400/80 text-sm mt-1">
+                          → English: {t.english_translation}
                         </p>
                       )}
                     </div>
@@ -952,10 +952,10 @@ export default function DashboardPage() {
                           <span className="text-xs text-gray-500">[{t.detected_language}]</span>
                         )}
                       </div>
-                      <p className="text-gray-200">{t.english_translation || t.text}</p>
+                      <p className="text-gray-200">{t.text}</p>
                       {t.english_translation && t.english_translation !== t.text && (
-                        <p className="text-gray-500 text-sm mt-1">
-                          Original: {t.text}
+                        <p className="text-green-400/80 text-sm mt-1">
+                          → English: {t.english_translation}
                         </p>
                       )}
                     </div>

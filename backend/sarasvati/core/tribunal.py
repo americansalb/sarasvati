@@ -448,25 +448,27 @@ class TranslationTribunal:
                 )
                 debate_log.add_turn(turn)
 
-            # Check for consensus (2/3 agreement)
-            translation_values = list(translations.values())
-            for trans in translation_values:
-                count = sum(1 for t in translation_values if self._similar(t, trans))
-                if count >= 2:
-                    debate_log.consensus_reached = True
-                    debate_log.final_consensus = trans
-                    debate_log.rounds_taken = round_num
-                    debate_log.end_time = datetime.utcnow()
+            # Check for consensus (2/3 agreement) - BUT only after round 2
+            # This ensures at least one round of actual debate happens
+            if round_num >= 2:
+                translation_values = list(translations.values())
+                for trans in translation_values:
+                    count = sum(1 for t in translation_values if self._similar(t, trans))
+                    if count >= 2:
+                        debate_log.consensus_reached = True
+                        debate_log.final_consensus = trans
+                        debate_log.rounds_taken = round_num
+                        debate_log.end_time = datetime.utcnow()
 
-                    print(f"\n✅ CONSENSUS REACHED in Round {round_num}!")
-                    print(f"   Translation: {trans[:100]}...")
+                        print(f"\n✅ CONSENSUS REACHED in Round {round_num}!")
+                        print(f"   Translation: {trans[:100]}...")
 
-                    return {
-                        "consensus_translation": trans,
-                        "consensus_reached": True,
-                        "debate_log": debate_log,
-                        "individual_translations": translations,
-                    }
+                        return {
+                            "consensus_translation": trans,
+                            "consensus_reached": True,
+                            "debate_log": debate_log,
+                            "individual_translations": translations,
+                        }
 
             # No consensus yet - continue debate if minds are changing
             if round_num > 1:
@@ -589,37 +591,39 @@ class ErrorTribunal:
                 )
                 debate_log.add_turn(turn)
 
-            # Check for verdict consensus (2/3)
-            verdicts = [e.get("verdict", "") for e in evaluations.values()]
-            for verdict in set(verdicts):
-                if verdicts.count(verdict) >= 2:
-                    # Consensus on verdict - merge errors from agreeing agents
-                    agreeing_evals = [e for e in evaluations.values() if e.get("verdict") == verdict]
-                    merged_errors = []
-                    seen_descriptions = set()
-                    for e in agreeing_evals:
-                        for err in e.get("errors", []):
-                            desc = err.get("description", "")
-                            if desc not in seen_descriptions:
-                                merged_errors.append(err)
-                                seen_descriptions.add(desc)
+            # Check for verdict consensus (2/3) - BUT only after round 2
+            # This ensures at least one round of actual debate happens
+            if round_num >= 2:
+                verdicts = [e.get("verdict", "") for e in evaluations.values()]
+                for verdict in set(verdicts):
+                    if verdicts.count(verdict) >= 2:
+                        # Consensus on verdict - merge errors from agreeing agents
+                        agreeing_evals = [e for e in evaluations.values() if e.get("verdict") == verdict]
+                        merged_errors = []
+                        seen_descriptions = set()
+                        for e in agreeing_evals:
+                            for err in e.get("errors", []):
+                                desc = err.get("description", "")
+                                if desc not in seen_descriptions:
+                                    merged_errors.append(err)
+                                    seen_descriptions.add(desc)
 
-                    debate_log.consensus_reached = True
-                    debate_log.final_consensus = verdict
-                    debate_log.rounds_taken = round_num
-                    debate_log.end_time = datetime.utcnow()
+                        debate_log.consensus_reached = True
+                        debate_log.final_consensus = verdict
+                        debate_log.rounds_taken = round_num
+                        debate_log.end_time = datetime.utcnow()
 
-                    print(f"\n✅ CONSENSUS REACHED in Round {round_num}!")
-                    print(f"   Verdict: {verdict}")
-                    print(f"   Errors: {len(merged_errors)}")
+                        print(f"\n✅ CONSENSUS REACHED in Round {round_num}!")
+                        print(f"   Verdict: {verdict}")
+                        print(f"   Errors: {len(merged_errors)}")
 
-                    return {
-                        "consensus_verdict": verdict,
-                        "consensus_errors": merged_errors,
-                        "consensus_reached": True,
-                        "debate_log": debate_log,
-                        "individual_evaluations": evaluations,
-                    }
+                        return {
+                            "consensus_verdict": verdict,
+                            "consensus_errors": merged_errors,
+                            "consensus_reached": True,
+                            "debate_log": debate_log,
+                            "individual_evaluations": evaluations,
+                        }
 
             # Check if anyone changed mind
             if round_num > 1:
