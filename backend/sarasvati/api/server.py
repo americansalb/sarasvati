@@ -1602,143 +1602,175 @@ async def upload_recording(
     """
     upload_id = f"upload_{uuid.uuid4().hex[:12]}"
 
-    # Read audio file
-    audio_data = await audio.read()
-    filename = audio.filename or "recording.webm"
-    content_type = audio.content_type or "audio/webm"
+    try:
+        # Read audio file
+        audio_data = await audio.read()
+        filename = audio.filename or "recording.webm"
+        content_type = audio.content_type or "audio/webm"
 
-    print(f"📁 Received audio upload: {filename} ({len(audio_data)} bytes)")
+        # Validate file size (max 100MB)
+        if len(audio_data) > 100 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large. Maximum size is 100MB.")
 
-    # Get API key
-    groq_api_key = os.getenv("GROQ_API_KEY", "")
-    if not groq_api_key:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+        if len(audio_data) < 1000:
+            raise HTTPException(status_code=400, detail="File too small. Please upload a valid audio file.")
 
-    # Run speaker diarization and transcription in parallel
-    print("🔊 Running speaker diarization (voice fingerprinting)...")
+        print(f"📁 Received audio upload: {filename} ({len(audio_data)} bytes)")
 
-    # Start diarization task
-    diarization_task = asyncio.create_task(
-        SpeakerDiarizer.diarize(
-            audio_data,
-            num_speakers=num_speakers,
-            min_speakers=2,  # Medical interpretation: provider, patient, interpreter
-            max_speakers=4,  # Allow for additional participants
-        )
-    )
+        # Get API key
+        groq_api_key = os.getenv("GROQ_API_KEY", "")
+        if not groq_api_key:
+            raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
 
-    # Transcribe with Groq Whisper - request verbose JSON for timestamps
-    async with httpx.AsyncClient() as client:
+        # Run speaker diarization and transcription in parallel
+        print("🔊 Running speaker diarization (voice fingerprinting)...")
+
+        # Start diarization task (wrapped to handle errors gracefully)
+        async def safe_diarize():
+            try:
+                return await SpeakerDiarizer.diarize(
+                    audio_data,
+                    num_speakers=num_speakers,
+                    min_speakers=2,
+                    max_speakers=4,
+                )
+            except Exception as e:
+                print(f"⚠️ Diarization error: {e}")
+                from ..asr.diarization import DiarizationResult
+                return DiarizationResult(
+                    segments=[],
+                    num_speakers=1,
+                    duration=0.0,
+                    method="fallback",
+                )
+
+        diarization_task = asyncio.create_task(safe_diarize())
+
+        # Transcribe with Groq Whisper - request verbose JSON for timestamps
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {groq_api_key}"},
+                    files={"file": (filename, audio_data, content_type)},
+                    data={
+                        "model": "whisper-large-v3",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities[]": "segment",
+                    },
+                    timeout=120.0,
+                )
+
+                if response.status_code != 200:
+                    error_text = response.text[:500]  # Truncate long errors
+                    print(f"❌ Groq API error: {error_text}")
+                    raise HTTPException(status_code=500, detail=f"Transcription failed: {error_text}")
+
+                result = response.json()
+
+            except httpx.TimeoutException:
+                raise HTTPException(status_code=504, detail="Transcription timed out")
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
+        # Extract segments from Whisper response
+        whisper_segments = result.get("segments", [])
+        duration = result.get("duration", 0.0)
+        detected_language = result.get("language", "unknown")
+
+        print(f"📝 Transcribed {len(whisper_segments)} segments, duration: {duration:.1f}s, language: {detected_language}")
+
+        # Wait for diarization to complete
         try:
-            response = await client.post(
-                "https://api.groq.com/openai/v1/audio/transcriptions",
-                headers={"Authorization": f"Bearer {groq_api_key}"},
-                files={"file": (filename, audio_data, content_type)},
-                data={
-                    "model": "whisper-large-v3",
-                    "response_format": "verbose_json",
-                    "timestamp_granularities[]": "segment",
-                },
-                timeout=120.0,
+            diarization = await diarization_task
+            print(f"🔊 Diarization complete: {diarization.num_speakers} speakers detected (method: {diarization.method})")
+        except Exception as e:
+            print(f"⚠️ Diarization failed: {e}, falling back to basic detection")
+            # Create fallback diarization result
+            from ..asr.diarization import DiarizationResult, DiarizedSegment
+            diarization = DiarizationResult(
+                segments=[],
+                num_speakers=1,
+                duration=duration,
+                method="fallback",
             )
 
-            if response.status_code != 200:
-                print(f"❌ Groq API error: {response.text}")
-                raise HTTPException(status_code=500, detail=f"Transcription failed: {response.text}")
+        # Align transcription with diarization
+        if diarization.method == "resemblyzer" and diarization.segments:
+            # Use voice-based speaker assignment
+            aligned = align_transcription_with_diarization(whisper_segments, diarization)
+            speakers_seen = set(speaker for _, speaker in aligned)
+        else:
+            # Fallback: Use pause-based heuristic (less accurate)
+            print("⚠️ Using fallback pause-based speaker detection")
+            aligned = []
+            current_speaker = "speaker_1"
+            speakers_seen = {"speaker_1"}
+            last_end_time = 0.0
 
-            result = response.json()
+            for i, seg in enumerate(whisper_segments):
+                start_time = seg.get("start", 0.0)
+                pause_duration = start_time - last_end_time
 
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="Transcription timed out")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+                # Long pause (>1.5s) suggests speaker change
+                if i > 0 and pause_duration > 1.5:
+                    speaker_num = (int(current_speaker.split("_")[1]) % 3) + 1
+                    current_speaker = f"speaker_{speaker_num}"
+                    speakers_seen.add(current_speaker)
 
-    # Extract segments from Whisper response
-    whisper_segments = result.get("segments", [])
-    duration = result.get("duration", 0.0)
-    detected_language = result.get("language", "unknown")
+                aligned.append((seg, current_speaker))
+                last_end_time = seg.get("end", 0.0)
 
-    print(f"📝 Transcribed {len(whisper_segments)} segments, duration: {duration:.1f}s, language: {detected_language}")
+        # Build output segments
+        segments: List[UploadedSegment] = []
+        for i, (seg, speaker_id) in enumerate(aligned):
+            text = seg.get("text", "").strip()
+            if not text:
+                continue
 
-    # Wait for diarization to complete
-    try:
-        diarization = await diarization_task
-        print(f"🔊 Diarization complete: {diarization.num_speakers} speakers detected (method: {diarization.method})")
-    except Exception as e:
-        print(f"⚠️ Diarization failed: {e}, falling back to basic detection")
-        # Create fallback diarization result
-        from ..asr.diarization import DiarizationResult, DiarizedSegment
-        diarization = DiarizationResult(
-            segments=[],
-            num_speakers=1,
+            segment = UploadedSegment(
+                segment_id=f"seg_{i:04d}",
+                speaker_id=speaker_id,
+                start_time=seg.get("start", 0.0),
+                end_time=seg.get("end", 0.0),
+                text=text,
+                detected_language=detected_language,
+            )
+            segments.append(segment)
+
+        # Store for later analysis
+        uploaded_recordings[upload_id] = {
+            "segments": [s.model_dump() for s in segments],
+            "duration": duration,
+            "detected_language": detected_language,
+            "provider_language": provider_language,
+            "patient_language": patient_language,
+            "audio_data": audio_data,  # Keep for potential re-processing
+            "diarization_method": diarization.method,
+        }
+
+        detected_speakers = sorted(list(speakers_seen))
+
+        print(f"✅ Upload complete: {upload_id}, {len(segments)} segments, {len(detected_speakers)} speakers (via {diarization.method})")
+
+        return UploadResponse(
+            upload_id=upload_id,
             duration=duration,
-            method="fallback",
+            segments=segments,
+            detected_speakers=detected_speakers,
         )
 
-    # Align transcription with diarization
-    if diarization.method == "resemblyzer" and diarization.segments:
-        # Use voice-based speaker assignment
-        aligned = align_transcription_with_diarization(whisper_segments, diarization)
-        speakers_seen = set(speaker for _, speaker in aligned)
-    else:
-        # Fallback: Use pause-based heuristic (less accurate)
-        print("⚠️ Using fallback pause-based speaker detection")
-        aligned = []
-        current_speaker = "speaker_1"
-        speakers_seen = {"speaker_1"}
-        last_end_time = 0.0
-
-        for i, seg in enumerate(whisper_segments):
-            start_time = seg.get("start", 0.0)
-            pause_duration = start_time - last_end_time
-
-            # Long pause (>1.5s) suggests speaker change
-            if i > 0 and pause_duration > 1.5:
-                speaker_num = (int(current_speaker.split("_")[1]) % 3) + 1
-                current_speaker = f"speaker_{speaker_num}"
-                speakers_seen.add(current_speaker)
-
-            aligned.append((seg, current_speaker))
-            last_end_time = seg.get("end", 0.0)
-
-    # Build output segments
-    segments: List[UploadedSegment] = []
-    for i, (seg, speaker_id) in enumerate(aligned):
-        text = seg.get("text", "").strip()
-        if not text:
-            continue
-
-        segment = UploadedSegment(
-            segment_id=f"seg_{i:04d}",
-            speaker_id=speaker_id,
-            start_time=seg.get("start", 0.0),
-            end_time=seg.get("end", 0.0),
-            text=text,
-            detected_language=detected_language,
-        )
-        segments.append(segment)
-
-    # Store for later analysis
-    uploaded_recordings[upload_id] = {
-        "segments": [s.model_dump() for s in segments],
-        "duration": duration,
-        "detected_language": detected_language,
-        "provider_language": provider_language,
-        "patient_language": patient_language,
-        "audio_data": audio_data,  # Keep for potential re-processing
-        "diarization_method": diarization.method,
-    }
-
-    detected_speakers = sorted(list(speakers_seen))
-
-    print(f"✅ Upload complete: {upload_id}, {len(segments)} segments, {len(detected_speakers)} speakers (via {diarization.method})")
-
-    return UploadResponse(
-        upload_id=upload_id,
-        duration=duration,
-        segments=segments,
-        detected_speakers=detected_speakers,
-    )
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        # Catch-all for unexpected errors
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Unexpected error in upload-recording: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
 @app.post("/analyze-recording")

@@ -144,15 +144,36 @@ class SpeakerDiarizer:
             logger.warning(f"⚠️ Missing dependency: {e}")
             return cls._fallback_diarization(audio_data)
 
-        # Write audio to temp file
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        # Detect file type from magic bytes
+        file_ext = ".wav"  # default
+        if audio_data[:4] == b'\x00\x00\x00\x1c' or audio_data[:4] == b'\x00\x00\x00\x18':
+            file_ext = ".mp4"
+        elif audio_data[:3] == b'ID3' or audio_data[:2] == b'\xff\xfb':
+            file_ext = ".mp3"
+        elif audio_data[:4] == b'OggS':
+            file_ext = ".ogg"
+        elif audio_data[:4] == b'fLaC':
+            file_ext = ".flac"
+        elif len(audio_data) > 8 and audio_data[4:8] == b'ftyp':
+            file_ext = ".mp4"  # Also catches M4A
+
+        logger.info(f"🔊 Detected audio format: {file_ext}")
+
+        # Write audio to temp file with correct extension
+        with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as f:
             temp_path = f.name
             f.write(audio_data)
 
         try:
-            # Load and preprocess audio
+            # Load and preprocess audio (librosa handles format conversion via ffmpeg)
             logger.info("🔊 Loading audio for diarization...")
-            wav, sr = librosa.load(temp_path, sr=16000)
+            try:
+                wav, sr = librosa.load(temp_path, sr=16000)
+            except Exception as load_err:
+                logger.error(f"❌ Failed to load audio: {load_err}")
+                logger.warning("   Make sure ffmpeg is installed for MP3/MP4 support")
+                return cls._fallback_diarization(audio_data)
+
             duration = len(wav) / sr
 
             if duration < 1.0:
