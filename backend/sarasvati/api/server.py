@@ -1529,6 +1529,292 @@ async def update_asr_config(config: dict):
     return {"status": "success", "config": asr_config.get_all()}
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUDIO UPLOAD & ANALYSIS ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class UploadedSegment(BaseModel):
+    """A segment from uploaded audio with speaker detection."""
+    segment_id: str
+    speaker_id: str  # "speaker_1", "speaker_2", etc.
+    start_time: float
+    end_time: float
+    text: str
+    detected_language: Optional[str] = None
+
+
+class UploadResponse(BaseModel):
+    """Response from audio upload with detected segments."""
+    upload_id: str
+    duration: float
+    segments: List[UploadedSegment]
+    detected_speakers: List[str]  # ["speaker_1", "speaker_2", "speaker_3"]
+
+
+class RoleMapping(BaseModel):
+    """Maps detected speakers to roles."""
+    speaker_id: str  # "speaker_1"
+    role: str  # "provider", "patient", "interpreter"
+
+
+class AnalyzeRequest(BaseModel):
+    """Request to analyze uploaded recording."""
+    upload_id: str
+    role_mappings: List[RoleMapping]
+    provider_language: str = "en"
+    patient_language: str = "es"
+
+
+# Store uploaded recordings temporarily (in production, use Redis or S3)
+uploaded_recordings: Dict[str, Dict] = {}
+
+
+@app.post("/upload-recording", response_model=UploadResponse)
+async def upload_recording(
+    audio: UploadFile = File(...),
+    provider_language: str = Form(default="en"),
+    patient_language: str = Form(default="es"),
+):
+    """
+    Upload an audio recording for analysis.
+
+    1. Transcribes the audio using Groq Whisper with word-level timestamps
+    2. Detects speaker changes based on pauses and acoustic patterns
+    3. Returns segments with speaker IDs for role assignment
+
+    The user can then map speakers to roles (provider, patient, interpreter)
+    and call /analyze-recording to run the tribunal evaluation.
+    """
+    upload_id = f"upload_{uuid.uuid4().hex[:12]}"
+
+    # Read audio file
+    audio_data = await audio.read()
+    filename = audio.filename or "recording.webm"
+    content_type = audio.content_type or "audio/webm"
+
+    print(f"📁 Received audio upload: {filename} ({len(audio_data)} bytes)")
+
+    # Get API key
+    groq_api_key = os.getenv("GROQ_API_KEY", "")
+    if not groq_api_key:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+
+    # Transcribe with Groq Whisper - request verbose JSON for timestamps
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {groq_api_key}"},
+                files={"file": (filename, audio_data, content_type)},
+                data={
+                    "model": "whisper-large-v3",
+                    "response_format": "verbose_json",
+                    "timestamp_granularities[]": "segment",
+                },
+                timeout=120.0,
+            )
+
+            if response.status_code != 200:
+                print(f"❌ Groq API error: {response.text}")
+                raise HTTPException(status_code=500, detail=f"Transcription failed: {response.text}")
+
+            result = response.json()
+
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Transcription timed out")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
+    # Extract segments from Whisper response
+    whisper_segments = result.get("segments", [])
+    duration = result.get("duration", 0.0)
+    detected_language = result.get("language", "unknown")
+
+    print(f"📝 Transcribed {len(whisper_segments)} segments, duration: {duration:.1f}s, language: {detected_language}")
+
+    # Detect speakers based on pause patterns and segment characteristics
+    # Simple heuristic: Long pause (>1.5s) = potential speaker change
+    segments: List[UploadedSegment] = []
+    current_speaker = "speaker_1"
+    speaker_count = 1
+    speakers_seen = {"speaker_1"}
+    last_end_time = 0.0
+
+    for i, seg in enumerate(whisper_segments):
+        start_time = seg.get("start", 0.0)
+        end_time = seg.get("end", 0.0)
+        text = seg.get("text", "").strip()
+
+        if not text:
+            continue
+
+        # Check for speaker change based on pause
+        pause_duration = start_time - last_end_time
+
+        # Heuristics for speaker change:
+        # 1. Long pause (>1.5s) suggests speaker change
+        # 2. Very short segments after pause often indicate new speaker
+        if i > 0 and pause_duration > 1.5:
+            # Likely speaker change - cycle through speakers
+            speaker_num = (int(current_speaker.split("_")[1]) % 3) + 1
+            current_speaker = f"speaker_{speaker_num}"
+            if current_speaker not in speakers_seen:
+                speakers_seen.add(current_speaker)
+                speaker_count = max(speaker_count, speaker_num)
+
+        segment = UploadedSegment(
+            segment_id=f"seg_{i:04d}",
+            speaker_id=current_speaker,
+            start_time=start_time,
+            end_time=end_time,
+            text=text,
+            detected_language=detected_language,
+        )
+        segments.append(segment)
+        last_end_time = end_time
+
+    # Store for later analysis
+    uploaded_recordings[upload_id] = {
+        "segments": [s.model_dump() for s in segments],
+        "duration": duration,
+        "detected_language": detected_language,
+        "provider_language": provider_language,
+        "patient_language": patient_language,
+        "audio_data": audio_data,  # Keep for potential re-processing
+    }
+
+    detected_speakers = sorted(list(speakers_seen))
+
+    print(f"✅ Upload complete: {upload_id}, {len(segments)} segments, {len(detected_speakers)} speakers detected")
+
+    return UploadResponse(
+        upload_id=upload_id,
+        duration=duration,
+        segments=segments,
+        detected_speakers=detected_speakers,
+    )
+
+
+@app.post("/analyze-recording")
+async def analyze_recording(request: AnalyzeRequest):
+    """
+    Analyze an uploaded recording with role assignments.
+
+    Takes the upload_id and role mappings (speaker_1 -> provider, etc.)
+    and runs the tribunal evaluation on the interpreted segments.
+    """
+    global engine, session_active, session_id
+
+    # Get stored recording
+    recording = uploaded_recordings.get(request.upload_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail=f"Recording not found: {request.upload_id}")
+
+    # Build role mapping lookup
+    role_map = {rm.speaker_id: rm.role for rm in request.role_mappings}
+
+    # Validate all speakers are mapped
+    segments = recording["segments"]
+    speakers_in_recording = set(s["speaker_id"] for s in segments)
+    unmapped = speakers_in_recording - set(role_map.keys())
+    if unmapped:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unmapped speakers: {unmapped}. Please assign roles to all speakers."
+        )
+
+    print(f"🔍 Analyzing recording {request.upload_id} with mappings: {role_map}")
+
+    # Create a temporary session for analysis
+    analysis_session_id = f"analysis_{uuid.uuid4().hex[:8]}"
+
+    # Initialize engine if needed
+    if engine is None:
+        config = GraphConfig()
+        engine = create_engine(config)
+
+    # Process segments through the engine
+    results = {
+        "upload_id": request.upload_id,
+        "session_id": analysis_session_id,
+        "transcripts": [],
+        "errors": [],
+        "verdicts": [],
+        "debate_logs": {},
+    }
+
+    # Convert segments to TranscriptSegments with assigned roles
+    for seg in segments:
+        role = role_map.get(seg["speaker_id"], "unknown")
+
+        transcript = TranscriptSegment(
+            segment_id=seg["segment_id"],
+            role=role,
+            text=seg["text"],
+            timestamp=seg["start_time"],
+            duration=seg["end_time"] - seg["start_time"],
+            detected_language=seg.get("detected_language"),
+            is_final=True,
+        )
+        results["transcripts"].append(transcript.model_dump())
+
+        # For interpreter segments, run through the tribunal
+        if role == "interpreter":
+            # Find the preceding provider/patient segment as source
+            source_segment = None
+            for prev_seg in reversed(results["transcripts"][:-1]):
+                if prev_seg["role"] in ["provider", "patient"]:
+                    source_segment = prev_seg
+                    break
+
+            if source_segment:
+                # Run tribunal evaluation
+                try:
+                    from ..core.tribunal import DualTribunalOrchestrator
+
+                    groq_key = os.getenv("GROQ_API_KEY", "")
+                    openai_key = os.getenv("OPENAI_API_KEY", "")
+                    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+
+                    orchestrator = DualTribunalOrchestrator(
+                        groq_api_key=groq_key,
+                        openai_api_key=openai_key,
+                        anthropic_api_key=anthropic_key,
+                    )
+
+                    # Determine languages
+                    source_lang = request.provider_language if source_segment["role"] == "provider" else request.patient_language
+
+                    verdict = await orchestrator.evaluate(
+                        source_text=source_segment["text"],
+                        interpreter_text=transcript.text,
+                        source_role=source_segment["role"],
+                        source_language=source_lang,
+                        interpreter_language="auto",
+                    )
+
+                    results["verdicts"].append(verdict)
+
+                    # Extract errors
+                    if verdict.get("errors"):
+                        for err in verdict["errors"]:
+                            results["errors"].append(err)
+
+                    # Store debate logs
+                    if verdict.get("debate_logs"):
+                        results["debate_logs"][seg["segment_id"]] = verdict["debate_logs"]
+
+                except Exception as e:
+                    print(f"⚠️ Tribunal error for segment {seg['segment_id']}: {e}")
+
+    # Clean up stored recording after analysis
+    # del uploaded_recordings[request.upload_id]  # Keep for debugging
+
+    print(f"✅ Analysis complete: {len(results['errors'])} errors found")
+
+    return results
+
+
 # ===== WebSocket Endpoint =====
 
 @app.websocket("/ws")

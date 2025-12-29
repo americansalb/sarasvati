@@ -495,7 +495,7 @@ export default function DashboardPage() {
     sendTranscript,
   } = useSarasvatiSimple({ backendUrl: BACKEND_URL });
 
-  const [activeTab, setActiveTab] = useState<"monitor" | "details">("monitor");
+  const [activeTab, setActiveTab] = useState<"monitor" | "details" | "upload">("monitor");
   const [selectedRole, setSelectedRole] = useState<StreamRole>("provider");
   const [dismissedGroups, setDismissedGroups] = useState<Set<string>>(new Set());
   const [showSettings, setShowSettings] = useState(false);
@@ -504,6 +504,38 @@ export default function DashboardPage() {
   const [selectedErrorDetail, setSelectedErrorDetail] = useState<GroupedError | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const analyzeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Upload tab state
+  const [uploadState, setUploadState] = useState<{
+    isUploading: boolean;
+    isAnalyzing: boolean;
+    uploadId: string | null;
+    segments: Array<{
+      segment_id: string;
+      speaker_id: string;
+      start_time: number;
+      end_time: number;
+      text: string;
+      detected_language?: string;
+    }>;
+    detectedSpeakers: string[];
+    roleMappings: Record<string, string>;
+    results: {
+      transcripts: Array<unknown>;
+      errors: Array<unknown>;
+      verdicts: Array<unknown>;
+    } | null;
+    error: string | null;
+  }>({
+    isUploading: false,
+    isAnalyzing: false,
+    uploadId: null,
+    segments: [],
+    detectedSpeakers: [],
+    roleMappings: {},
+    results: null,
+    error: null,
+  });
 
   // Track when interpreter transcripts arrive to show analyzing state
   const lastInterpreterCountRef = useRef(0);
@@ -589,6 +621,112 @@ export default function DashboardPage() {
     { code: "auto", name: "Auto-detect" },
   ];
 
+  // Upload handlers
+  const handleFileUpload = async (file: File) => {
+    setUploadState(prev => ({ ...prev, isUploading: true, error: null, results: null }));
+
+    const formData = new FormData();
+    formData.append("audio", file);
+    formData.append("provider_language", providerLang);
+    formData.append("patient_language", patientLang);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/upload-recording`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(error);
+      }
+
+      const data = await response.json();
+
+      // Auto-assign roles based on speaker order (can be changed by user)
+      const autoMappings: Record<string, string> = {};
+      const roles = ["provider", "interpreter", "patient"];
+      data.detected_speakers.forEach((speaker: string, idx: number) => {
+        autoMappings[speaker] = roles[idx % roles.length];
+      });
+
+      setUploadState(prev => ({
+        ...prev,
+        isUploading: false,
+        uploadId: data.upload_id,
+        segments: data.segments,
+        detectedSpeakers: data.detected_speakers,
+        roleMappings: autoMappings,
+      }));
+    } catch (error) {
+      setUploadState(prev => ({
+        ...prev,
+        isUploading: false,
+        error: error instanceof Error ? error.message : "Upload failed",
+      }));
+    }
+  };
+
+  const handleAnalyzeRecording = async () => {
+    if (!uploadState.uploadId) return;
+
+    setUploadState(prev => ({ ...prev, isAnalyzing: true, error: null }));
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/analyze-recording`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          upload_id: uploadState.uploadId,
+          role_mappings: Object.entries(uploadState.roleMappings).map(([speaker_id, role]) => ({
+            speaker_id,
+            role,
+          })),
+          provider_language: providerLang,
+          patient_language: patientLang,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(error);
+      }
+
+      const results = await response.json();
+      setUploadState(prev => ({
+        ...prev,
+        isAnalyzing: false,
+        results,
+      }));
+    } catch (error) {
+      setUploadState(prev => ({
+        ...prev,
+        isAnalyzing: false,
+        error: error instanceof Error ? error.message : "Analysis failed",
+      }));
+    }
+  };
+
+  const updateRoleMapping = (speakerId: string, role: string) => {
+    setUploadState(prev => ({
+      ...prev,
+      roleMappings: { ...prev.roleMappings, [speakerId]: role },
+    }));
+  };
+
+  const resetUpload = () => {
+    setUploadState({
+      isUploading: false,
+      isAnalyzing: false,
+      uploadId: null,
+      segments: [],
+      detectedSpeakers: [],
+      roleMappings: {},
+      results: null,
+      error: null,
+    });
+  };
+
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-gray-100">
       {/* Header */}
@@ -638,6 +776,16 @@ export default function DashboardPage() {
                 }`}
               >
                 Details
+              </button>
+              <button
+                onClick={() => setActiveTab("upload")}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === "upload"
+                    ? "bg-purple-600 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                Upload
               </button>
             </div>
 
@@ -929,7 +1077,7 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
-        ) : (
+        ) : activeTab === "details" ? (
           /* ================ DETAILS TAB ================ */
           <div className="space-y-6">
             {/* Full Transcript with translations */}
@@ -1042,6 +1190,266 @@ export default function DashboardPage() {
                   })
                 )}
               </div>
+            </div>
+          </div>
+        ) : (
+          /* ================ UPLOAD TAB ================ */
+          <div className="space-y-6">
+            <div className="max-w-4xl mx-auto">
+              {/* Language Settings for Upload */}
+              <div className="bg-gray-800/50 rounded-lg p-4 mb-6">
+                <h3 className="text-lg font-semibold mb-3">Recording Settings</h3>
+                <div className="flex gap-4">
+                  <div className="flex-1">
+                    <label className="block text-sm text-gray-400 mb-1">Provider Language</label>
+                    <select
+                      value={providerLang}
+                      onChange={(e) => setProviderLang(e.target.value)}
+                      className="w-full px-3 py-2 bg-gray-700 rounded-lg text-white"
+                    >
+                      {LANGUAGES.filter(l => l.code !== "auto").map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-sm text-gray-400 mb-1">Patient Language</label>
+                    <select
+                      value={patientLang}
+                      onChange={(e) => setPatientLang(e.target.value)}
+                      className="w-full px-3 py-2 bg-gray-700 rounded-lg text-white"
+                    >
+                      {LANGUAGES.filter(l => l.code !== "auto").map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Upload Area */}
+              {!uploadState.uploadId && (
+                <div
+                  className="border-2 border-dashed border-gray-600 rounded-xl p-12 text-center hover:border-purple-500 transition-colors cursor-pointer"
+                  onClick={() => document.getElementById("audio-upload")?.click()}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const file = e.dataTransfer.files[0];
+                    if (file) handleFileUpload(file);
+                  }}
+                >
+                  <input
+                    id="audio-upload"
+                    type="file"
+                    accept="audio/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleFileUpload(file);
+                    }}
+                  />
+                  {uploadState.isUploading ? (
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full animate-spin" />
+                      <p className="text-gray-400">Transcribing audio...</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="w-16 h-16 mx-auto mb-4 bg-gray-700 rounded-full flex items-center justify-center">
+                        <span className="text-3xl">🎤</span>
+                      </div>
+                      <p className="text-xl font-medium text-gray-300 mb-2">
+                        Upload Recording
+                      </p>
+                      <p className="text-gray-500">
+                        Drag and drop an audio file, or click to browse
+                      </p>
+                      <p className="text-gray-600 text-sm mt-2">
+                        Supports MP3, WAV, M4A, WEBM, and other audio formats
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Error Display */}
+              {uploadState.error && (
+                <div className="bg-red-900/50 border border-red-700 rounded-lg p-4 mt-4">
+                  <p className="text-red-400">{uploadState.error}</p>
+                  <button
+                    onClick={resetUpload}
+                    className="mt-2 text-sm text-red-300 hover:text-white"
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
+
+              {/* Speaker Assignment */}
+              {uploadState.uploadId && !uploadState.results && (
+                <div className="space-y-6">
+                  <div className="bg-gray-800/50 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold">Assign Speakers</h3>
+                      <button
+                        onClick={resetUpload}
+                        className="text-sm text-gray-400 hover:text-white"
+                      >
+                        ← Upload different file
+                      </button>
+                    </div>
+                    <p className="text-gray-400 text-sm mb-4">
+                      We detected {uploadState.detectedSpeakers.length} speakers. Assign each to a role:
+                    </p>
+                    <div className="grid gap-3">
+                      {uploadState.detectedSpeakers.map((speaker) => (
+                        <div key={speaker} className="flex items-center gap-4 bg-gray-900/50 p-3 rounded-lg">
+                          <span className="font-medium text-gray-300 w-24">{speaker.replace("_", " ").toUpperCase()}</span>
+                          <div className="flex gap-2">
+                            {["provider", "interpreter", "patient"].map((role) => (
+                              <button
+                                key={role}
+                                onClick={() => updateRoleMapping(speaker, role)}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                  uploadState.roleMappings[speaker] === role
+                                    ? role === "provider" ? "bg-blue-600 text-white" :
+                                      role === "interpreter" ? "bg-purple-600 text-white" :
+                                      "bg-green-600 text-white"
+                                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                                }`}
+                              >
+                                {role === "provider" ? "🩺 Provider" :
+                                 role === "interpreter" ? "🗣️ Interpreter" :
+                                 "👤 Patient"}
+                              </button>
+                            ))}
+                          </div>
+                          <span className="text-gray-500 text-sm ml-auto">
+                            {uploadState.segments.filter(s => s.speaker_id === speaker).length} segments
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Transcript Preview */}
+                  <div className="bg-gray-800/50 rounded-lg p-4">
+                    <h3 className="text-lg font-semibold mb-4">Transcript Preview</h3>
+                    <div className="max-h-64 overflow-y-auto space-y-2">
+                      {uploadState.segments.map((seg) => {
+                        const role = uploadState.roleMappings[seg.speaker_id] || "unknown";
+                        return (
+                          <div key={seg.segment_id} className="p-2 bg-gray-900/50 rounded">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={`text-xs px-2 py-0.5 rounded ${
+                                role === "provider" ? "bg-blue-700" :
+                                role === "interpreter" ? "bg-purple-700" :
+                                role === "patient" ? "bg-green-700" : "bg-gray-600"
+                              }`}>
+                                {role}
+                              </span>
+                              <span className="text-xs text-gray-500">
+                                {seg.start_time.toFixed(1)}s - {seg.end_time.toFixed(1)}s
+                              </span>
+                            </div>
+                            <p className="text-sm text-gray-300">{seg.text}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Analyze Button */}
+                  <button
+                    onClick={handleAnalyzeRecording}
+                    disabled={uploadState.isAnalyzing}
+                    className="w-full py-4 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-xl font-semibold text-lg transition-colors"
+                  >
+                    {uploadState.isAnalyzing ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Analyzing with Tribunal...
+                      </span>
+                    ) : (
+                      "⚖️ Analyze Interpretation"
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* Results */}
+              {uploadState.results && (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xl font-semibold">Analysis Results</h3>
+                    <button
+                      onClick={resetUpload}
+                      className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm"
+                    >
+                      Analyze Another Recording
+                    </button>
+                  </div>
+
+                  {/* Summary */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-gray-800/50 rounded-lg p-4 text-center">
+                      <div className="text-3xl font-bold text-blue-400">
+                        {uploadState.results.transcripts.length}
+                      </div>
+                      <div className="text-sm text-gray-400">Segments</div>
+                    </div>
+                    <div className="bg-gray-800/50 rounded-lg p-4 text-center">
+                      <div className="text-3xl font-bold text-purple-400">
+                        {uploadState.results.verdicts.length}
+                      </div>
+                      <div className="text-sm text-gray-400">Evaluations</div>
+                    </div>
+                    <div className="bg-gray-800/50 rounded-lg p-4 text-center">
+                      <div className={`text-3xl font-bold ${
+                        uploadState.results.errors.length > 0 ? "text-red-400" : "text-green-400"
+                      }`}>
+                        {uploadState.results.errors.length}
+                      </div>
+                      <div className="text-sm text-gray-400">Issues Found</div>
+                    </div>
+                  </div>
+
+                  {/* Errors List */}
+                  {uploadState.results.errors.length > 0 && (
+                    <div className="bg-gray-800/50 rounded-lg p-4">
+                      <h4 className="font-semibold mb-3">Detected Issues</h4>
+                      <div className="space-y-3">
+                        {(uploadState.results.errors as Array<{
+                          error_type?: string;
+                          severity?: string;
+                          description?: string;
+                        }>).map((err, idx) => (
+                          <div key={idx} className={`p-3 rounded-lg ${getCardStyle(err.severity || "medium")}`}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={`text-xs px-2 py-0.5 rounded font-bold ${getSeverityBadge(err.severity || "medium").bg}`}>
+                                {getSeverityBadge(err.severity || "medium").text}
+                              </span>
+                              <span className="text-sm font-medium text-white">
+                                {formatErrorType(err.error_type || "unknown")}
+                              </span>
+                            </div>
+                            <p className="text-sm text-gray-300">{err.description}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {uploadState.results.errors.length === 0 && (
+                    <div className="bg-green-900/30 border border-green-700 rounded-lg p-6 text-center">
+                      <div className="text-4xl mb-2">✅</div>
+                      <p className="text-green-400 font-medium">No interpretation errors detected!</p>
+                      <p className="text-gray-400 text-sm mt-1">The interpretation appears to be accurate.</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
