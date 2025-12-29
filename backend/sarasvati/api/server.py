@@ -588,17 +588,23 @@ def get_cors_origins() -> List[str]:
     origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        # Production frontends
+        "https://maya-wqre.onrender.com",
+        "https://sarasvati-frontend.onrender.com",
     ]
     frontend_url = os.getenv("FRONTEND_URL")
     if frontend_url:
         origins.append(frontend_url)
         # Also allow without trailing slash
         origins.append(frontend_url.rstrip("/"))
+        # Also allow https variant
+        if frontend_url.startswith("http://"):
+            origins.append(frontend_url.replace("http://", "https://"))
     return origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_cors_origins(),
+    allow_origins=["*"],  # Allow all origins - simpler and works
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
