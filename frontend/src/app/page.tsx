@@ -342,84 +342,178 @@ function SingleDebateSection({
   debate: any;
   icon: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true); // Default expanded for better visibility
 
   if (!debate || !debate.turns || debate.turns.length === 0) {
     return null;
   }
 
-  // Get position color
-  const getPositionColor = (position: string) => {
-    const p = (position || "").toLowerCase();
-    if (p === "accurate" || p.includes("agree")) return "bg-green-800";
-    if (p === "critical_errors" || p.includes("critical")) return "bg-red-800";
-    if (p === "significant_errors" || p.includes("significant")) return "bg-orange-800";
-    return "bg-yellow-800";
+  // Get verdict color
+  const getVerdictColor = (verdict: string) => {
+    const v = (verdict || "").toLowerCase();
+    if (v === "accurate" || v.includes("agree")) return "text-green-400";
+    if (v === "critical_errors" || v.includes("critical")) return "text-red-400";
+    if (v === "significant_errors" || v.includes("significant")) return "text-orange-400";
+    if (v === "minor_issues") return "text-yellow-400";
+    return "text-gray-400";
   };
 
+  // Get agent color for consistent identification
+  const getAgentColor = (agent: string) => {
+    if (agent.includes("-A") || agent.includes("Groq")) return "text-blue-400 border-blue-400";
+    if (agent.includes("-B") || agent.includes("OpenAI")) return "text-green-400 border-green-400";
+    if (agent.includes("-C") || agent.includes("Anthropic")) return "text-purple-400 border-purple-400";
+    return "text-gray-400 border-gray-400";
+  };
+
+  // Group turns by round for Oxford-style display
+  const rounds: Record<number, any[]> = {};
+  debate.turns.forEach((turn: any) => {
+    const roundNum = turn.round || 1;
+    if (!rounds[roundNum]) rounds[roundNum] = [];
+    rounds[roundNum].push(turn);
+  });
+
+  const roundNumbers = Object.keys(rounds).map(Number).sort((a, b) => a - b);
+
   return (
-    <div className="bg-gray-800/50 rounded-lg border border-gray-700 mb-3">
+    <div className="bg-gray-800/50 rounded-lg border border-gray-700 mb-4">
+      {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between p-3 hover:bg-gray-700/50 transition-colors"
+        className="w-full flex items-center justify-between p-4 hover:bg-gray-700/50 transition-colors"
       >
-        <div className="flex items-center gap-2">
-          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          <span className="text-lg">{icon}</span>
-          <span className="font-medium text-sm">{title}</span>
-          <span className="text-xs text-gray-500">
-            {debate.rounds_taken || debate.turns?.length || 0} round{(debate.rounds_taken || 1) > 1 ? 's' : ''}
-          </span>
+        <div className="flex items-center gap-3">
+          {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+          <span className="text-2xl">{icon}</span>
+          <div>
+            <span className="font-semibold">{title}</span>
+            <span className="text-sm text-gray-400 ml-2">
+              ({roundNumbers.length} round{roundNumbers.length !== 1 ? 's' : ''})
+            </span>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           {debate.consensus_reached !== undefined && (
-            <span className={`text-xs px-2 py-0.5 rounded ${
-              debate.consensus_reached ? "bg-green-900 text-green-300" : "bg-yellow-900 text-yellow-300"
+            <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+              debate.consensus_reached ? "bg-green-900/50 text-green-300 border border-green-700" : "bg-yellow-900/50 text-yellow-300 border border-yellow-700"
             }`}>
-              {debate.consensus_reached ? "✓ Consensus" : "No Consensus"}
+              {debate.consensus_reached ? "✓ Consensus Reached" : "⚠ Forced Vote"}
             </span>
           )}
           {debate.final_consensus && (
-            <span className={`text-xs px-2 py-0.5 rounded font-medium ${getPositionColor(debate.final_consensus)}`}>
+            <span className={`px-3 py-1 rounded-full text-sm font-bold ${getVerdictColor(debate.final_consensus)} bg-gray-900/50`}>
               {debate.final_consensus.replace(/_/g, ' ').toUpperCase()}
             </span>
           )}
         </div>
       </button>
 
+      {/* Oxford-Style Debate Transcript */}
       {expanded && (
-        <div className="p-3 border-t border-gray-700 max-h-64 overflow-y-auto space-y-2">
-          {debate.turns.map((turn: any, idx: number) => {
-            const isNewRound = idx === 0 || turn.round !== debate.turns[idx - 1]?.round;
-            return (
-              <div key={idx}>
-                {isNewRound && idx > 0 && (
-                  <div className="flex items-center gap-2 my-2">
-                    <div className="flex-1 h-px bg-gray-600" />
-                    <span className="text-xs text-gray-500">Round {turn.round}</span>
-                    <div className="flex-1 h-px bg-gray-600" />
-                  </div>
-                )}
-                <div className={`p-2 rounded text-sm ${turn.changed_mind ? "bg-yellow-900/20 border border-yellow-800" : "bg-gray-900/50"}`}>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-purple-300 text-xs">{turn.agent}</span>
-                    <span className="text-xs px-1.5 py-0.5 bg-gray-700 text-gray-300 rounded">
-                      {turn.model || turn.provider}
-                    </span>
-                    {turn.changed_mind && (
-                      <span className="text-xs text-yellow-400">🔄 Changed position</span>
-                    )}
-                    <span className={`ml-auto text-xs px-1.5 py-0.5 rounded ${getPositionColor(turn.position)}`}>
-                      {(turn.position || "").substring(0, 20)}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-400 line-clamp-2">
-                    {turn.statement || turn.reasoning || "No statement"}
-                  </p>
-                </div>
+        <div className="border-t border-gray-700 p-4 space-y-6 max-h-96 overflow-y-auto">
+          {/* Input Text */}
+          {debate.input_text && (
+            <div className="bg-gray-900/50 rounded-lg p-3 border-l-4 border-gray-500">
+              <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Original Input</div>
+              <p className="text-sm text-gray-300 italic">"{debate.input_text}"</p>
+            </div>
+          )}
+
+          {/* Rounds - Oxford Style */}
+          {roundNumbers.map((roundNum) => (
+            <div key={roundNum} className="space-y-3">
+              {/* Round Header */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-px bg-gradient-to-r from-gray-700 via-gray-600 to-gray-700" />
+                <span className="px-4 py-1 bg-gray-700 rounded-full text-sm font-semibold text-gray-300">
+                  {roundNum === 1 ? "📝 Round 1: Independent Analysis" :
+                   roundNum === 2 ? "💬 Round 2: Rebuttals" :
+                   roundNum === 3 ? "⚖️ Round 3: Final Arguments" :
+                   `Round ${roundNum}`}
+                </span>
+                <div className="flex-1 h-px bg-gradient-to-r from-gray-700 via-gray-600 to-gray-700" />
               </div>
-            );
-          })}
+
+              {/* Agent Statements - Script Format */}
+              <div className="space-y-3 pl-2">
+                {rounds[roundNum].map((turn: any, idx: number) => {
+                  const agentName = (turn.agent || "Agent").split("(")[0].trim();
+                  const modelName = turn.model || turn.provider || "";
+
+                  return (
+                    <div key={idx} className="flex gap-3">
+                      {/* Agent Label */}
+                      <div className={`flex-shrink-0 w-24 text-right font-bold text-sm ${getAgentColor(turn.agent)}`}>
+                        {agentName}:
+                      </div>
+
+                      {/* Statement */}
+                      <div className="flex-1 space-y-1">
+                        {/* Position Badge */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`text-xs px-2 py-0.5 rounded-full bg-gray-900 ${getVerdictColor(turn.position)}`}>
+                            {turn.position || "—"}
+                          </span>
+                          <span className="text-xs text-gray-600">
+                            via {modelName}
+                          </span>
+                          {turn.changed_mind && (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-400 border border-yellow-700">
+                              🔄 Changed position
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Statement Text */}
+                        <p className="text-sm text-gray-300 leading-relaxed">
+                          {turn.statement || turn.reasoning || "No statement provided."}
+                        </p>
+
+                        {/* Agreements/Disagreements */}
+                        {(turn.agrees_with?.length > 0 || turn.disagrees_with?.length > 0) && (
+                          <div className="flex gap-4 text-xs mt-1">
+                            {turn.agrees_with?.length > 0 && (
+                              <span className="text-green-500">
+                                ✓ Agrees: {turn.agrees_with.join(", ")}
+                              </span>
+                            )}
+                            {turn.disagrees_with?.length > 0 && (
+                              <span className="text-red-500">
+                                ✗ Disagrees: {turn.disagrees_with.join(", ")}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+
+          {/* Final Verdict */}
+          {debate.final_consensus && (
+            <div className="bg-gray-900/80 rounded-lg p-4 border-2 border-gray-600 mt-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">⚖️</span>
+                  <span className="font-semibold">Final Verdict</span>
+                </div>
+                <span className={`text-lg font-bold ${getVerdictColor(debate.final_consensus)}`}>
+                  {debate.final_consensus.replace(/_/g, ' ').toUpperCase()}
+                </span>
+              </div>
+              {debate.consensus_type && (
+                <div className="text-xs text-gray-500 mt-1">
+                  {debate.consensus_type === "full" ? "All 3 agents agreed" :
+                   debate.consensus_type === "majority" ? "2/3 majority vote" :
+                   "No consensus - using plurality"}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
