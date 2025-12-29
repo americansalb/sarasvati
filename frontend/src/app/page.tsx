@@ -441,6 +441,7 @@ export default function DashboardPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [providerLang, setProviderLang] = useState("en");
   const [patientLang, setPatientLang] = useState("es");
+  const [selectedErrorDetail, setSelectedErrorDetail] = useState<GroupedError | null>(null);
 
   // Get clinical errors and group by utterance
   const clinicalErrors = sessionState.errors.filter((e) => !e.is_system_error);
@@ -448,6 +449,24 @@ export default function DashboardPage() {
   const activeGroups = groupedErrors.filter(
     (g) => !dismissedGroups.has(`${g.sourceQuote}|||${g.interpreterQuote}`)
   );
+
+  // Get error counts by category for summary
+  const errorSummary = {
+    omissions: clinicalErrors.filter(e => e.error_type?.toLowerCase().includes("omission")).length,
+    additions: clinicalErrors.filter(e => e.error_type?.toLowerCase().includes("fabrication") || e.error_type?.toLowerCase().includes("addition")).length,
+    distortions: clinicalErrors.filter(e => e.error_type?.toLowerCase().includes("distortion") || e.error_type?.toLowerCase().includes("substitution")).length,
+    other: clinicalErrors.filter(e => {
+      const t = e.error_type?.toLowerCase() || "";
+      return !t.includes("omission") && !t.includes("fabrication") && !t.includes("addition") && !t.includes("distortion") && !t.includes("substitution");
+    }).length,
+  };
+
+  // Find errors for a specific interpreter quote
+  const getErrorsForInterpreter = (interpreterText: string): GroupedError | null => {
+    return groupedErrors.find(g =>
+      g.interpreterQuote && interpreterText?.includes(g.interpreterQuote.substring(0, 20))
+    ) || null;
+  };
 
   const handleDismissGroup = (group: GroupedError) => {
     const key = `${group.sourceQuote}|||${group.interpreterQuote}`;
@@ -584,40 +603,39 @@ export default function DashboardPage() {
         {activeTab === "monitor" ? (
           /* ================ MONITOR TAB ================ */
           <div className="space-y-4">
-            {/* Collapsible Error Summary - Small bar at top */}
+            {/* Error Summary Bar */}
             {activeGroups.length > 0 ? (
               <details className="bg-red-950/50 border border-red-800 rounded-lg">
-                <summary className="px-4 py-3 cursor-pointer flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <AlertTriangle className="text-red-400" size={18} />
-                    <span className="font-medium text-red-300">
-                      {activeGroups.length} issue{activeGroups.length > 1 ? "s" : ""} detected
-                    </span>
-                    <span className="text-red-400/70 text-sm">
-                      ({clinicalErrors.length} total findings)
-                    </span>
-                  </div>
-                  <span className="text-xs text-red-400">Click to expand</span>
-                </summary>
-                <div className="px-4 pb-4 space-y-2 max-h-48 overflow-y-auto">
-                  {activeGroups.map((group, idx) => (
-                    <div key={idx} className="p-2 bg-gray-900/50 rounded text-sm flex justify-between items-start">
-                      <div className="flex-1">
-                        <div className="text-gray-300 mb-1">
-                          "{group.sourceQuote?.substring(0, 40)}{group.sourceQuote?.length > 40 ? "..." : ""}"
-                        </div>
-                        <div className="text-xs text-gray-500">
-                          {group.issues.length} finding{group.issues.length > 1 ? "s" : ""}: {group.issues.map(i => formatErrorType(i.type)).join(", ")}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => handleDismissGroup(group)}
-                        className="text-gray-500 hover:text-white ml-2"
-                      >
-                        <X size={14} />
-                      </button>
+                <summary className="px-4 py-3 cursor-pointer">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <AlertTriangle className="text-red-400" size={18} />
+                      <span className="font-medium text-red-300">
+                        {activeGroups.length} interpretation{activeGroups.length > 1 ? "s" : ""} flagged
+                      </span>
                     </div>
-                  ))}
+                    <div className="flex items-center gap-3 text-xs">
+                      {errorSummary.omissions > 0 && (
+                        <span className="px-2 py-1 bg-orange-900/50 text-orange-300 rounded">
+                          {errorSummary.omissions} omission{errorSummary.omissions > 1 ? "s" : ""}
+                        </span>
+                      )}
+                      {errorSummary.additions > 0 && (
+                        <span className="px-2 py-1 bg-purple-900/50 text-purple-300 rounded">
+                          {errorSummary.additions} addition{errorSummary.additions > 1 ? "s" : ""}
+                        </span>
+                      )}
+                      {errorSummary.distortions > 0 && (
+                        <span className="px-2 py-1 bg-yellow-900/50 text-yellow-300 rounded">
+                          {errorSummary.distortions} distortion{errorSummary.distortions > 1 ? "s" : ""}
+                        </span>
+                      )}
+                      <span className="text-red-400">▼</span>
+                    </div>
+                  </div>
+                </summary>
+                <div className="px-4 pb-4 pt-2 border-t border-red-800/50 mt-2">
+                  <p className="text-xs text-gray-400 mb-2">Click on a flagged interpreter statement below to see details</p>
                 </div>
               </details>
             ) : (
@@ -636,17 +654,18 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 sessionState.transcripts.map((t, idx) => {
-                  // Check if this transcript has associated errors
-                  const hasError = clinicalErrors.some(
-                    e => e.source_quote?.includes(t.text?.substring(0, 20)) ||
-                         e.interpreter_quote?.includes(t.text?.substring(0, 20))
-                  );
+                  // ONLY flag interpreter statements - that's what we're evaluating
+                  const isInterpreter = t.role === "interpreter";
+                  const errorGroup = isInterpreter ? getErrorsForInterpreter(t.text || "") : null;
+                  const hasError = errorGroup !== null;
+
                   return (
                     <div
                       key={idx}
-                      className={`p-3 rounded-lg ${
+                      onClick={() => hasError && setSelectedErrorDetail(errorGroup)}
+                      className={`p-3 rounded-lg transition-colors ${
                         hasError
-                          ? "bg-red-950/30 border-l-2 border-l-red-500"
+                          ? "bg-red-950/30 border-l-4 border-l-red-500 cursor-pointer hover:bg-red-950/50"
                           : "bg-gray-800/50"
                       }`}
                     >
@@ -661,7 +680,10 @@ export default function DashboardPage() {
                           <span className="text-xs text-gray-500">[{t.detected_language}]</span>
                         )}
                         {hasError && (
-                          <span className="text-xs text-red-400 ml-auto">⚠ Issue flagged</span>
+                          <span className="text-xs text-red-400 ml-auto flex items-center gap-1">
+                            ⚠ {errorGroup.issues.length} issue{errorGroup.issues.length > 1 ? "s" : ""}
+                            <span className="text-gray-500">· click for details</span>
+                          </span>
                         )}
                       </div>
                       <p className="text-gray-200">{t.english_translation || t.text}</p>
@@ -675,6 +697,91 @@ export default function DashboardPage() {
                 })
               )}
             </div>
+
+            {/* Error Detail Modal */}
+            {selectedErrorDetail && (
+              <div
+                className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+                onClick={() => setSelectedErrorDetail(null)}
+              >
+                <div
+                  className="bg-gray-800 rounded-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto"
+                  onClick={e => e.stopPropagation()}
+                >
+                  <div className="sticky top-0 bg-gray-800 border-b border-gray-700 p-4 flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-white">Interpretation Issues</h3>
+                    <button
+                      onClick={() => setSelectedErrorDetail(null)}
+                      className="text-gray-400 hover:text-white"
+                    >
+                      <X size={24} />
+                    </button>
+                  </div>
+
+                  <div className="p-4 space-y-4">
+                    {/* What was said */}
+                    <div className="space-y-2">
+                      {selectedErrorDetail.sourceQuote && (
+                        <div className="p-3 bg-blue-950/30 rounded-lg">
+                          <div className="text-xs text-blue-400 mb-1">Original (Provider/Patient said):</div>
+                          <p className="text-gray-200">"{selectedErrorDetail.sourceQuote}"</p>
+                        </div>
+                      )}
+                      {selectedErrorDetail.interpreterQuote && (
+                        <div className="p-3 bg-purple-950/30 rounded-lg">
+                          <div className="text-xs text-purple-400 mb-1">Interpreter said:</div>
+                          <p className="text-gray-200">"{selectedErrorDetail.interpreterQuote}"</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Issues found */}
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-400 mb-2">
+                        Issues Found ({selectedErrorDetail.issues.length})
+                      </h4>
+                      <div className="space-y-2">
+                        {selectedErrorDetail.issues.map((issue, i) => {
+                          const badge = getSeverityBadge(issue.severity);
+                          return (
+                            <div key={i} className={`p-3 rounded-lg ${getCardStyle(issue.severity)}`}>
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className={`text-xs px-2 py-0.5 rounded font-bold ${badge.bg}`}>
+                                  {badge.text}
+                                </span>
+                                <span className="text-sm font-medium text-white">
+                                  {formatErrorType(issue.type)}
+                                </span>
+                              </div>
+                              <p className="text-sm text-gray-300">{issue.description}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Dismiss button */}
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        onClick={() => {
+                          handleDismissGroup(selectedErrorDetail);
+                          setSelectedErrorDetail(null);
+                        }}
+                        className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm"
+                      >
+                        Dismiss This Issue
+                      </button>
+                      <button
+                        onClick={() => setSelectedErrorDetail(null)}
+                        className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           /* ================ DETAILS TAB ================ */

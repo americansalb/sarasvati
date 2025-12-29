@@ -96,7 +96,7 @@ from .state import (
 # 3 UNIQUE MODELS - each from a different AI company
 # Use specific version IDs for production stability (aliases auto-migrate which can break)
 DEFAULT_MODEL_A = os.getenv("TRIBUNAL_MODEL_A", "meta-llama/llama-4-scout-17b-16e-instruct")  # Llama 4 Scout (Groq)
-DEFAULT_MODEL_B = os.getenv("TRIBUNAL_MODEL_B", "gpt-5-mini")                                  # GPT-5 mini (OpenAI)
+DEFAULT_MODEL_B = os.getenv("TRIBUNAL_MODEL_B", "gpt-4o-mini")                                 # GPT-4o mini (OpenAI)
 DEFAULT_MODEL_C = os.getenv("TRIBUNAL_MODEL_C", "claude-haiku-4-5")                            # Claude Haiku 4.5 (Anthropic)
 
 # 3 UNIQUE PROVIDERS - maximum independence
