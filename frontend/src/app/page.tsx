@@ -594,7 +594,7 @@ export default function DashboardPage() {
   const [dismissedGroups, setDismissedGroups] = useState<Set<string>>(new Set());
   const [showSettings, setShowSettings] = useState(false);
   const [providerLang, setProviderLang] = useState("en");
-  const [patientLang, setPatientLang] = useState("auto"); // Auto-detect by default
+  const [patientLang, setPatientLang] = useState("es"); // Default to Spanish - change if patient speaks different language
   const [selectedErrorDetail, setSelectedErrorDetail] = useState<GroupedError | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const analyzeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -1893,7 +1893,7 @@ export default function DashboardPage() {
                 onChange={(e) => setPatientLang(e.target.value)}
                 className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm min-w-[120px]"
               >
-                {LANGUAGES.map((lang) => (
+                {LANGUAGES.filter(l => l.code !== "auto").map((lang) => (
                   <option key={lang.code} value={lang.code}>{lang.name}</option>
                 ))}
               </select>
