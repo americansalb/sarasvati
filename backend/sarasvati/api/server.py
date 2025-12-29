@@ -966,146 +966,69 @@ async def transcribe_audio(
 
     async with httpx.AsyncClient() as client:
         if role == "interpreter" and provider_lang != patient_lang and patient_lang != "auto":
-            # For interpreter: Use auto-detect and compare with hint transcripts to determine language
-            # CRITICAL: Language hints cause Whisper to TRANSLATE, not transcribe!
-            # We use hints only to detect which language was spoken, not to get the transcript.
-            print(f"🔄 Interpreter dual-language detection: trying {provider_lang} and {patient_lang}")
+            # For interpreter: Single Whisper call with auto-detect
+            # Whisper returns both transcription AND detected language
+            # We validate that the detected language is one of the expected languages
+            print(f"🔄 Interpreter transcription: expecting {provider_lang} or {patient_lang}")
 
-            # Prepare expected scripts for ensemble validation
             expected_scripts_list = get_expected_scripts(provider_lang) + get_expected_scripts(patient_lang)
+            result = await call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role, expected_scripts_list)
 
-            result_auto, result_provider, result_patient = await asyncio.gather(
-                call_whisper(client, audio_data, filename, content_type, "auto", groq_api_key, role, expected_scripts_list),
-                call_whisper(client, audio_data, filename, content_type, provider_lang, groq_api_key, role, expected_scripts_list),
-                call_whisper(client, audio_data, filename, content_type, patient_lang, groq_api_key, role, expected_scripts_list),
-            )
+            if result.get("error"):
+                raise HTTPException(status_code=500, detail=f"ASR error: {result['error']}")
 
-            def extract_candidate(result: dict, fallback_lang: str) -> dict:
-                return {
-                    "text": result.get("text", "").strip(),
-                    "duration": result.get("duration", 0.0),
-                    "lang": result.get("language", fallback_lang),
-                    "error": result.get("error"),
-                }
+            text = result.get("text", "").strip()
+            duration = result.get("duration", 0.0)
+            whisper_detected = result.get("language", "unknown")
 
-            candidate_auto = extract_candidate(result_auto, "unknown")
-            candidate_provider = extract_candidate(result_provider, provider_lang)
-            candidate_patient = extract_candidate(result_patient, patient_lang)
+            print(f"   📝 Transcription: '{text[:60]}...' (Whisper detected: {whisper_detected})")
 
-            # Check for errors and raise if all failed
-            errors = []
-            for name, candidate in (
-                ("auto", candidate_auto),
-                ("provider", candidate_provider),
-                ("patient", candidate_patient),
-            ):
-                if candidate.get("error"):
-                    error_msg = f"{name}: {candidate['error']}"
-                    print(f"   ⚠️ Whisper error for {name} hint: {candidate['error']}")
-                    errors.append(error_msg)
+            # ALWAYS analyze the actual text first - don't trust Whisper's language detection
+            # Whisper often misdetects the language even when transcription is correct
+            text_lower = text.lower()
 
-            # If all three failed, raise with details
-            if len(errors) == 3:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"All ASR attempts failed: {'; '.join(errors)}"
-                )
+            # Spanish indicators: ¿ ¡ ñ á é í ó ú and common words
+            spanish_chars = set("¿¡ñáéíóú")
+            has_spanish_chars = any(c in text_lower for c in spanish_chars)
+            spanish_words = {"hola", "cómo", "está", "estás", "buenos", "días", "gracias", "por", "favor",
+                           "qué", "el", "la", "los", "las", "un", "una", "yo", "tú", "usted", "tengo",
+                           "tiene", "dolor", "medicina", "doctor", "señor", "señora", "bien", "mal"}
+            words = set(text_lower.replace("¿", "").replace("?", "").replace(",", "").split())
+            spanish_word_count = len(words & spanish_words)
 
-            # Debug logging: show all candidates
-            print(f"   📊 Candidates:")
-            auto_preview = candidate_auto['text'][:50] if candidate_auto['text'] else "(empty)"
-            provider_preview = candidate_provider['text'][:50] if candidate_provider['text'] else "(empty)"
-            patient_preview = candidate_patient['text'][:50] if candidate_patient['text'] else "(empty)"
-            print(f"      auto: '{auto_preview}...' (lang={candidate_auto['lang']}, len={len(candidate_auto['text'])})")
-            print(f"      {provider_lang}_hint: '{provider_preview}...' (len={len(candidate_provider['text'])})")
-            print(f"      {patient_lang}_hint: '{patient_preview}...' (len={len(candidate_patient['text'])})")
+            # English indicators: common English words that don't overlap with Spanish
+            english_words = {"the", "is", "are", "you", "how", "what", "hello", "hi", "yes", "thank",
+                           "please", "have", "has", "do", "does", "can", "will", "would", "should",
+                           "my", "your", "his", "her", "this", "that", "with", "for", "and", "but"}
+            english_word_count = len(words & english_words)
 
-            # Strategy: Determine language from hints, use best transcript
-            auto_text = candidate_auto["text"].lower().strip()
-            provider_text = candidate_provider["text"].lower().strip()
-            patient_text = candidate_patient["text"].lower().strip()
-            auto_lang = candidate_auto["lang"]
+            print(f"   📊 Text analysis: spanish_chars={has_spanish_chars}, spanish_words={spanish_word_count}, english_words={english_word_count}")
 
-            # Calculate similarity scores using word overlap (Jaccard index)
-            def calc_similarity(text1: str, text2: str) -> float:
-                if not text1 or not text2:
-                    return 0.0
-                words1 = set(text1.split())
-                words2 = set(text2.split())
-                if not words1 or not words2:
-                    return 0.0
-                intersection = len(words1 & words2)
-                union = len(words1 | words2)
-                return intersection / union if union > 0 else 0.0
-
-            provider_similarity = calc_similarity(auto_text, provider_text)
-            patient_similarity = calc_similarity(auto_text, patient_text)
-
-            print(f"   📊 Similarity scores: provider={provider_similarity:.2f}, patient={patient_similarity:.2f}")
-            print(f"   📊 Whisper auto-detected: {auto_lang}")
-
-            # PRIORITY: Compare transcripts FIRST, then use Whisper's detection as tiebreaker
-            # This prevents trusting Whisper when it detects wrong language
-
-            # If auto matches one hint exactly, use that language
-            if auto_text == patient_text and auto_text != provider_text:
-                detected_language = patient_lang
-                print(f"   ✅ Detected {patient_lang}: Auto matches patient hint exactly")
-            elif auto_text == provider_text and auto_text != patient_text:
-                detected_language = provider_lang
-                print(f"   ✅ Detected {provider_lang}: Auto matches provider hint exactly")
-            elif provider_similarity > patient_similarity + 0.2:
-                # Provider hint is significantly more similar
-                detected_language = provider_lang
-                print(f"   ✅ Detected {provider_lang}: Much higher similarity ({provider_similarity:.2f} vs {patient_similarity:.2f})")
-            elif patient_similarity > provider_similarity + 0.2:
-                # Patient hint is significantly more similar
-                detected_language = patient_lang
-                print(f"   ✅ Detected {patient_lang}: Much higher similarity ({patient_similarity:.2f} vs {provider_similarity:.2f})")
-            elif provider_similarity > 0.5 and patient_similarity > 0.5:
-                # Both are similar - use Whisper's detection as tiebreaker
-                if auto_lang in {provider_lang, patient_lang}:
-                    detected_language = auto_lang
-                    print(f"   ✅ Both similar, using Whisper's detection: {detected_language}")
+            # Determine language based on text analysis
+            if "es" in {provider_lang, patient_lang}:
+                # English/Spanish pair - use text analysis
+                if has_spanish_chars or spanish_word_count >= 2:
+                    detected_language = "es"
+                    print(f"   ✅ Detected Spanish via text (chars={has_spanish_chars}, words={spanish_word_count})")
+                elif english_word_count >= 2:
+                    detected_language = "en"
+                    print(f"   ✅ Detected English via text (words={english_word_count})")
                 else:
-                    # Whisper detected wrong language, pick higher similarity
-                    detected_language = provider_lang if provider_similarity >= patient_similarity else patient_lang
-                    print(f"   ⚠️ Whisper detected '{auto_lang}', using higher similarity: {detected_language}")
-            elif provider_similarity > patient_similarity:
-                detected_language = provider_lang
-                print(f"   ✅ Detected {provider_lang}: Higher similarity")
-            elif patient_similarity > provider_similarity:
-                detected_language = patient_lang
-                print(f"   ✅ Detected {patient_lang}: Higher similarity")
+                    # No clear signal - use Whisper's detection if valid, else default
+                    if whisper_detected in {provider_lang, patient_lang}:
+                        detected_language = whisper_detected
+                        print(f"   ⚠️ No clear text signal, using Whisper: {detected_language}")
+                    else:
+                        detected_language = patient_lang
+                        print(f"   ⚠️ No clear signal, defaulting to patient lang: {detected_language}")
             else:
-                # Equal or no similarity - use Whisper's detection or default to patient
-                if auto_lang in {provider_lang, patient_lang}:
-                    detected_language = auto_lang
-                    print(f"   ⚠️ No clear winner, using Whisper: {detected_language}")
+                # Other language pairs - trust Whisper if valid, else use script detection
+                if whisper_detected in {provider_lang, patient_lang}:
+                    detected_language = whisper_detected
+                    print(f"   ✅ Using Whisper detection: {detected_language}")
                 else:
                     detected_language = patient_lang
-                    print(f"   ⚠️ No similarity, defaulting to patient lang: {detected_language}")
-
-            # Choose the best transcript to use
-            # If Whisper's auto-detect matches our detected language, use auto transcript
-            # Otherwise, use the hinted transcript for the detected language
-            if auto_lang == detected_language:
-                text = candidate_auto["text"]
-                duration = candidate_auto["duration"]
-                print(f"   ✅ Using auto transcript (matches detected language)")
-            elif detected_language == provider_lang and candidate_provider["text"]:
-                text = candidate_provider["text"]
-                duration = candidate_provider["duration"]
-                print(f"   ✅ Using provider-hinted transcript (auto was wrong language)")
-            elif detected_language == patient_lang and candidate_patient["text"]:
-                text = candidate_patient["text"]
-                duration = candidate_patient["duration"]
-                print(f"   ✅ Using patient-hinted transcript (auto was wrong language)")
-            else:
-                # Fallback to auto
-                text = candidate_auto["text"]
-                duration = candidate_auto["duration"]
-                print(f"   ⚠️ Fallback to auto transcript")
+                    print(f"   ⚠️ Whisper detected '{whisper_detected}', defaulting to: {detected_language}")
 
             if not text:
                 raise HTTPException(status_code=500, detail="Failed to transcribe interpreter audio")
