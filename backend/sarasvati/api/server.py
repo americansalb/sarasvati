@@ -604,8 +604,8 @@ def get_cors_origins() -> List[str]:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins - simpler and works
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=False,  # Must be False when using wildcard origin
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1679,7 +1679,8 @@ async def upload_recording(
                     f_in.write(audio_data)
                     input_path = f_in.name
 
-                output_path = input_path.replace(input_ext, "_compressed.mp3")
+                # Create output path (replace extension at end only)
+                output_path = input_path.rsplit(input_ext, 1)[0] + "_compressed.mp3"
 
                 # Compress to mono 16kHz MP3 at 64kbps (good for speech)
                 result_compress = subprocess.run([
