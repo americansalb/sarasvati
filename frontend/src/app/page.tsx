@@ -60,12 +60,29 @@ interface GroupedError {
   sourceQuote: string;
   interpreterQuote: string;
   highestSeverity: string;
+  avgConfidence: number; // 0-100 clinical significance score
+  arbiterSummary: string; // Summary reasoning from tribunal
+  idealInterpretation?: string; // What should have been said
   issues: Array<{
     type: string;
     severity: string;
     description: string;
+    confidence: number;
   }>;
   errorIds: string[];
+}
+
+// Convert confidence to clinical significance percentage
+function getClinicialSignificance(confidence: number): number {
+  return Math.round((confidence || 0.5) * 100);
+}
+
+// Get color for clinical significance score
+function getSignificanceColor(score: number): string {
+  if (score >= 80) return "text-red-400";
+  if (score >= 60) return "text-orange-400";
+  if (score >= 40) return "text-yellow-400";
+  return "text-blue-400";
 }
 
 // Map backend error types to user-friendly labels
@@ -87,27 +104,43 @@ function formatErrorType(type: string): string {
   return typeMap[key] || type.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 }
 
+// Normalize severity value (handles "ErrorSeverity.CRITICAL", "CRITICAL", "critical", etc.)
+function normalizeSeverity(severity: string | undefined): string {
+  if (!severity) return "medium";
+  // Handle enum-style values like "ErrorSeverity.CRITICAL" or "ERRORSEVERITY.HIGH"
+  const cleaned = String(severity)
+    .toLowerCase()
+    .replace(/errorseverity\./gi, "")
+    .replace(/severity\./gi, "")
+    .trim();
+  // Validate it's a known severity
+  if (["critical", "high", "medium", "low"].includes(cleaned)) {
+    return cleaned;
+  }
+  return "medium";
+}
+
 // Get severity badge color
 function getSeverityBadge(severity: string): { bg: string; text: string } {
-  const s = (severity || "medium").toLowerCase();
+  const s = normalizeSeverity(severity);
   switch (s) {
     case "critical": return { bg: "bg-red-600", text: "CRITICAL" };
     case "high": return { bg: "bg-orange-600", text: "HIGH" };
     case "medium": return { bg: "bg-yellow-600", text: "MEDIUM" };
     case "low": return { bg: "bg-blue-600", text: "LOW" };
-    default: return { bg: "bg-gray-600", text: s.toUpperCase() };
+    default: return { bg: "bg-gray-600", text: "MEDIUM" };
   }
 }
 
 // Get card border based on highest severity
 function getCardStyle(severity: string): string {
-  const s = (severity || "medium").toLowerCase();
+  const s = normalizeSeverity(severity);
   switch (s) {
     case "critical": return "border-l-4 border-l-red-500 bg-red-950/50";
     case "high": return "border-l-4 border-l-orange-500 bg-orange-950/30";
     case "medium": return "border-l-4 border-l-yellow-500 bg-yellow-950/30";
     case "low": return "border-l-4 border-l-blue-500 bg-blue-950/30";
-    default: return "border-l-4 border-l-gray-500 bg-gray-800/50";
+    default: return "border-l-4 border-l-yellow-500 bg-yellow-950/30";
   }
 }
 
@@ -177,7 +210,7 @@ function GroupedErrorCard({
 
 // Group errors by source+interpreter quote pair
 function groupErrorsByUtterance(errors: ClinicalError[]): GroupedError[] {
-  const groups = new Map<string, GroupedError>();
+  const groups = new Map<string, GroupedError & { confidenceSum: number; confidenceCount: number }>();
   const severityRank: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 
   for (const err of errors) {
@@ -188,18 +221,38 @@ function groupErrorsByUtterance(errors: ClinicalError[]): GroupedError[] {
         sourceQuote: err.source_quote || "",
         interpreterQuote: err.interpreter_quote || "",
         highestSeverity: err.severity || "medium",
+        avgConfidence: 0,
+        arbiterSummary: "",
+        idealInterpretation: err.ideal_interpretation || undefined,
         issues: [],
         errorIds: [],
+        confidenceSum: 0,
+        confidenceCount: 0,
       });
     }
 
     const group = groups.get(key)!;
+    const confidence = getClinicialSignificance(err.confidence);
+
     group.issues.push({
       type: err.error_type || "unknown",
       severity: err.severity || "medium",
       description: err.description || "Issue detected",
+      confidence: confidence,
     });
     group.errorIds.push(err.error_id);
+    group.confidenceSum += confidence;
+    group.confidenceCount += 1;
+
+    // Capture arbiter reasoning (use the most detailed one)
+    if (err.arbiter_reasoning && err.arbiter_reasoning.length > (group.arbiterSummary?.length || 0)) {
+      group.arbiterSummary = err.arbiter_reasoning;
+    }
+
+    // Capture ideal interpretation if available
+    if (err.ideal_interpretation && !group.idealInterpretation) {
+      group.idealInterpretation = err.ideal_interpretation;
+    }
 
     // Update highest severity
     const currentRank = severityRank[(group.highestSeverity || "medium").toLowerCase()] || 2;
@@ -209,12 +262,17 @@ function groupErrorsByUtterance(errors: ClinicalError[]): GroupedError[] {
     }
   }
 
-  // Sort by severity (highest first)
-  return Array.from(groups.values()).sort((a, b) => {
-    const rankA = severityRank[a.highestSeverity.toLowerCase()] || 2;
-    const rankB = severityRank[b.highestSeverity.toLowerCase()] || 2;
-    return rankB - rankA;
-  });
+  // Calculate average confidence and sort by severity
+  return Array.from(groups.values())
+    .map(g => ({
+      ...g,
+      avgConfidence: g.confidenceCount > 0 ? Math.round(g.confidenceSum / g.confidenceCount) : 50,
+    }))
+    .sort((a, b) => {
+      const rankA = severityRank[a.highestSeverity.toLowerCase()] || 2;
+      const rankB = severityRank[b.highestSeverity.toLowerCase()] || 2;
+      return rankB - rankA;
+    });
 }
 
 // ===========================================================================
@@ -345,9 +403,11 @@ function SingleDebateSection({
                 <div className={`p-2 rounded text-sm ${turn.changed_mind ? "bg-yellow-900/20 border border-yellow-800" : "bg-gray-900/50"}`}>
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-medium text-purple-300 text-xs">{turn.agent}</span>
-                    <span className="text-xs text-gray-600">({turn.model || turn.provider})</span>
+                    <span className="text-xs px-1.5 py-0.5 bg-gray-700 text-gray-300 rounded">
+                      {turn.model || turn.provider}
+                    </span>
                     {turn.changed_mind && (
-                      <span className="text-xs text-yellow-400">🔄</span>
+                      <span className="text-xs text-yellow-400">🔄 Changed position</span>
                     )}
                     <span className={`ml-auto text-xs px-1.5 py-0.5 rounded ${getPositionColor(turn.position)}`}>
                       {(turn.position || "").substring(0, 20)}
@@ -442,6 +502,39 @@ export default function DashboardPage() {
   const [providerLang, setProviderLang] = useState("en");
   const [patientLang, setPatientLang] = useState("es");
   const [selectedErrorDetail, setSelectedErrorDetail] = useState<GroupedError | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const analyzeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track when interpreter transcripts arrive to show analyzing state
+  const lastInterpreterCountRef = useRef(0);
+  useEffect(() => {
+    const interpreterCount = sessionState.transcripts.filter(t => t.role === "interpreter").length;
+    if (interpreterCount > lastInterpreterCountRef.current) {
+      // New interpreter transcript - start analyzing indicator
+      setIsAnalyzing(true);
+      // Clear any existing timeout
+      if (analyzeTimeoutRef.current) {
+        clearTimeout(analyzeTimeoutRef.current);
+      }
+      // Set timeout to auto-clear after 30 seconds (in case no verdict comes)
+      analyzeTimeoutRef.current = setTimeout(() => {
+        setIsAnalyzing(false);
+      }, 30000);
+    }
+    lastInterpreterCountRef.current = interpreterCount;
+  }, [sessionState.transcripts]);
+
+  // Clear analyzing state when verdict arrives
+  const lastVerdictCountRef = useRef(0);
+  useEffect(() => {
+    if (sessionState.verdicts.length > lastVerdictCountRef.current) {
+      setIsAnalyzing(false);
+      if (analyzeTimeoutRef.current) {
+        clearTimeout(analyzeTimeoutRef.current);
+      }
+    }
+    lastVerdictCountRef.current = sessionState.verdicts.length;
+  }, [sessionState.verdicts]);
 
   // Get clinical errors and group by utterance
   const clinicalErrors = sessionState.errors.filter((e) => !e.is_system_error);
@@ -503,15 +596,23 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between max-w-7xl mx-auto">
           <div className="flex items-center gap-4">
             <h1 className="text-2xl font-bold text-white">SARASVATI</h1>
-            <div className="flex items-center gap-2">
-              {connectionState.websocketConnected ? (
-                <Wifi className="text-green-500" size={18} />
-              ) : (
-                <WifiOff className="text-red-500" size={18} />
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                {connectionState.websocketConnected ? (
+                  <Wifi className="text-green-500" size={18} />
+                ) : (
+                  <WifiOff className="text-red-500" size={18} />
+                )}
+                <span className={`text-sm ${connectionState.websocketConnected ? "text-green-400" : "text-red-400"}`}>
+                  {connectionState.websocketConnected ? "Connected" : "Disconnected"}
+                </span>
+              </div>
+              {isAnalyzing && (
+                <div className="flex items-center gap-2 px-3 py-1 bg-yellow-900/50 border border-yellow-700 rounded-full animate-pulse">
+                  <div className="w-2 h-2 bg-yellow-400 rounded-full animate-ping" />
+                  <span className="text-xs text-yellow-300 font-medium">Analyzing interpretation...</span>
+                </div>
               )}
-              <span className={`text-sm ${connectionState.websocketConnected ? "text-green-400" : "text-red-400"}`}>
-                {connectionState.websocketConnected ? "Connected" : "Disconnected"}
-              </span>
             </div>
           </div>
 
@@ -719,6 +820,27 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="p-4 space-y-4">
+                    {/* Clinical Significance Score */}
+                    <div className="flex items-center justify-between bg-gray-900/50 rounded-lg p-3">
+                      <div>
+                        <div className="text-xs text-gray-400">Clinical Significance</div>
+                        <div className={`text-2xl font-bold ${getSignificanceColor(selectedErrorDetail.avgConfidence)}`}>
+                          {selectedErrorDetail.avgConfidence}%
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs text-gray-400">Severity Level</div>
+                        <div className={`text-lg font-semibold ${
+                          selectedErrorDetail.highestSeverity === "critical" ? "text-red-400" :
+                          selectedErrorDetail.highestSeverity === "high" ? "text-orange-400" :
+                          selectedErrorDetail.highestSeverity === "medium" ? "text-yellow-400" :
+                          "text-blue-400"
+                        }`}>
+                          {selectedErrorDetail.highestSeverity.toUpperCase()}
+                        </div>
+                      </div>
+                    </div>
+
                     {/* What was said */}
                     <div className="space-y-2">
                       {selectedErrorDetail.sourceQuote && (
@@ -733,6 +855,12 @@ export default function DashboardPage() {
                           <p className="text-gray-200">"{selectedErrorDetail.interpreterQuote}"</p>
                         </div>
                       )}
+                      {selectedErrorDetail.idealInterpretation && (
+                        <div className="p-3 bg-green-950/30 rounded-lg border border-green-800">
+                          <div className="text-xs text-green-400 mb-1">✓ Ideal Interpretation:</div>
+                          <p className="text-gray-200">"{selectedErrorDetail.idealInterpretation}"</p>
+                        </div>
+                      )}
                     </div>
 
                     {/* Issues found */}
@@ -745,12 +873,17 @@ export default function DashboardPage() {
                           const badge = getSeverityBadge(issue.severity);
                           return (
                             <div key={i} className={`p-3 rounded-lg ${getCardStyle(issue.severity)}`}>
-                              <div className="flex items-center gap-2 mb-2">
-                                <span className={`text-xs px-2 py-0.5 rounded font-bold ${badge.bg}`}>
-                                  {badge.text}
-                                </span>
-                                <span className="text-sm font-medium text-white">
-                                  {formatErrorType(issue.type)}
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-xs px-2 py-0.5 rounded font-bold ${badge.bg}`}>
+                                    {badge.text}
+                                  </span>
+                                  <span className="text-sm font-medium text-white">
+                                    {formatErrorType(issue.type)}
+                                  </span>
+                                </div>
+                                <span className={`text-xs font-medium ${getSignificanceColor(issue.confidence)}`}>
+                                  {issue.confidence}% confidence
                                 </span>
                               </div>
                               <p className="text-sm text-gray-300">{issue.description}</p>
@@ -759,6 +892,19 @@ export default function DashboardPage() {
                         })}
                       </div>
                     </div>
+
+                    {/* Tribunal Summary/Conclusion */}
+                    {selectedErrorDetail.arbiterSummary && (
+                      <div className="bg-gray-900/70 rounded-lg p-3 border border-gray-700">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-lg">⚖️</span>
+                          <span className="text-sm font-medium text-gray-300">Tribunal Conclusion</span>
+                        </div>
+                        <p className="text-sm text-gray-400 leading-relaxed">
+                          {selectedErrorDetail.arbiterSummary}
+                        </p>
+                      </div>
+                    )}
 
                     {/* Dismiss button */}
                     <div className="flex gap-2 pt-2">
@@ -827,22 +973,30 @@ export default function DashboardPage() {
             {/* All Error Groups */}
             <div>
               <h3 className="text-lg font-semibold mb-3">All Detected Issues ({groupedErrors.length} utterances, {clinicalErrors.length} total findings)</h3>
-              <div className="bg-gray-900/50 rounded-lg p-4 max-h-80 overflow-y-auto space-y-3">
+              <div className="bg-gray-900/50 rounded-lg p-4 max-h-96 overflow-y-auto space-y-4">
                 {groupedErrors.length === 0 ? (
                   <p className="text-gray-500 italic">No errors detected</p>
                 ) : (
                   groupedErrors.map((group, idx) => {
                     const badge = getSeverityBadge(group.highestSeverity);
                     return (
-                      <div key={idx} className={`p-3 rounded-lg ${getCardStyle(group.highestSeverity)}`}>
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className={`text-xs px-2 py-0.5 rounded font-bold ${badge.bg}`}>
-                            {badge.text}
-                          </span>
-                          <span className="text-gray-400 text-xs">
-                            {group.issues.length} finding{group.issues.length > 1 ? "s" : ""}
-                          </span>
+                      <div key={idx} className={`p-4 rounded-lg ${getCardStyle(group.highestSeverity)}`}>
+                        {/* Header with severity and clinical significance */}
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs px-2 py-0.5 rounded font-bold ${badge.bg}`}>
+                              {badge.text}
+                            </span>
+                            <span className="text-gray-400 text-xs">
+                              {group.issues.length} finding{group.issues.length > 1 ? "s" : ""}
+                            </span>
+                          </div>
+                          <div className={`text-sm font-medium ${getSignificanceColor(group.avgConfidence)}`}>
+                            {group.avgConfidence}% significance
+                          </div>
                         </div>
+
+                        {/* Quotes */}
                         {group.sourceQuote && (
                           <p className="text-sm text-gray-300 mb-1">
                             <span className="text-blue-400">Provider:</span> "{group.sourceQuote}"
@@ -853,11 +1007,36 @@ export default function DashboardPage() {
                             <span className="text-purple-400">Interpreter:</span> "{group.interpreterQuote}"
                           </p>
                         )}
-                        <div className="text-xs text-gray-400 space-y-1">
+                        {group.idealInterpretation && (
+                          <p className="text-sm text-green-400 mb-2 bg-green-950/30 p-2 rounded">
+                            <span className="font-medium">✓ Should say:</span> "{group.idealInterpretation}"
+                          </p>
+                        )}
+
+                        {/* Issue list with confidence */}
+                        <div className="text-xs text-gray-400 space-y-1.5 mt-2 bg-gray-900/50 p-2 rounded">
                           {group.issues.map((issue, i) => (
-                            <div key={i}>• {formatErrorType(issue.type)}: {issue.description}</div>
+                            <div key={i} className="flex items-start justify-between gap-2">
+                              <span>• <span className="text-gray-300">{formatErrorType(issue.type)}:</span> {issue.description}</span>
+                              <span className={`shrink-0 ${getSignificanceColor(issue.confidence)}`}>
+                                {issue.confidence}%
+                              </span>
+                            </div>
                           ))}
                         </div>
+
+                        {/* Arbiter summary */}
+                        {group.arbiterSummary && (
+                          <div className="mt-3 pt-3 border-t border-gray-700">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span>⚖️</span>
+                              <span className="text-xs font-medium text-gray-400">Tribunal Conclusion:</span>
+                            </div>
+                            <p className="text-xs text-gray-500 leading-relaxed">
+                              {group.arbiterSummary}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     );
                   })
