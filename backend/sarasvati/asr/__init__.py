@@ -10,12 +10,9 @@ from .providers import (
     GroqProvider,
     OpenAIProvider,
 )
-from .diarization import (
-    SpeakerDiarizer,
-    DiarizedSegment,
-    DiarizationResult,
-    align_transcription_with_diarization,
-)
+
+# Diarization imports are lazy - only import when needed
+# This prevents server crash if resemblyzer isn't installed
 
 __all__ = [
     "ASRProvider",
@@ -26,8 +23,4 @@ __all__ = [
     "asr_config",
     "GroqProvider",
     "OpenAIProvider",
-    "SpeakerDiarizer",
-    "DiarizedSegment",
-    "DiarizationResult",
-    "align_transcription_with_diarization",
 ]

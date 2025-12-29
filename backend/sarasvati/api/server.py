@@ -38,7 +38,7 @@ from ..core.state import (
 from ..core.graph import SarasvatiEngine, create_engine
 from ..asr.providers import ASRProviderFactory, asr_config, ASRBackend, EnsembleASR
 from ..asr.translation import TranslationService, EnsembleTranslation
-from ..asr.diarization import SpeakerDiarizer, align_transcription_with_diarization
+# Diarization is imported lazily inside functions to prevent startup crash if resemblyzer not installed
 
 logger = logging.getLogger(__name__)
 
@@ -1632,23 +1632,33 @@ async def upload_recording(
         print("🔊 Running speaker diarization (voice fingerprinting)...")
 
         # Start diarization task (wrapped to handle errors gracefully)
+        # Import lazily to prevent server crash if resemblyzer not installed
         async def safe_diarize():
             try:
+                from ..asr.diarization import SpeakerDiarizer, DiarizationResult
                 return await SpeakerDiarizer.diarize(
                     audio_data,
                     num_speakers=num_speakers,
                     min_speakers=2,
                     max_speakers=4,
                 )
+            except ImportError as e:
+                print(f"⚠️ Diarization not available (missing dependency): {e}")
+                # Return a simple fallback result
+                class FallbackResult:
+                    segments = []
+                    num_speakers = 1
+                    duration = 0.0
+                    method = "fallback"
+                return FallbackResult()
             except Exception as e:
                 print(f"⚠️ Diarization error: {e}")
-                from ..asr.diarization import DiarizationResult
-                return DiarizationResult(
-                    segments=[],
-                    num_speakers=1,
-                    duration=0.0,
-                    method="fallback",
-                )
+                class FallbackResult:
+                    segments = []
+                    num_speakers = 1
+                    duration = 0.0
+                    method = "fallback"
+                return FallbackResult()
 
         diarization_task = asyncio.create_task(safe_diarize())
 
@@ -1753,21 +1763,27 @@ async def upload_recording(
             print(f"🔊 Diarization complete: {diarization.num_speakers} speakers detected (method: {diarization.method})")
         except Exception as e:
             print(f"⚠️ Diarization failed: {e}, falling back to basic detection")
-            # Create fallback diarization result
-            from ..asr.diarization import DiarizationResult, DiarizedSegment
-            diarization = DiarizationResult(
-                segments=[],
-                num_speakers=1,
-                duration=duration,
-                method="fallback",
-            )
+            # Create fallback diarization result (inline class to avoid import)
+            class FallbackDiarization:
+                segments = []
+                num_speakers = 1
+                method = "fallback"
+            FallbackDiarization.duration = duration
+            diarization = FallbackDiarization()
 
         # Align transcription with diarization
+        use_fallback = True
         if diarization.method == "resemblyzer" and diarization.segments:
-            # Use voice-based speaker assignment
-            aligned = align_transcription_with_diarization(whisper_segments, diarization)
-            speakers_seen = set(speaker for _, speaker in aligned)
-        else:
+            # Use voice-based speaker assignment (lazy import)
+            try:
+                from ..asr.diarization import align_transcription_with_diarization
+                aligned = align_transcription_with_diarization(whisper_segments, diarization)
+                speakers_seen = set(speaker for _, speaker in aligned)
+                use_fallback = False
+            except ImportError:
+                print("⚠️ Diarization module not available, using fallback")
+
+        if use_fallback:
             # Fallback: Use pause-based heuristic (less accurate)
             print("⚠️ Using fallback pause-based speaker detection")
             aligned = []
