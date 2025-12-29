@@ -89,12 +89,12 @@ class SarasvatiGraph:
             self.dual_tribunal = DualTribunalOrchestrator(
                 groq_api_key=os.environ.get("GROQ_API_KEY", ""),
                 openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
-                deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+                anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
                 model_a=DEFAULT_MODEL_A,
                 model_b=DEFAULT_MODEL_B,
                 model_c=DEFAULT_MODEL_C,
             )
-            print("✅ Dual Tribunal (Translation + Error) initialized")
+            print("✅ Dual Tribunal (Translation + Error) initialized with Anthropic")
         except Exception as e:
             print(f"⚠️ Dual Tribunal init failed, using legacy orchestrator: {e}")
 

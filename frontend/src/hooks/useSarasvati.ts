@@ -72,6 +72,7 @@ export function useSarasvati(
     alignments: [],
     verdicts: [],
     debugInfo: null,
+    debateLogs: null,
   });
 
   // Refs
@@ -339,6 +340,7 @@ export function useSarasvati(
       alignments: [],
       verdicts: [],
       debugInfo: null,
+      debateLogs: null,
     });
   }, [disconnectLiveKit, disconnectWebSocket]);
 

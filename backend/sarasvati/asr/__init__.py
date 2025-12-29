@@ -11,6 +11,9 @@ from .providers import (
     OpenAIProvider,
 )
 
+# Diarization imports are lazy - only import when needed
+# This prevents server crash if resemblyzer isn't installed
+
 __all__ = [
     "ASRProvider",
     "ASRResult",

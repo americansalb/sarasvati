@@ -3,14 +3,15 @@ SARASVATI Independent Tribunal System
 ======================================
 The "Trisul Protocol" - Three UNIQUE agents in CONSENSUS DEBATE.
 
-Architecture (3 UNIQUE MODELS - EQUAL capability, all CHEAP!):
-- Agent A: Llama 3.1 8B (Groq) - FREE, Meta architecture
-- Agent B: GPT-4o-mini (OpenAI) - $0.15/1M, OpenAI newest efficient
-- Agent C: GPT-3.5-turbo (OpenAI) - $0.50/1M, OpenAI older (different training)
+Architecture (3 UNIQUE MODELS from 3 UNIQUE PROVIDERS):
+- Agent A: Llama 4 Scout (Groq) - $0.11/$0.34 per 1M tokens
+- Agent B: GPT-5 mini (OpenAI) - $0.25/1M tokens
+- Agent C: Claude Haiku 4.5 (Anthropic) - $1/$5 per 1M tokens
 
-All 3 are "efficient tier" models with EQUAL capability but DIFFERENT:
-- Different training data (Meta vs OpenAI 2024 vs OpenAI 2022)
-- Different architectures (Llama vs GPT-4 family vs GPT-3.5 family)
+All 3 are from DIFFERENT companies with DIFFERENT training:
+- Groq (Meta's Llama) - Open source, different training philosophy
+- OpenAI (GPT) - Proprietary, RLHF-heavy
+- Anthropic (Claude) - Constitutional AI, different safety approach
 
 DEBATE FLOW (not hierarchical - true consensus):
 1. ROUND 1 - Independent Analysis:
@@ -28,7 +29,7 @@ DEBATE FLOW (not hierarchical - true consensus):
    - If all disagree → continue debate (max 3 rounds)
    - Final verdict = majority or "needs human review"
 
-Providers: Groq (FREE) + OpenAI (cheap)
+Providers: Groq + OpenAI + Anthropic
 """
 
 import os
@@ -72,35 +73,36 @@ from .state import (
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # REQUIREMENTS:
-#   - 3 UNIQUE providers (groq, openai, deepseek - all different companies)
+#   - 3 UNIQUE providers (groq, openai, anthropic - all different companies)
 #   - 3 UNIQUE models (all different model names)
 #   - NO FALLBACKS - if a provider/model can't be initialized, system FAILS
 #
 # Environment Variables:
-#   TRIBUNAL_MODEL_A    = Model for Agent A (default: llama-3.1-8b-instant)
-#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-4o-mini)
-#   TRIBUNAL_MODEL_C    = Model for Agent C (default: deepseek-chat)
+#   TRIBUNAL_MODEL_A    = Model for Agent A (default: llama-4-scout)
+#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-5-mini)
+#   TRIBUNAL_MODEL_C    = Model for Agent C (default: claude-haiku-4-5)
 #
 #   TRIBUNAL_PROVIDER_A = Provider for Agent A (default: groq)
 #   TRIBUNAL_PROVIDER_B = Provider for Agent B (default: openai)
-#   TRIBUNAL_PROVIDER_C = Provider for Agent C (default: deepseek)
+#   TRIBUNAL_PROVIDER_C = Provider for Agent C (default: anthropic)
 #
 # API Keys (ALL REQUIRED for default config):
-#   GROQ_API_KEY     = For Groq models (FREE)
-#   OPENAI_API_KEY   = For OpenAI models (~$0.15-0.50/1M tokens)
-#   DEEPSEEK_API_KEY = For DeepSeek models (~$0.14/1M tokens)
+#   GROQ_API_KEY      = For Groq models
+#   OPENAI_API_KEY    = For OpenAI models
+#   ANTHROPIC_API_KEY = For Anthropic models
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # 3 UNIQUE MODELS - each from a different AI company
-DEFAULT_MODEL_A = os.getenv("TRIBUNAL_MODEL_A", "llama-3.1-8b-instant")  # Meta (via Groq)
-DEFAULT_MODEL_B = os.getenv("TRIBUNAL_MODEL_B", "gpt-4o-mini")            # OpenAI
-DEFAULT_MODEL_C = os.getenv("TRIBUNAL_MODEL_C", "deepseek-chat")          # DeepSeek
+# Use specific version IDs for production stability (aliases auto-migrate which can break)
+DEFAULT_MODEL_A = os.getenv("TRIBUNAL_MODEL_A", "meta-llama/llama-4-scout-17b-16e-instruct")  # Llama 4 Scout (Groq)
+DEFAULT_MODEL_B = os.getenv("TRIBUNAL_MODEL_B", "gpt-5-mini")                                 # GPT-5 mini (OpenAI)
+DEFAULT_MODEL_C = os.getenv("TRIBUNAL_MODEL_C", "claude-haiku-4-5")                            # Claude Haiku 4.5 (Anthropic)
 
 # 3 UNIQUE PROVIDERS - maximum independence
-DEFAULT_PROVIDER_A = os.getenv("TRIBUNAL_PROVIDER_A", "groq").lower()     # Groq (FREE)
-DEFAULT_PROVIDER_B = os.getenv("TRIBUNAL_PROVIDER_B", "openai").lower()   # OpenAI
-DEFAULT_PROVIDER_C = os.getenv("TRIBUNAL_PROVIDER_C", "deepseek").lower() # DeepSeek
+DEFAULT_PROVIDER_A = os.getenv("TRIBUNAL_PROVIDER_A", "groq").lower()      # Groq
+DEFAULT_PROVIDER_B = os.getenv("TRIBUNAL_PROVIDER_B", "openai").lower()    # OpenAI
+DEFAULT_PROVIDER_C = os.getenv("TRIBUNAL_PROVIDER_C", "anthropic").lower() # Anthropic
 
 # Legacy defaults (for backwards compatibility)
 DEFAULT_MODEL_EXTRACTOR = DEFAULT_MODEL_A
@@ -1105,7 +1107,7 @@ class ClinicalDebateOrchestrator:
     Consensus-Based Tribunal Orchestrator
 
     STRICT REQUIREMENTS:
-    - 3 UNIQUE providers (groq, openai, deepseek)
+    - 3 UNIQUE providers (groq, openai, anthropic)
     - 3 UNIQUE models (all different)
     - NO FALLBACKS - fails hard if requirements not met
 
@@ -1137,13 +1139,13 @@ class ClinicalDebateOrchestrator:
             groq_api_key: API key for Groq (REQUIRED if provider uses groq)
             openai_api_key: API key for OpenAI (REQUIRED if provider uses openai)
             anthropic_api_key: API key for Anthropic (REQUIRED if provider uses anthropic)
-            deepseek_api_key: API key for DeepSeek (REQUIRED if provider uses deepseek)
-            model_a: Model name for Agent A (default: llama-3.1-8b-instant)
-            model_b: Model name for Agent B (default: gpt-4o-mini)
-            model_c: Model name for Agent C (default: deepseek-chat)
+            deepseek_api_key: API key for DeepSeek (optional, for legacy configs)
+            model_a: Model name for Agent A (default: llama-4-scout via Groq)
+            model_b: Model name for Agent B (default: gpt-5-mini via OpenAI)
+            model_c: Model name for Agent C (default: claude-haiku-4-5 via Anthropic)
             provider_a: Provider for Agent A (default: groq)
             provider_b: Provider for Agent B (default: openai)
-            provider_c: Provider for Agent C (default: deepseek)
+            provider_c: Provider for Agent C (default: anthropic)
 
         Raises:
             ValueError: If providers or models are not unique, or if API keys missing

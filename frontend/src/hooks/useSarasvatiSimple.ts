@@ -151,6 +151,7 @@ export function useSarasvatiSimple(options: UseSarasvatiOptions): UseSarasvatiRe
           alignments: [],      // Clear old alignments
           verdicts: [],        // Clear old verdicts
           debugInfo: null,     // Clear debug info
+          debateLogs: null,    // Clear debate logs
         });
         console.log("🔄 Session reset: all state cleared for new session");
         break;

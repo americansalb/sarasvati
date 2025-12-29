@@ -38,6 +38,7 @@ from ..core.state import (
 from ..core.graph import SarasvatiEngine, create_engine
 from ..asr.providers import ASRProviderFactory, asr_config, ASRBackend, EnsembleASR
 from ..asr.translation import TranslationService, EnsembleTranslation
+# Diarization is imported lazily inside functions to prevent startup crash if resemblyzer not installed
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ _redis_host, _redis_port, _redis_db = parse_redis_url()
 #
 # Environment Variables:
 #   TRIBUNAL_MODEL_A    = Model for Agent A (default: llama-3.1-8b-instant)
-#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-4o-mini)
+#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-5-mini)
 #   TRIBUNAL_MODEL_C    = Model for Agent C (default: deepseek-chat)
 #
 #   TRIBUNAL_PROVIDER_A = Provider for Agent A (default: groq)
@@ -104,7 +105,7 @@ _redis_host, _redis_port, _redis_db = parse_redis_url()
 #
 # Default tribunal (3 unique providers, 3 unique models):
 #   Agent A: llama-3.1-8b-instant (Groq/Meta) - FREE
-#   Agent B: gpt-4o-mini (OpenAI) - $0.15/1M
+#   Agent B: gpt-5-mini (OpenAI) - $0.25/1M
 #   Agent C: deepseek-chat (DeepSeek) - $0.14/1M
 #
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -587,18 +588,24 @@ def get_cors_origins() -> List[str]:
     origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        # Production frontends
+        "https://maya-wqre.onrender.com",
+        "https://sarasvati-frontend.onrender.com",
     ]
     frontend_url = os.getenv("FRONTEND_URL")
     if frontend_url:
         origins.append(frontend_url)
         # Also allow without trailing slash
         origins.append(frontend_url.rstrip("/"))
+        # Also allow https variant
+        if frontend_url.startswith("http://"):
+            origins.append(frontend_url.replace("http://", "https://"))
     return origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_cors_origins(),
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=False,  # Must be False when using wildcard origin
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1013,53 +1020,92 @@ async def transcribe_audio(
             print(f"      {provider_lang}_hint: '{provider_preview}...' (len={len(candidate_provider['text'])})")
             print(f"      {patient_lang}_hint: '{patient_preview}...' (len={len(candidate_patient['text'])})")
 
-            # Strategy: ALWAYS use auto transcript (it's already correct!)
-            # Compare it with hints to determine which language was spoken
-            auto_text = candidate_auto["text"].lower()
-            provider_text = candidate_provider["text"].lower()
-            patient_text = candidate_patient["text"].lower()
+            # Strategy: Determine language from hints, use best transcript
+            auto_text = candidate_auto["text"].lower().strip()
+            provider_text = candidate_provider["text"].lower().strip()
+            patient_text = candidate_patient["text"].lower().strip()
+            auto_lang = candidate_auto["lang"]
 
-            # If auto matches provider hint closely, it's the provider language
-            # If auto matches patient hint closely, it's the patient language
-            # Otherwise, use Whisper's returned language code
-            detected_language = candidate_auto["lang"]
+            # Calculate similarity scores using word overlap (Jaccard index)
+            def calc_similarity(text1: str, text2: str) -> float:
+                if not text1 or not text2:
+                    return 0.0
+                words1 = set(text1.split())
+                words2 = set(text2.split())
+                if not words1 or not words2:
+                    return 0.0
+                intersection = len(words1 & words2)
+                union = len(words1 | words2)
+                return intersection / union if union > 0 else 0.0
 
-            if auto_text and provider_text and auto_text == provider_text:
-                detected_language = provider_lang
-                print(f"   ✅ Detected {provider_lang}: Auto matches provider hint exactly")
-            elif auto_text and patient_text and auto_text == patient_text:
+            provider_similarity = calc_similarity(auto_text, provider_text)
+            patient_similarity = calc_similarity(auto_text, patient_text)
+
+            print(f"   📊 Similarity scores: provider={provider_similarity:.2f}, patient={patient_similarity:.2f}")
+            print(f"   📊 Whisper auto-detected: {auto_lang}")
+
+            # PRIORITY: Compare transcripts FIRST, then use Whisper's detection as tiebreaker
+            # This prevents trusting Whisper when it detects wrong language
+
+            # If auto matches one hint exactly, use that language
+            if auto_text == patient_text and auto_text != provider_text:
                 detected_language = patient_lang
                 print(f"   ✅ Detected {patient_lang}: Auto matches patient hint exactly")
-            elif auto_text and provider_text and patient_text:
-                # Calculate similarity scores to determine language
-                # If provider hint is a translation (very different), auto is probably patient lang
-                # If patient hint is a translation (very different), auto is probably provider lang
-                provider_similarity = len(set(auto_text.split()) & set(provider_text.split())) / max(len(auto_text.split()), len(provider_text.split())) if auto_text and provider_text else 0
-                patient_similarity = len(set(auto_text.split()) & set(patient_text.split())) / max(len(auto_text.split()), len(patient_text.split())) if auto_text and patient_text else 0
-
-                if provider_similarity > patient_similarity and provider_similarity > 0.5:
-                    detected_language = provider_lang
-                    print(f"   ✅ Detected {provider_lang}: Auto more similar to provider hint (score={provider_similarity:.2f})")
-                elif patient_similarity > provider_similarity and patient_similarity > 0.5:
-                    detected_language = patient_lang
-                    print(f"   ✅ Detected {patient_lang}: Auto more similar to patient hint (score={patient_similarity:.2f})")
-                else:
-                    print(f"   ⚠️ Could not determine language from hints (provider={provider_similarity:.2f}, patient={patient_similarity:.2f})")
-                    print(f"   → Using Whisper's auto language: {detected_language}")
-            elif detected_language in {provider_lang, patient_lang}:
-                print(f"   ✅ Using Whisper's auto-detected language: {detected_language}")
-            else:
-                # Whisper didn't return a valid language, default to provider lang
+            elif auto_text == provider_text and auto_text != patient_text:
                 detected_language = provider_lang
-                print(f"   ⚠️ Whisper returned unknown language '{detected_language}', defaulting to {provider_lang}")
+                print(f"   ✅ Detected {provider_lang}: Auto matches provider hint exactly")
+            elif provider_similarity > patient_similarity + 0.2:
+                # Provider hint is significantly more similar
+                detected_language = provider_lang
+                print(f"   ✅ Detected {provider_lang}: Much higher similarity ({provider_similarity:.2f} vs {patient_similarity:.2f})")
+            elif patient_similarity > provider_similarity + 0.2:
+                # Patient hint is significantly more similar
+                detected_language = patient_lang
+                print(f"   ✅ Detected {patient_lang}: Much higher similarity ({patient_similarity:.2f} vs {provider_similarity:.2f})")
+            elif provider_similarity > 0.5 and patient_similarity > 0.5:
+                # Both are similar - use Whisper's detection as tiebreaker
+                if auto_lang in {provider_lang, patient_lang}:
+                    detected_language = auto_lang
+                    print(f"   ✅ Both similar, using Whisper's detection: {detected_language}")
+                else:
+                    # Whisper detected wrong language, pick higher similarity
+                    detected_language = provider_lang if provider_similarity >= patient_similarity else patient_lang
+                    print(f"   ⚠️ Whisper detected '{auto_lang}', using higher similarity: {detected_language}")
+            elif provider_similarity > patient_similarity:
+                detected_language = provider_lang
+                print(f"   ✅ Detected {provider_lang}: Higher similarity")
+            elif patient_similarity > provider_similarity:
+                detected_language = patient_lang
+                print(f"   ✅ Detected {patient_lang}: Higher similarity")
+            else:
+                # Equal or no similarity - use Whisper's detection or default to patient
+                if auto_lang in {provider_lang, patient_lang}:
+                    detected_language = auto_lang
+                    print(f"   ⚠️ No clear winner, using Whisper: {detected_language}")
+                else:
+                    detected_language = patient_lang
+                    print(f"   ⚠️ No similarity, defaulting to patient lang: {detected_language}")
 
-            # CRITICAL: ALWAYS use auto-detect transcript for UI (preserves raw Whisper text)
-            # Language hints cause Whisper to TRANSLATE, not transcribe!
-            # We only use hints for language detection, not for the actual transcript.
-            # This ensures "no problema" stays as "no problema", not "No hay problema"
-            text = candidate_auto["text"]
-            duration = candidate_auto["duration"]
-            print(f"   ✅ Using auto transcript for UI (language={detected_language}, raw text preserved)")
+            # Choose the best transcript to use
+            # If Whisper's auto-detect matches our detected language, use auto transcript
+            # Otherwise, use the hinted transcript for the detected language
+            if auto_lang == detected_language:
+                text = candidate_auto["text"]
+                duration = candidate_auto["duration"]
+                print(f"   ✅ Using auto transcript (matches detected language)")
+            elif detected_language == provider_lang and candidate_provider["text"]:
+                text = candidate_provider["text"]
+                duration = candidate_provider["duration"]
+                print(f"   ✅ Using provider-hinted transcript (auto was wrong language)")
+            elif detected_language == patient_lang and candidate_patient["text"]:
+                text = candidate_patient["text"]
+                duration = candidate_patient["duration"]
+                print(f"   ✅ Using patient-hinted transcript (auto was wrong language)")
+            else:
+                # Fallback to auto
+                text = candidate_auto["text"]
+                duration = candidate_auto["duration"]
+                print(f"   ⚠️ Fallback to auto transcript")
 
             if not text:
                 raise HTTPException(status_code=500, detail="Failed to transcribe interpreter audio")
@@ -1488,6 +1534,557 @@ async def update_asr_config(config: dict):
     """
     asr_config.update(config)
     return {"status": "success", "config": asr_config.get_all()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUDIO UPLOAD & ANALYSIS ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class UploadedSegment(BaseModel):
+    """A segment from uploaded audio with speaker detection."""
+    segment_id: str
+    speaker_id: str  # "speaker_1", "speaker_2", etc.
+    start_time: float
+    end_time: float
+    text: str
+    detected_language: Optional[str] = None
+
+
+class SpeakerLanguageInfo(BaseModel):
+    """Language info for a speaker based on their segments."""
+    speaker_id: str
+    primary_language: str  # Most common language spoken by this speaker
+    segment_count: int
+    sample_text: str  # First bit of text for identification
+
+
+class UploadResponse(BaseModel):
+    """Response from audio upload with detected segments."""
+    upload_id: str
+    duration: float
+    segments: List[UploadedSegment]
+    detected_speakers: List[str]  # ["speaker_1", "speaker_2", "speaker_3"]
+    speaker_language_info: List[SpeakerLanguageInfo]  # Language info per speaker for grouping
+
+
+class RoleMapping(BaseModel):
+    """Maps detected speakers to roles."""
+    speaker_id: str  # "speaker_1"
+    role: str  # "provider", "patient", "interpreter"
+
+
+class AnalyzeRequest(BaseModel):
+    """Request to analyze uploaded recording."""
+    upload_id: str
+    role_mappings: List[RoleMapping]
+    languages_present: List[str] = ["en"]  # Languages spoken in the recording
+
+
+# Store uploaded recordings temporarily (in production, use Redis or S3)
+uploaded_recordings: Dict[str, Dict] = {}
+
+
+@app.post("/upload-recording", response_model=UploadResponse)
+async def upload_recording(
+    audio: UploadFile = File(...),
+    languages_present: str = Form(default="en"),  # Comma-separated list of languages present
+    num_speakers: Optional[int] = Form(default=None),
+):
+    """
+    Upload an audio recording for analysis.
+
+    1. Performs speaker diarization using Resemblyzer (voice fingerprinting)
+    2. Transcribes the audio using Groq Whisper with segment timestamps
+    3. Aligns transcription with speaker diarization
+    4. Matches speakers to the specified languages present
+    5. Returns segments with speaker IDs for role assignment
+
+    Args:
+        languages_present: Comma-separated list of languages in the recording
+                          (e.g., "en,fa" for English and Farsi). These are used
+                          as strong hints to match speakers to languages.
+        num_speakers: If you know the exact number of speakers, provide it
+                      for better diarization accuracy
+
+    The system will:
+    - Use the languages_present to determine which language each speaker uses
+    - Group speakers by their detected language
+    - Suggest merging speakers who speak the same language
+    - Allow manual role assignment before analysis
+    """
+    upload_id = f"upload_{uuid.uuid4().hex[:12]}"
+
+    # Parse languages present (comma-separated)
+    lang_list = [lang.strip().lower() for lang in languages_present.split(",") if lang.strip()]
+    if not lang_list:
+        lang_list = ["en"]  # Default to English
+    print(f"🌐 Languages present: {lang_list}")
+
+    try:
+        # Read audio file
+        audio_data = await audio.read()
+        filename = audio.filename or "recording.webm"
+        content_type = audio.content_type or "audio/webm"
+
+        # Log file size for debugging - NO SIZE LIMIT, we compress for Groq
+        file_size_mb = len(audio_data) / 1024 / 1024
+        print(f"📁 Received audio upload: {filename} ({len(audio_data)} bytes, {file_size_mb:.1f}MB)")
+
+        if len(audio_data) < 100:
+            raise HTTPException(status_code=400, detail="File empty or too small.")
+
+        # Get API key
+        groq_api_key = os.getenv("GROQ_API_KEY", "")
+        if not groq_api_key:
+            raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+
+        # Run speaker diarization and transcription in parallel
+        print("🔊 Running speaker diarization (voice fingerprinting)...")
+
+        # Start diarization task (wrapped to handle errors gracefully)
+        # Import lazily to prevent server crash if resemblyzer not installed
+        async def safe_diarize():
+            try:
+                from ..asr.diarization import SpeakerDiarizer, DiarizationResult
+                return await SpeakerDiarizer.diarize(
+                    audio_data,
+                    num_speakers=num_speakers,
+                    min_speakers=2,
+                    max_speakers=4,
+                )
+            except ImportError as e:
+                print(f"⚠️ Diarization not available (missing dependency): {e}")
+                # Return a simple fallback result
+                class FallbackResult:
+                    segments = []
+                    num_speakers = 1
+                    duration = 0.0
+                    method = "fallback"
+                return FallbackResult()
+            except Exception as e:
+                print(f"⚠️ Diarization error: {e}")
+                class FallbackResult:
+                    segments = []
+                    num_speakers = 1
+                    duration = 0.0
+                    method = "fallback"
+                return FallbackResult()
+
+        diarization_task = asyncio.create_task(safe_diarize())
+
+        # Send directly to Groq - no server-side processing (saves memory)
+        # Groq limit is 25MB. If file is too large, user needs to trim it locally.
+        if file_size_mb > 25:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large ({file_size_mb:.1f}MB). Groq's limit is 25MB. Please trim or compress your audio file before uploading."
+            )
+
+        print(f"📝 Sending {file_size_mb:.1f}MB to Groq for transcription...")
+
+        async with httpx.AsyncClient() as client:
+            try:
+                # CRITICAL: Use language=auto for raw transcription
+                # If we specify a language, Whisper may translate instead of transcribe
+                # We want RAW text in whatever language the speaker used
+                response = await client.post(
+                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {groq_api_key}"},
+                    files={"file": (filename, audio_data, content_type)},
+                    data={
+                        "model": "whisper-large-v3",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities[]": "segment",
+                        # Do NOT specify language - let Whisper auto-detect
+                        # This ensures we get RAW transcription, not translation
+                    },
+                    timeout=300.0,
+                )
+
+                if response.status_code != 200:
+                    error_text = response.text[:500]
+                    print(f"❌ Groq API error: {error_text}")
+                    if "too large" in error_text.lower() or "too_large" in error_text.lower():
+                        raise HTTPException(status_code=413, detail="File too large for Groq. Please use a file under 25MB.")
+                    raise HTTPException(status_code=500, detail=f"Transcription failed: {error_text}")
+
+                result = response.json()
+
+            except httpx.TimeoutException:
+                raise HTTPException(status_code=504, detail="Transcription timed out")
+            except HTTPException:
+                raise
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
+        # Extract segments from Whisper response
+        whisper_segments = result.get("segments", [])
+        duration = result.get("duration", 0.0)
+        detected_language = result.get("language", "unknown")
+
+        print(f"📝 Transcribed {len(whisper_segments)} segments, duration: {duration:.1f}s, language: {detected_language}")
+
+        # Wait for diarization to complete
+        try:
+            diarization = await diarization_task
+            print(f"🔊 Diarization complete: {diarization.num_speakers} speakers detected (method: {diarization.method})")
+        except Exception as e:
+            print(f"⚠️ Diarization failed: {e}, falling back to basic detection")
+            # Create fallback diarization result (inline class to avoid import)
+            class FallbackDiarization:
+                segments = []
+                num_speakers = 1
+                method = "fallback"
+            FallbackDiarization.duration = duration
+            diarization = FallbackDiarization()
+
+        # Align transcription with diarization
+        use_fallback = True
+        if diarization.method == "resemblyzer" and diarization.segments:
+            # Use voice-based speaker assignment (lazy import)
+            try:
+                from ..asr.diarization import align_transcription_with_diarization
+                aligned = align_transcription_with_diarization(whisper_segments, diarization)
+                speakers_seen = set(speaker for _, speaker in aligned)
+                use_fallback = False
+            except ImportError:
+                print("⚠️ Diarization module not available, using fallback")
+
+        if use_fallback:
+            # Fallback: Use pause-based heuristic (less accurate)
+            # IMPORTANT: No speaker limit - detect as many as pauses suggest
+            print("⚠️ Using fallback pause-based speaker detection (no speaker limit)")
+            aligned = []
+            current_speaker = "speaker_1"
+            speakers_seen = {"speaker_1"}
+            speaker_count = 1
+            last_end_time = 0.0
+
+            for i, seg in enumerate(whisper_segments):
+                start_time = seg.get("start", 0.0)
+                pause_duration = start_time - last_end_time
+
+                # Long pause (>1.5s) suggests speaker change
+                # Don't limit speakers - could be 2, 3, 4, 5+ speakers
+                if i > 0 and pause_duration > 1.5:
+                    speaker_count += 1
+                    current_speaker = f"speaker_{speaker_count}"
+                    speakers_seen.add(current_speaker)
+
+                aligned.append((seg, current_speaker))
+                last_end_time = seg.get("end", 0.0)
+
+        # Build output segments
+        segments: List[UploadedSegment] = []
+        for i, (seg, speaker_id) in enumerate(aligned):
+            text = seg.get("text", "").strip()
+            if not text:
+                continue
+
+            segment = UploadedSegment(
+                segment_id=f"seg_{i:04d}",
+                speaker_id=speaker_id,
+                start_time=seg.get("start", 0.0),
+                end_time=seg.get("end", 0.0),
+                text=text,
+                detected_language=detected_language,
+            )
+            segments.append(segment)
+
+        # Store for later analysis
+        uploaded_recordings[upload_id] = {
+            "segments": [s.model_dump() for s in segments],
+            "duration": duration,
+            "detected_language": detected_language,
+            "languages_present": lang_list,
+            "audio_data": audio_data,  # Keep for potential re-processing
+            "diarization_method": diarization.method,
+        }
+
+        detected_speakers = sorted(list(speakers_seen))
+
+        # Build speaker language info by matching to languages_present
+        # Group segments by speaker and match to specified languages
+        speaker_segments: Dict[str, List[UploadedSegment]] = {}
+        for seg in segments:
+            if seg.speaker_id not in speaker_segments:
+                speaker_segments[seg.speaker_id] = []
+            speaker_segments[seg.speaker_id].append(seg)
+
+        # Map scripts to potential languages (for matching to languages_present)
+        script_to_langs = {
+            "latin": ["en", "es", "fr", "de", "pt", "it", "nl", "pl", "vi", "id", "tl"],
+            "gujarati": ["gu"],
+            "devanagari": ["hi", "mr", "ne", "sa"],
+            "arabic": ["ar", "fa", "ur", "ps"],  # Arabic script: Arabic, Farsi, Urdu, Pashto
+            "chinese": ["zh", "yue"],
+            "sinhala": ["si"],
+            "thai": ["th"],
+            "unknown": [],
+        }
+
+        speaker_language_info: List[SpeakerLanguageInfo] = []
+        for speaker_id in detected_speakers:
+            segs = speaker_segments.get(speaker_id, [])
+            if not segs:
+                continue
+
+            # Count scripts in this speaker's segments
+            script_counts: Dict[str, int] = {}
+            sample_text = ""
+            for seg in segs:
+                script = detect_script(seg.text)
+                script_counts[script] = script_counts.get(script, 0) + 1
+                if not sample_text:
+                    sample_text = seg.text[:50]
+
+            # Get dominant script for this speaker
+            dominant_script = max(script_counts, key=lambda k: script_counts[k]) if script_counts else "unknown"
+
+            # Match to languages_present based on script
+            possible_langs = script_to_langs.get(dominant_script, [])
+            matched_lang = None
+
+            # Find which of the languages_present matches this script
+            for lang in lang_list:
+                if lang in possible_langs:
+                    matched_lang = lang
+                    break
+
+            # If no match in languages_present, use best guess from script
+            if not matched_lang:
+                if possible_langs:
+                    matched_lang = possible_langs[0]  # Default to first possibility
+                else:
+                    matched_lang = detected_language or "unknown"
+
+            speaker_language_info.append(SpeakerLanguageInfo(
+                speaker_id=speaker_id,
+                primary_language=matched_lang,
+                segment_count=len(segs),
+                sample_text=sample_text + ("..." if len(sample_text) >= 50 else ""),
+            ))
+
+        print(f"✅ Upload complete: {upload_id}, {len(segments)} segments, {len(detected_speakers)} speakers (via {diarization.method})")
+        for info in speaker_language_info:
+            print(f"   {info.speaker_id}: {info.primary_language} ({info.segment_count} segments)")
+
+        return UploadResponse(
+            upload_id=upload_id,
+            duration=duration,
+            segments=segments,
+            detected_speakers=detected_speakers,
+            speaker_language_info=speaker_language_info,
+        )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        # Catch-all for unexpected errors
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Unexpected error in upload-recording: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@app.post("/analyze-recording")
+async def analyze_recording(request: AnalyzeRequest):
+    """
+    Analyze an uploaded recording with role assignments using Claude.
+
+    Performs thorough line-by-line analysis of each interpreter segment,
+    comparing it against the source (provider/patient) text.
+    """
+    import anthropic
+
+    # Get stored recording
+    recording = uploaded_recordings.get(request.upload_id)
+    if not recording:
+        raise HTTPException(status_code=404, detail=f"Recording not found: {request.upload_id}")
+
+    # Build role mapping lookup (filter out "unassigned" roles)
+    role_map = {
+        rm.speaker_id: rm.role
+        for rm in request.role_mappings
+        if rm.role != "unassigned"
+    }
+
+    # Get segments and filter to only include mapped speakers
+    segments = recording["segments"]
+    speakers_in_recording = set(s["speaker_id"] for s in segments)
+    mapped_speakers = set(role_map.keys())
+
+    # Allow unmapped speakers - they will be skipped during analysis
+    unmapped = speakers_in_recording - mapped_speakers
+    if unmapped:
+        print(f"⚠️ Skipping unmapped speakers: {unmapped}")
+
+    if not mapped_speakers:
+        raise HTTPException(
+            status_code=400,
+            detail="No speakers assigned to roles. Please assign at least one speaker."
+        )
+
+    print(f"🔍 Analyzing recording {request.upload_id} with mappings: {role_map}")
+    print(f"🌐 Languages present: {request.languages_present}")
+
+    # Get Anthropic API key
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not anthropic_key:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured for analysis")
+
+    client = anthropic.Anthropic(api_key=anthropic_key)
+
+    # Build transcript with roles
+    transcript_lines = []
+    for seg in segments:
+        role = role_map.get(seg["speaker_id"])
+        if not role:
+            continue
+        transcript_lines.append({
+            "segment_id": seg["segment_id"],
+            "role": role,
+            "text": seg["text"],
+            "start_time": seg["start_time"],
+            "end_time": seg["end_time"],
+        })
+
+    # Process segments and find interpreter-source pairs
+    results = {
+        "upload_id": request.upload_id,
+        "transcripts": transcript_lines,
+        "errors": [],
+        "line_analyses": [],  # Detailed analysis of each line
+    }
+
+    # Build context for analysis
+    languages_str = ", ".join(request.languages_present)
+
+    # Find each interpreter segment and its source
+    for i, line in enumerate(transcript_lines):
+        if line["role"] != "interpreter":
+            continue
+
+        # Find preceding source (provider or patient)
+        source_line = None
+        for j in range(i - 1, -1, -1):
+            if transcript_lines[j]["role"] in ["provider", "patient"]:
+                source_line = transcript_lines[j]
+                break
+
+        if not source_line:
+            continue
+
+        # Thorough line-by-line analysis using Claude
+        analysis_prompt = f"""You are an expert medical interpreter evaluator. Analyze this interpretation for accuracy.
+
+LANGUAGES PRESENT: {languages_str}
+
+SOURCE ({source_line['role'].upper()}):
+"{source_line['text']}"
+
+INTERPRETER'S RENDITION:
+"{line['text']}"
+
+Analyze the interpretation thoroughly. Check for:
+1. OMISSIONS - Any information from the source that was left out
+2. ADDITIONS - Any information the interpreter added that wasn't in the source
+3. DISTORTIONS - Any meaning that was changed or misrepresented
+4. MEDICAL ACCURACY - Any medical terms, dosages, or instructions that were wrong
+5. REGISTER/TONE - Any inappropriate changes in formality or tone
+
+For each issue found, rate its severity:
+- CRITICAL: Could cause patient harm (wrong dosage, wrong medication, missed allergy)
+- HIGH: Significant medical meaning changed
+- MEDIUM: Some meaning lost but not dangerous
+- LOW: Minor stylistic issues
+
+Respond in this exact JSON format:
+{{
+  "is_accurate": true/false,
+  "overall_assessment": "Brief summary of accuracy",
+  "issues": [
+    {{
+      "type": "omission|addition|distortion|medical_error|register_shift",
+      "severity": "critical|high|medium|low",
+      "description": "What was wrong",
+      "source_text": "The part of source affected",
+      "interpreter_text": "What interpreter said instead",
+      "correction": "What should have been said"
+    }}
+  ],
+  "what_was_preserved": "List key elements correctly interpreted"
+}}
+
+If the interpretation is accurate, return an empty issues array."""
+
+        try:
+            print(f"📝 Analyzing segment {line['segment_id']}...")
+
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",  # Use Sonnet for thorough analysis
+                max_tokens=1500,
+                messages=[
+                    {"role": "user", "content": analysis_prompt}
+                ]
+            )
+
+            # Parse Claude's response
+            response_text = response.content[0].text
+            # Extract JSON from response (handle markdown code blocks)
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+
+            analysis = json.loads(response_text)
+
+            # Store line analysis
+            line_analysis = {
+                "segment_id": line["segment_id"],
+                "source_role": source_line["role"],
+                "source_text": source_line["text"],
+                "interpreter_text": line["text"],
+                "is_accurate": analysis.get("is_accurate", True),
+                "overall_assessment": analysis.get("overall_assessment", ""),
+                "issues": analysis.get("issues", []),
+                "what_was_preserved": analysis.get("what_was_preserved", ""),
+            }
+            results["line_analyses"].append(line_analysis)
+
+            # Add issues to errors list
+            for issue in analysis.get("issues", []):
+                results["errors"].append({
+                    "segment_id": line["segment_id"],
+                    "error_type": issue.get("type", "unknown"),
+                    "severity": issue.get("severity", "medium"),
+                    "description": issue.get("description", ""),
+                    "source_text": issue.get("source_text", ""),
+                    "interpreter_text": issue.get("interpreter_text", ""),
+                    "correction": issue.get("correction", ""),
+                })
+
+            print(f"   ✓ {len(analysis.get('issues', []))} issues found")
+
+        except json.JSONDecodeError as e:
+            print(f"⚠️ Failed to parse Claude response for {line['segment_id']}: {e}")
+            print(f"   Response was: {response_text[:200]}...")
+        except Exception as e:
+            print(f"⚠️ Analysis error for segment {line['segment_id']}: {e}")
+
+    # Clean up stored recording after analysis
+    # del uploaded_recordings[request.upload_id]  # Keep for debugging
+
+    print(f"✅ Analysis complete: {len(results['errors'])} errors found")
+
+    return results
 
 
 # ===== WebSocket Endpoint =====
