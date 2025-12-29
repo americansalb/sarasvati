@@ -741,7 +741,7 @@ class DualTribunalOrchestrator:
         openai_api_key: str,
         anthropic_api_key: str,
         model_a: str = "meta-llama/llama-4-scout-17b-16e-instruct",
-        model_b: str = "gpt-4o-mini",
+        model_b: str = "gpt-5-mini",
         model_c: str = "claude-haiku-4-5",
     ):
         # Import here to avoid circular imports

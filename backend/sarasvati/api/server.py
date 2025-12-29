@@ -90,7 +90,7 @@ _redis_host, _redis_port, _redis_db = parse_redis_url()
 #
 # Environment Variables:
 #   TRIBUNAL_MODEL_A    = Model for Agent A (default: llama-3.1-8b-instant)
-#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-4o-mini)
+#   TRIBUNAL_MODEL_B    = Model for Agent B (default: gpt-5-mini)
 #   TRIBUNAL_MODEL_C    = Model for Agent C (default: deepseek-chat)
 #
 #   TRIBUNAL_PROVIDER_A = Provider for Agent A (default: groq)
@@ -104,7 +104,7 @@ _redis_host, _redis_port, _redis_db = parse_redis_url()
 #
 # Default tribunal (3 unique providers, 3 unique models):
 #   Agent A: llama-3.1-8b-instant (Groq/Meta) - FREE
-#   Agent B: gpt-4o-mini (OpenAI) - $0.15/1M
+#   Agent B: gpt-5-mini (OpenAI) - $0.25/1M
 #   Agent C: deepseek-chat (DeepSeek) - $0.14/1M
 #
 # ═══════════════════════════════════════════════════════════════════════════════
