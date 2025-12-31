@@ -2010,6 +2010,107 @@ If the interpretation is accurate, return an empty issues array."""
     return results
 
 
+# ===== Manual Evaluation Endpoint =====
+
+class EvaluateRequest(BaseModel):
+    """Request for manual evaluation of a source+interpreter phrase pair."""
+    source_text: str
+    interpreter_text: str
+    provider_lang: str = "en"
+    patient_lang: str = "es"
+
+
+@app.post("/evaluate")
+async def evaluate_interpretation(request: EvaluateRequest):
+    """
+    Manually evaluate an interpreter's translation against a source phrase.
+
+    This triggers the tribunal system to run a full debate on the given
+    source+interpreter text pair and returns the debate logs.
+    """
+    global engine, session_id, session_active
+
+    print(f"\n🎯 Manual evaluation requested:")
+    print(f"   Source: {request.source_text[:50]}...")
+    print(f"   Interpreter: {request.interpreter_text[:50]}...")
+    print(f"   Languages: {request.provider_lang} ↔ {request.patient_lang}")
+
+    # Ensure we have an active session
+    if not session_active or not engine:
+        # Start a session for evaluation
+        session_id = f"eval_{uuid.uuid4().hex[:8]}"
+        session_active = True
+        if engine:
+            await engine.start_session(session_id)
+        else:
+            # Create engine if not exists
+            from ..core.graph import create_engine
+            engine = create_engine()
+            await engine.start_session(session_id)
+
+    # Create transcript segments for evaluation
+    source_segment = TranscriptSegment(
+        role="provider",  # Assume provider as source
+        text=request.source_text,
+        timestamp=datetime.now().timestamp(),
+        duration=1.0,
+        confidence=1.0,
+        is_final=True,
+        session_id=session_id,
+        detected_language=request.provider_lang,
+    )
+
+    interpreter_segment = TranscriptSegment(
+        role="interpreter",
+        text=request.interpreter_text,
+        timestamp=datetime.now().timestamp() + 0.5,
+        duration=1.0,
+        confidence=1.0,
+        is_final=True,
+        session_id=session_id,
+        detected_language=request.patient_lang,  # Interpreter translating TO patient language
+    )
+
+    try:
+        # Process source segment first
+        await engine.process_transcript(source_segment)
+
+        # Then process interpreter segment - this triggers tribunal
+        await engine.process_transcript(interpreter_segment)
+
+        # Get the latest debate logs from the state
+        state = engine.get_state()
+        debate_logs = None
+        if state and hasattr(state, "pending_errors") and state.pending_errors:
+            # Get the most recent error with debate logs
+            for error in reversed(state.pending_errors):
+                if hasattr(error, "debate_logs") and error.debate_logs:
+                    debate_logs = error.debate_logs
+                    break
+
+        # Also check the latest alignment for debate logs
+        if not debate_logs and state and hasattr(state, "alignments") and state.alignments:
+            latest_alignment = state.alignments[-1] if state.alignments else None
+            if latest_alignment and hasattr(latest_alignment, "debate_logs"):
+                debate_logs = latest_alignment.debate_logs
+
+        # Broadcast the debate logs via WebSocket
+        if debate_logs:
+            await manager.broadcast(build_ws_message("debate_log", debate_logs))
+
+        return {
+            "status": "success",
+            "message": "Evaluation triggered. Check debate logs via WebSocket.",
+            "session_id": session_id,
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Evaluation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
+
+
 # ===== WebSocket Endpoint =====
 
 @app.websocket("/ws")
