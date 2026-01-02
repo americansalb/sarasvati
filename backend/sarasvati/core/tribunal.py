@@ -368,7 +368,7 @@ class TranslationTribunal:
     Takes RAW text (Gujarati, Spanish, etc.) and produces consensus English translation.
     """
 
-    MAX_ROUNDS = 5  # Prevent infinite debates
+    MAX_ROUNDS = 3  # Maximum 3 rounds of rebuttals, then force vote
 
     def __init__(self, agents: List[TribunalAgent]):
         if len(agents) != 3:
@@ -538,7 +538,7 @@ class ErrorTribunal:
     Takes consolidated translations and determines if interpreter made errors.
     """
 
-    MAX_ROUNDS = 5
+    MAX_ROUNDS = 3  # Maximum 3 rounds of rebuttals, then force vote
 
     def __init__(self, agents: List[TribunalAgent]):
         if len(agents) != 3:

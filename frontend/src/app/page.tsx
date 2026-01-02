@@ -1,9 +1,12 @@
 /**
- * SARASVATI Dashboard - Doctor-Friendly Interface
- * ================================================
- * Two-tab design:
- * - MONITOR: Glanceable status for busy doctors
- * - DETAILS: Audit trail and debate logs for review
+ * SARASVATI Dashboard - Three-Channel Recording Interface
+ * ========================================================
+ * Manual workflow with:
+ * - Three separate recording channels (Provider, Interpreter, Patient)
+ * - Each channel has its own record button
+ * - Interpreter can switch between speaking provider's or patient's language
+ * - Manual phrase selection and evaluation
+ * - Debate shown in popup modal
  */
 
 "use client";
@@ -22,6 +25,8 @@ import {
   ChevronRight,
   X,
   Settings,
+  Square,
+  Play,
 } from "lucide-react";
 import { StreamRole, TranscriptSegment, ClinicalError } from "@/types/sarasvati";
 
@@ -342,84 +347,178 @@ function SingleDebateSection({
   debate: any;
   icon: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true); // Default expanded for better visibility
 
   if (!debate || !debate.turns || debate.turns.length === 0) {
     return null;
   }
 
-  // Get position color
-  const getPositionColor = (position: string) => {
-    const p = (position || "").toLowerCase();
-    if (p === "accurate" || p.includes("agree")) return "bg-green-800";
-    if (p === "critical_errors" || p.includes("critical")) return "bg-red-800";
-    if (p === "significant_errors" || p.includes("significant")) return "bg-orange-800";
-    return "bg-yellow-800";
+  // Get verdict color
+  const getVerdictColor = (verdict: string) => {
+    const v = (verdict || "").toLowerCase();
+    if (v === "accurate" || v.includes("agree")) return "text-green-400";
+    if (v === "critical_errors" || v.includes("critical")) return "text-red-400";
+    if (v === "significant_errors" || v.includes("significant")) return "text-orange-400";
+    if (v === "minor_issues") return "text-yellow-400";
+    return "text-gray-400";
   };
 
+  // Get agent color for consistent identification
+  const getAgentColor = (agent: string) => {
+    if (agent.includes("-A") || agent.includes("Groq")) return "text-blue-400 border-blue-400";
+    if (agent.includes("-B") || agent.includes("OpenAI")) return "text-green-400 border-green-400";
+    if (agent.includes("-C") || agent.includes("Anthropic")) return "text-purple-400 border-purple-400";
+    return "text-gray-400 border-gray-400";
+  };
+
+  // Group turns by round for Oxford-style display
+  const rounds: Record<number, any[]> = {};
+  debate.turns.forEach((turn: any) => {
+    const roundNum = turn.round || 1;
+    if (!rounds[roundNum]) rounds[roundNum] = [];
+    rounds[roundNum].push(turn);
+  });
+
+  const roundNumbers = Object.keys(rounds).map(Number).sort((a, b) => a - b);
+
   return (
-    <div className="bg-gray-800/50 rounded-lg border border-gray-700 mb-3">
+    <div className="bg-gray-800/50 rounded-lg border border-gray-700 mb-4">
+      {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between p-3 hover:bg-gray-700/50 transition-colors"
+        className="w-full flex items-center justify-between p-4 hover:bg-gray-700/50 transition-colors"
       >
-        <div className="flex items-center gap-2">
-          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          <span className="text-lg">{icon}</span>
-          <span className="font-medium text-sm">{title}</span>
-          <span className="text-xs text-gray-500">
-            {debate.rounds_taken || debate.turns?.length || 0} round{(debate.rounds_taken || 1) > 1 ? 's' : ''}
-          </span>
+        <div className="flex items-center gap-3">
+          {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+          <span className="text-2xl">{icon}</span>
+          <div>
+            <span className="font-semibold">{title}</span>
+            <span className="text-sm text-gray-400 ml-2">
+              ({roundNumbers.length} round{roundNumbers.length !== 1 ? 's' : ''})
+            </span>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           {debate.consensus_reached !== undefined && (
-            <span className={`text-xs px-2 py-0.5 rounded ${
-              debate.consensus_reached ? "bg-green-900 text-green-300" : "bg-yellow-900 text-yellow-300"
+            <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+              debate.consensus_reached ? "bg-green-900/50 text-green-300 border border-green-700" : "bg-yellow-900/50 text-yellow-300 border border-yellow-700"
             }`}>
-              {debate.consensus_reached ? "✓ Consensus" : "No Consensus"}
+              {debate.consensus_reached ? "✓ Consensus Reached" : "⚠ Forced Vote"}
             </span>
           )}
           {debate.final_consensus && (
-            <span className={`text-xs px-2 py-0.5 rounded font-medium ${getPositionColor(debate.final_consensus)}`}>
+            <span className={`px-3 py-1 rounded-full text-sm font-bold ${getVerdictColor(debate.final_consensus)} bg-gray-900/50`}>
               {debate.final_consensus.replace(/_/g, ' ').toUpperCase()}
             </span>
           )}
         </div>
       </button>
 
+      {/* Oxford-Style Debate Transcript */}
       {expanded && (
-        <div className="p-3 border-t border-gray-700 max-h-64 overflow-y-auto space-y-2">
-          {debate.turns.map((turn: any, idx: number) => {
-            const isNewRound = idx === 0 || turn.round !== debate.turns[idx - 1]?.round;
-            return (
-              <div key={idx}>
-                {isNewRound && idx > 0 && (
-                  <div className="flex items-center gap-2 my-2">
-                    <div className="flex-1 h-px bg-gray-600" />
-                    <span className="text-xs text-gray-500">Round {turn.round}</span>
-                    <div className="flex-1 h-px bg-gray-600" />
-                  </div>
-                )}
-                <div className={`p-2 rounded text-sm ${turn.changed_mind ? "bg-yellow-900/20 border border-yellow-800" : "bg-gray-900/50"}`}>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-purple-300 text-xs">{turn.agent}</span>
-                    <span className="text-xs px-1.5 py-0.5 bg-gray-700 text-gray-300 rounded">
-                      {turn.model || turn.provider}
-                    </span>
-                    {turn.changed_mind && (
-                      <span className="text-xs text-yellow-400">🔄 Changed position</span>
-                    )}
-                    <span className={`ml-auto text-xs px-1.5 py-0.5 rounded ${getPositionColor(turn.position)}`}>
-                      {(turn.position || "").substring(0, 20)}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-400 line-clamp-2">
-                    {turn.statement || turn.reasoning || "No statement"}
-                  </p>
-                </div>
+        <div className="border-t border-gray-700 p-4 space-y-6 max-h-96 overflow-y-auto">
+          {/* Input Text */}
+          {debate.input_text && (
+            <div className="bg-gray-900/50 rounded-lg p-3 border-l-4 border-gray-500">
+              <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Original Input</div>
+              <p className="text-sm text-gray-300 italic">"{debate.input_text}"</p>
+            </div>
+          )}
+
+          {/* Rounds - Oxford Style */}
+          {roundNumbers.map((roundNum) => (
+            <div key={roundNum} className="space-y-3">
+              {/* Round Header */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-px bg-gradient-to-r from-gray-700 via-gray-600 to-gray-700" />
+                <span className="px-4 py-1 bg-gray-700 rounded-full text-sm font-semibold text-gray-300">
+                  {roundNum === 1 ? "📝 Round 1: Independent Analysis" :
+                   roundNum === 2 ? "💬 Round 2: Rebuttals" :
+                   roundNum === 3 ? "⚖️ Round 3: Final Arguments" :
+                   `Round ${roundNum}`}
+                </span>
+                <div className="flex-1 h-px bg-gradient-to-r from-gray-700 via-gray-600 to-gray-700" />
               </div>
-            );
-          })}
+
+              {/* Agent Statements - Script Format */}
+              <div className="space-y-3 pl-2">
+                {rounds[roundNum].map((turn: any, idx: number) => {
+                  const agentName = (turn.agent || "Agent").split("(")[0].trim();
+                  const modelName = turn.model || turn.provider || "";
+
+                  return (
+                    <div key={idx} className="flex gap-3">
+                      {/* Agent Label */}
+                      <div className={`flex-shrink-0 w-24 text-right font-bold text-sm ${getAgentColor(turn.agent)}`}>
+                        {agentName}:
+                      </div>
+
+                      {/* Statement */}
+                      <div className="flex-1 space-y-1">
+                        {/* Position Badge */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`text-xs px-2 py-0.5 rounded-full bg-gray-900 ${getVerdictColor(turn.position)}`}>
+                            {turn.position || "—"}
+                          </span>
+                          <span className="text-xs text-gray-600">
+                            via {modelName}
+                          </span>
+                          {turn.changed_mind && (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-400 border border-yellow-700">
+                              🔄 Changed position
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Statement Text */}
+                        <p className="text-sm text-gray-300 leading-relaxed">
+                          {turn.statement || turn.reasoning || "No statement provided."}
+                        </p>
+
+                        {/* Agreements/Disagreements */}
+                        {(turn.agrees_with?.length > 0 || turn.disagrees_with?.length > 0) && (
+                          <div className="flex gap-4 text-xs mt-1">
+                            {turn.agrees_with?.length > 0 && (
+                              <span className="text-green-500">
+                                ✓ Agrees: {turn.agrees_with.join(", ")}
+                              </span>
+                            )}
+                            {turn.disagrees_with?.length > 0 && (
+                              <span className="text-red-500">
+                                ✗ Disagrees: {turn.disagrees_with.join(", ")}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+
+          {/* Final Verdict */}
+          {debate.final_consensus && (
+            <div className="bg-gray-900/80 rounded-lg p-4 border-2 border-gray-600 mt-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">⚖️</span>
+                  <span className="font-semibold">Final Verdict</span>
+                </div>
+                <span className={`text-lg font-bold ${getVerdictColor(debate.final_consensus)}`}>
+                  {debate.final_consensus.replace(/_/g, ' ').toUpperCase()}
+                </span>
+              </div>
+              {debate.consensus_type && (
+                <div className="text-xs text-gray-500 mt-1">
+                  {debate.consensus_type === "full" ? "All 3 agents agreed" :
+                   debate.consensus_type === "majority" ? "2/3 majority vote" :
+                   "No consensus - using plurality"}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -482,6 +581,174 @@ function DebatePanel({ debateLogs }: { debateLogs: any }) {
 }
 
 // ===========================================================================
+// RECORDING CHANNEL COMPONENT - Individual channel with its own record button
+// ===========================================================================
+interface RecordingChannelProps {
+  role: StreamRole;
+  label: string;
+  icon: string;
+  color: string;
+  bgColor: string;
+  borderColor: string;
+  language: string;
+  transcripts: TranscriptSegment[];
+  isRecording: boolean;
+  isConnected: boolean;
+  onStartRecording: () => void;
+  onStopRecording: () => void;
+  onSelectTranscript: (transcript: TranscriptSegment) => void;
+  selectedTranscripts: Set<string>;
+  // For interpreter: ability to switch which language they're speaking
+  interpreterSpeakingLang?: string;
+  onInterpreterLangSwitch?: (lang: string) => void;
+  providerLang?: string;
+  patientLang?: string;
+}
+
+function RecordingChannel({
+  role,
+  label,
+  icon,
+  color,
+  bgColor,
+  borderColor,
+  language,
+  transcripts,
+  isRecording,
+  isConnected,
+  onStartRecording,
+  onStopRecording,
+  onSelectTranscript,
+  selectedTranscripts,
+  interpreterSpeakingLang,
+  onInterpreterLangSwitch,
+  providerLang,
+  patientLang,
+}: RecordingChannelProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [transcripts]);
+
+  const roleTranscripts = transcripts.filter(t => t.role === role);
+
+  return (
+    <div className={`flex flex-col h-full rounded-xl border-2 ${borderColor} ${bgColor} overflow-hidden`}>
+      {/* Channel Header */}
+      <div className={`px-4 py-3 ${bgColor} border-b ${borderColor}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">{icon}</span>
+            <div>
+              <h3 className={`font-bold ${color}`}>{label}</h3>
+              <span className="text-xs text-gray-400">{language}</span>
+            </div>
+          </div>
+          {isRecording && (
+            <div className="flex items-center gap-1">
+              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+              <span className="text-xs text-red-400">REC</span>
+            </div>
+          )}
+        </div>
+
+        {/* Interpreter Language Toggle */}
+        {role === "interpreter" && onInterpreterLangSwitch && providerLang && patientLang && (
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-xs text-gray-400">Speaking:</span>
+            <div className="flex gap-1 bg-gray-800 rounded-lg p-0.5">
+              <button
+                onClick={() => onInterpreterLangSwitch(providerLang)}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  interpreterSpeakingLang === providerLang
+                    ? "bg-blue-600 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                → Patient ({patientLang})
+              </button>
+              <button
+                onClick={() => onInterpreterLangSwitch(patientLang)}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  interpreterSpeakingLang === patientLang
+                    ? "bg-green-600 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                → Provider ({providerLang})
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Transcript Area */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2 min-h-[200px]">
+        {roleTranscripts.length === 0 ? (
+          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+            Click record to start...
+          </div>
+        ) : (
+          roleTranscripts.map((t, idx) => {
+            const transcriptId = `${role}-${idx}-${t.text?.substring(0, 20)}`;
+            const isSelected = selectedTranscripts.has(transcriptId);
+            return (
+              <div
+                key={idx}
+                onClick={() => onSelectTranscript({ ...t, _id: transcriptId } as TranscriptSegment & { _id: string })}
+                className={`p-2 rounded-lg cursor-pointer transition-all ${
+                  isSelected
+                    ? `ring-2 ring-yellow-500 ${bgColor}`
+                    : `bg-gray-800/50 hover:bg-gray-700/50`
+                }`}
+              >
+                <p className="text-sm text-gray-200">{t.text}</p>
+                {t.english_translation && t.english_translation !== t.text && (
+                  <p className="text-xs text-green-400/80 mt-1">
+                    → {t.english_translation}
+                  </p>
+                )}
+                {t.detected_language && (
+                  <span className="text-xs text-gray-500">[{t.detected_language}]</span>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Record Button */}
+      <div className="p-3 border-t border-gray-700">
+        <button
+          onClick={isRecording ? onStopRecording : onStartRecording}
+          disabled={!isConnected}
+          className={`w-full flex items-center justify-center gap-2 py-3 rounded-lg font-medium transition-all ${
+            isRecording
+              ? "bg-red-600 hover:bg-red-700"
+              : `${color.replace("text-", "bg-").replace("-400", "-600")} hover:opacity-90`
+          } disabled:opacity-50 disabled:cursor-not-allowed`}
+        >
+          {isRecording ? (
+            <>
+              <Square size={18} fill="currentColor" />
+              Stop
+            </>
+          ) : (
+            <>
+              <Mic size={18} />
+              Record
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ===========================================================================
 // MAIN DASHBOARD
 // ===========================================================================
 export default function DashboardPage() {
@@ -496,14 +763,23 @@ export default function DashboardPage() {
   } = useSarasvatiSimple({ backendUrl: BACKEND_URL });
 
   const [activeTab, setActiveTab] = useState<"monitor" | "details" | "upload">("monitor");
-  const [selectedRole, setSelectedRole] = useState<StreamRole>("provider");
   const [dismissedGroups, setDismissedGroups] = useState<Set<string>>(new Set());
   const [showSettings, setShowSettings] = useState(false);
   const [providerLang, setProviderLang] = useState("en");
-  const [patientLang, setPatientLang] = useState("auto"); // Auto-detect by default
+  const [patientLang, setPatientLang] = useState("es");
   const [selectedErrorDetail, setSelectedErrorDetail] = useState<GroupedError | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const analyzeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Three-channel state
+  const [recordingRole, setRecordingRole] = useState<StreamRole | null>(null);
+  const [interpreterSpeakingLang, setInterpreterSpeakingLang] = useState<string>("en");
+  const [asrModel, setAsrModel] = useState<"turbo" | "large">("turbo");
+  const [selectedTranscripts, setSelectedTranscripts] = useState<Set<string>>(new Set());
+  const [selectedSourceText, setSelectedSourceText] = useState<string>("");
+  const [selectedInterpreterText, setSelectedInterpreterText] = useState<string>("");
+  const [showDebateModal, setShowDebateModal] = useState(false);
+  const [isEvaluating, setIsEvaluating] = useState(false);
 
   // Upload tab state
   const [uploadState, setUploadState] = useState<{
@@ -525,11 +801,12 @@ export default function DashboardPage() {
       segment_count: number;
       sample_text: string;
     }>;
-    roleMappings: Record<string, string>;
+    roleMappings: Record<string, string | string[]>;
     results: {
       transcripts: Array<unknown>;
       errors: Array<unknown>;
       verdicts: Array<unknown>;
+      line_analyses?: Array<unknown>;
     } | null;
     error: string | null;
   }>({
@@ -605,14 +882,96 @@ export default function DashboardPage() {
     setDismissedGroups((prev) => new Set([...prev, key]));
   };
 
-  const handleToggleRecording = () => {
-    if (connectionState.isRecording) {
+  // Three-channel recording handlers
+  const handleStartChannelRecording = (role: StreamRole) => {
+    if (recordingRole !== null) {
+      // Already recording another channel - stop it first
       stopRecording();
-    } else {
-      const lang = selectedRole === "provider" ? providerLang :
-                   selectedRole === "patient" ? patientLang : "auto";
-      startRecording(selectedRole, lang, providerLang, patientLang);
     }
+    setRecordingRole(role);
+    const lang = role === "provider" ? providerLang :
+                 role === "patient" ? patientLang :
+                 interpreterSpeakingLang;
+    startRecording(role, lang, providerLang, patientLang);
+  };
+
+  const handleStopChannelRecording = () => {
+    stopRecording();
+    setRecordingRole(null);
+  };
+
+  // Transcript selection for evaluation
+  const handleSelectTranscript = (transcript: TranscriptSegment & { _id?: string }) => {
+    const id = transcript._id || `${transcript.role}-${transcript.text?.substring(0, 20)}`;
+    setSelectedTranscripts(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+        // Clear the text if deselecting
+        if (transcript.role === "interpreter") {
+          setSelectedInterpreterText("");
+        } else {
+          setSelectedSourceText("");
+        }
+      } else {
+        newSet.add(id);
+        // Store the text based on role
+        if (transcript.role === "interpreter") {
+          setSelectedInterpreterText(transcript.text || "");
+        } else {
+          setSelectedSourceText(transcript.text || "");
+        }
+      }
+      return newSet;
+    });
+  };
+
+  // Manual evaluation
+  const handleEvaluate = async () => {
+    if (!selectedSourceText || !selectedInterpreterText) {
+      alert("Please select both a source phrase (Provider or Patient) and an Interpreter phrase to evaluate.");
+      return;
+    }
+
+    setIsEvaluating(true);
+    setShowDebateModal(true);
+
+    try {
+      // Send evaluation request to backend
+      const response = await fetch(`${BACKEND_URL}/evaluate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_text: selectedSourceText,
+          interpreter_text: selectedInterpreterText,
+          provider_lang: providerLang,
+          patient_lang: patientLang,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Evaluation failed");
+      }
+
+      // The debate logs will come through WebSocket
+      // Just wait for them to arrive
+    } catch (error) {
+      console.error("Evaluation error:", error);
+    } finally {
+      setIsEvaluating(false);
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedTranscripts(new Set());
+    setSelectedSourceText("");
+    setSelectedInterpreterText("");
+  };
+
+  // Get language name for display
+  const getLangDisplayName = (code: string) => {
+    const lang = LANGUAGES.find(l => l.code === code);
+    return lang?.name || code;
   };
 
   // All Whisper-supported languages (99 languages)
@@ -728,7 +1087,8 @@ export default function DashboardPage() {
     setUploadState(prev => ({ ...prev, isUploading: true, error: null, results: null }));
 
     // Get languages present from state or default to English
-    const languagesPresent = uploadState.roleMappings._languagesPresent || ["en"];
+    const storedLanguages = uploadState.roleMappings._languagesPresent;
+    const languagesPresent = Array.isArray(storedLanguages) ? storedLanguages : ["en"];
 
     const formData = new FormData();
     formData.append("audio", file);
@@ -823,7 +1183,8 @@ export default function DashboardPage() {
     setUploadState(prev => ({ ...prev, isAnalyzing: true, error: null }));
 
     // Get languages present
-    const languagesPresent = uploadState.roleMappings._languagesPresent || ["en"];
+    const storedLangs = uploadState.roleMappings._languagesPresent;
+    const languagesPresent = Array.isArray(storedLangs) ? storedLangs : ["en"];
 
     try {
       const response = await fetch(`${BACKEND_URL}/analyze-recording`, {
@@ -1028,101 +1389,174 @@ export default function DashboardPage() {
       {/* Main Content */}
       <div className="max-w-7xl mx-auto p-6">
         {activeTab === "monitor" ? (
-          /* ================ MONITOR TAB ================ */
+          /* ================ MONITOR TAB - THREE CHANNEL INTERFACE ================ */
           <div className="space-y-4">
-            {/* Error Summary Bar */}
-            {activeGroups.length > 0 ? (
-              <details className="bg-red-950/50 border border-red-800 rounded-lg">
-                <summary className="px-4 py-3 cursor-pointer">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <AlertTriangle className="text-red-400" size={18} />
-                      <span className="font-medium text-red-300">
-                        {activeGroups.length} interpretation{activeGroups.length > 1 ? "s" : ""} flagged
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-3 text-xs">
-                      {errorSummary.omissions > 0 && (
-                        <span className="px-2 py-1 bg-orange-900/50 text-orange-300 rounded">
-                          {errorSummary.omissions} omission{errorSummary.omissions > 1 ? "s" : ""}
-                        </span>
-                      )}
-                      {errorSummary.additions > 0 && (
-                        <span className="px-2 py-1 bg-purple-900/50 text-purple-300 rounded">
-                          {errorSummary.additions} addition{errorSummary.additions > 1 ? "s" : ""}
-                        </span>
-                      )}
-                      {errorSummary.distortions > 0 && (
-                        <span className="px-2 py-1 bg-yellow-900/50 text-yellow-300 rounded">
-                          {errorSummary.distortions} distortion{errorSummary.distortions > 1 ? "s" : ""}
-                        </span>
-                      )}
-                      <span className="text-red-400">▼</span>
-                    </div>
-                  </div>
-                </summary>
-                <div className="px-4 pb-4 pt-2 border-t border-red-800/50 mt-2">
-                  <p className="text-xs text-gray-400 mb-2">Click on a flagged interpreter statement below to see details</p>
+            {/* Top Bar: Settings + ASR Model + Evaluate */}
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              {/* Language Settings */}
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2">
+                  <span className="text-blue-400 text-sm font-medium">🩺 Provider:</span>
+                  <select
+                    value={providerLang}
+                    onChange={(e) => setProviderLang(e.target.value)}
+                    className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm"
+                  >
+                    {LANGUAGES.filter(l => l.code !== "auto").map((lang) => (
+                      <option key={lang.code} value={lang.code}>{lang.name}</option>
+                    ))}
+                  </select>
                 </div>
-              </details>
-            ) : (
-              <div className="flex items-center gap-2 px-4 py-3 bg-green-950/50 border border-green-800 rounded-lg">
-                <CheckCircle className="text-green-400" size={18} />
-                <span className="font-medium text-green-300">All clear - no interpretation issues detected</span>
+                <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2">
+                  <span className="text-green-400 text-sm font-medium">👤 Patient:</span>
+                  <select
+                    value={patientLang}
+                    onChange={(e) => setPatientLang(e.target.value)}
+                    className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm"
+                  >
+                    {LANGUAGES.filter(l => l.code !== "auto").map((lang) => (
+                      <option key={lang.code} value={lang.code}>{lang.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* ASR Model Selector */}
+              <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2">
+                <span className="text-gray-400 text-sm">ASR:</span>
+                <div className="flex gap-1 bg-gray-700 rounded p-0.5">
+                  <button
+                    onClick={() => setAsrModel("turbo")}
+                    className={`px-3 py-1 text-xs rounded transition-colors ${
+                      asrModel === "turbo" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    Turbo (Fast)
+                  </button>
+                  <button
+                    onClick={() => setAsrModel("large")}
+                    className={`px-3 py-1 text-xs rounded transition-colors ${
+                      asrModel === "large" ? "bg-purple-600 text-white" : "text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    Large (Accurate)
+                  </button>
+                </div>
+              </div>
+
+              {/* Selection Status + Evaluate Button */}
+              <div className="flex items-center gap-3">
+                {(selectedSourceText || selectedInterpreterText) && (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className={selectedSourceText ? "text-blue-400" : "text-gray-500"}>
+                      {selectedSourceText ? "✓ Source" : "○ Source"}
+                    </span>
+                    <span className="text-gray-500">+</span>
+                    <span className={selectedInterpreterText ? "text-purple-400" : "text-gray-500"}>
+                      {selectedInterpreterText ? "✓ Interpreter" : "○ Interpreter"}
+                    </span>
+                    <button
+                      onClick={clearSelection}
+                      className="text-xs text-gray-400 hover:text-white ml-2"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+                <button
+                  onClick={handleEvaluate}
+                  disabled={!selectedSourceText || !selectedInterpreterText || isEvaluating}
+                  className={`px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 ${
+                    selectedSourceText && selectedInterpreterText
+                      ? "bg-yellow-600 hover:bg-yellow-700 text-white"
+                      : "bg-gray-700 text-gray-400 cursor-not-allowed"
+                  }`}
+                >
+                  ⚖️ Evaluate
+                </button>
+              </div>
+            </div>
+
+            {/* Error Summary (if any) */}
+            {activeGroups.length > 0 && (
+              <div className="flex items-center gap-2 px-4 py-2 bg-red-950/50 border border-red-800 rounded-lg">
+                <AlertTriangle className="text-red-400" size={16} />
+                <span className="text-sm text-red-300">
+                  {activeGroups.length} issue{activeGroups.length > 1 ? "s" : ""} found
+                </span>
+                <button
+                  onClick={() => setActiveTab("details")}
+                  className="ml-auto text-xs text-red-400 hover:text-white"
+                >
+                  View Details →
+                </button>
               </div>
             )}
 
-            {/* Main Transcript View - Full style like Details page */}
-            <div className="bg-gray-900/50 rounded-lg p-4 space-y-3" style={{ maxHeight: "calc(100vh - 320px)", overflowY: "auto" }}>
-              {sessionState.transcripts.length === 0 ? (
-                <div className="text-center py-12">
-                  <p className="text-gray-500 text-lg">Waiting for speech...</p>
-                  <p className="text-gray-600 text-sm mt-2">Select a role below and click Record to start</p>
-                </div>
-              ) : (
-                sessionState.transcripts.map((t, idx) => {
-                  // ONLY flag interpreter statements - that's what we're evaluating
-                  const isInterpreter = t.role === "interpreter";
-                  const errorGroup = isInterpreter ? getErrorsForInterpreter(t.text || "") : null;
-                  const hasError = errorGroup !== null;
+            {/* Three-Channel Recording Interface */}
+            <div className="grid grid-cols-3 gap-4" style={{ height: "calc(100vh - 280px)" }}>
+              {/* Provider Channel */}
+              <RecordingChannel
+                role="provider"
+                label="Provider"
+                icon="🩺"
+                color="text-blue-400"
+                bgColor="bg-blue-950/30"
+                borderColor="border-blue-700"
+                language={getLangDisplayName(providerLang)}
+                transcripts={sessionState.transcripts}
+                isRecording={recordingRole === "provider"}
+                isConnected={connectionState.websocketConnected}
+                onStartRecording={() => handleStartChannelRecording("provider")}
+                onStopRecording={handleStopChannelRecording}
+                onSelectTranscript={handleSelectTranscript}
+                selectedTranscripts={selectedTranscripts}
+              />
 
-                  return (
-                    <div
-                      key={idx}
-                      onClick={() => hasError && setSelectedErrorDetail(errorGroup)}
-                      className={`p-3 rounded-lg transition-colors ${
-                        hasError
-                          ? "bg-red-950/30 border-l-4 border-l-red-500 cursor-pointer hover:bg-red-950/50"
-                          : "bg-gray-800/50"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className={`text-xs px-2 py-0.5 rounded capitalize font-medium ${
-                          t.role === "provider" ? "bg-blue-700" :
-                          t.role === "interpreter" ? "bg-purple-700" : "bg-green-700"
-                        }`}>
-                          {t.role}
-                        </span>
-                        {t.detected_language && (
-                          <span className="text-xs text-gray-500">[{t.detected_language}]</span>
-                        )}
-                        {hasError && (
-                          <span className="text-xs text-red-400 ml-auto flex items-center gap-1">
-                            ⚠ {errorGroup.issues.length} issue{errorGroup.issues.length > 1 ? "s" : ""}
-                            <span className="text-gray-500">· click for details</span>
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-gray-200">{t.text}</p>
-                      {t.english_translation && t.english_translation !== t.text && (
-                        <p className="text-green-400/80 text-sm mt-1">
-                          → English: {t.english_translation}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })
-              )}
+              {/* Interpreter Channel */}
+              <RecordingChannel
+                role="interpreter"
+                label="Interpreter"
+                icon="🗣️"
+                color="text-purple-400"
+                bgColor="bg-purple-950/30"
+                borderColor="border-purple-700"
+                language={`Speaking: ${getLangDisplayName(interpreterSpeakingLang)}`}
+                transcripts={sessionState.transcripts}
+                isRecording={recordingRole === "interpreter"}
+                isConnected={connectionState.websocketConnected}
+                onStartRecording={() => handleStartChannelRecording("interpreter")}
+                onStopRecording={handleStopChannelRecording}
+                onSelectTranscript={handleSelectTranscript}
+                selectedTranscripts={selectedTranscripts}
+                interpreterSpeakingLang={interpreterSpeakingLang}
+                onInterpreterLangSwitch={setInterpreterSpeakingLang}
+                providerLang={providerLang}
+                patientLang={patientLang}
+              />
+
+              {/* Patient Channel */}
+              <RecordingChannel
+                role="patient"
+                label="Patient"
+                icon="👤"
+                color="text-green-400"
+                bgColor="bg-green-950/30"
+                borderColor="border-green-700"
+                language={getLangDisplayName(patientLang)}
+                transcripts={sessionState.transcripts}
+                isRecording={recordingRole === "patient"}
+                isConnected={connectionState.websocketConnected}
+                onStartRecording={() => handleStartChannelRecording("patient")}
+                onStopRecording={handleStopChannelRecording}
+                onSelectTranscript={handleSelectTranscript}
+                selectedTranscripts={selectedTranscripts}
+              />
+            </div>
+
+            {/* Instructions */}
+            <div className="text-center text-sm text-gray-500 py-2">
+              Click transcripts to select them, then click <span className="text-yellow-400">⚖️ Evaluate</span> to analyze the interpretation
             </div>
 
             {/* Error Detail Modal */}
@@ -1381,38 +1815,30 @@ export default function DashboardPage() {
                   Select all languages spoken in this recording. This helps match speakers to languages.
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {[
-                    { code: "en", name: "English" },
-                    { code: "es", name: "Spanish" },
-                    { code: "fa", name: "Farsi/Persian" },
-                    { code: "ar", name: "Arabic" },
-                    { code: "zh", name: "Chinese" },
-                    { code: "vi", name: "Vietnamese" },
-                    { code: "ko", name: "Korean" },
-                    { code: "tl", name: "Tagalog" },
-                    { code: "hi", name: "Hindi" },
-                    { code: "gu", name: "Gujarati" },
-                    { code: "pt", name: "Portuguese" },
-                    { code: "ru", name: "Russian" },
-                    { code: "fr", name: "French" },
-                  ].map(lang => {
-                    const isSelected = uploadState.roleMappings._languagesPresent?.includes(lang.code) ||
-                      (lang.code === "en" && !uploadState.roleMappings._languagesPresent);
+                  {LANGUAGES.filter(lang => lang.code !== "auto").map(lang => {
+                    const storedLangs = uploadState.roleMappings._languagesPresent;
+                    const currentLangs = Array.isArray(storedLangs) ? storedLangs : ["en"];
+                    const isSelected = currentLangs.includes(lang.code) ||
+                      (lang.code === "en" && !storedLangs);
                     return (
                       <button
                         key={lang.code}
                         onClick={() => {
-                          const current = uploadState.roleMappings._languagesPresent || ["en"];
-                          const updated = isSelected
-                            ? current.filter((l: string) => l !== lang.code)
-                            : [...current, lang.code];
-                          setUploadState(prev => ({
-                            ...prev,
-                            roleMappings: {
-                              ...prev.roleMappings,
-                              _languagesPresent: updated.length > 0 ? updated : ["en"],
-                            },
-                          }));
+                          setUploadState(prev => {
+                            const prevStoredLangs = prev.roleMappings._languagesPresent;
+                            const prevCurrentLangs = Array.isArray(prevStoredLangs) ? prevStoredLangs : ["en"];
+                            const wasSelected = prevCurrentLangs.includes(lang.code);
+                            const updated = wasSelected
+                              ? prevCurrentLangs.filter((l: string) => l !== lang.code)
+                              : [...prevCurrentLangs, lang.code];
+                            return {
+                              ...prev,
+                              roleMappings: {
+                                ...prev.roleMappings,
+                                _languagesPresent: updated.length > 0 ? updated : ["en"],
+                              },
+                            };
+                          });
                         }}
                         className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                           isSelected
@@ -1779,62 +2205,85 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* Fixed Bottom Input Bar */}
-      <div className="fixed bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur border-t border-gray-700 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-center gap-4">
-          {/* Role Selector */}
-          <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
-            {(["provider", "interpreter", "patient"] as StreamRole[]).map((role) => (
-              <button
-                key={role}
-                onClick={() => setSelectedRole(role)}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  selectedRole === role
-                    ? role === "provider" ? "bg-blue-600 text-white" :
-                      role === "interpreter" ? "bg-purple-600 text-white" :
-                      "bg-green-600 text-white"
-                    : "text-gray-400 hover:text-white"
-                }`}
-              >
-                {role === "provider" ? "🩺 Provider" :
-                 role === "interpreter" ? "🗣️ Interpreter" :
-                 "👤 Patient"}
-              </button>
-            ))}
-          </div>
-
-          {/* Record Button */}
-          <button
-            onClick={handleToggleRecording}
-            disabled={!connectionState.websocketConnected}
-            className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${
-              connectionState.isRecording
-                ? "bg-red-600 hover:bg-red-700 animate-pulse"
-                : "bg-green-600 hover:bg-green-700"
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
+      {/* Debate Modal */}
+      {showDebateModal && (
+        <div
+          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+          onClick={() => setShowDebateModal(false)}
+        >
+          <div
+            className="bg-gray-900 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+            onClick={e => e.stopPropagation()}
           >
-            {connectionState.isRecording ? (
-              <>
-                <MicOff size={20} />
-                Stop Recording
-              </>
-            ) : (
-              <>
-                <Mic size={20} />
-                Record {selectedRole}
-              </>
-            )}
-          </button>
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-700 bg-gray-800">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">⚖️</span>
+                <div>
+                  <h2 className="text-lg font-bold text-white">Tribunal Debate</h2>
+                  <p className="text-xs text-gray-400">3-Agent Oxford-Style Evaluation</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDebateModal(false)}
+                className="text-gray-400 hover:text-white p-2"
+              >
+                <X size={24} />
+              </button>
+            </div>
 
-          {/* Recording indicator */}
-          {connectionState.isRecording && (
-            <span className="text-red-400 text-sm animate-pulse">● Recording...</span>
-          )}
+            {/* Selected Phrases */}
+            <div className="p-4 bg-gray-800/50 border-b border-gray-700">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-blue-950/30 border border-blue-800 rounded-lg p-3">
+                  <div className="text-xs text-blue-400 mb-1 font-medium">SOURCE PHRASE</div>
+                  <p className="text-sm text-gray-200">{selectedSourceText || "Not selected"}</p>
+                </div>
+                <div className="bg-purple-950/30 border border-purple-800 rounded-lg p-3">
+                  <div className="text-xs text-purple-400 mb-1 font-medium">INTERPRETER PHRASE</div>
+                  <p className="text-sm text-gray-200">{selectedInterpreterText || "Not selected"}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Debate Content */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {isEvaluating ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <div className="w-12 h-12 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mb-4" />
+                  <p className="text-gray-400">Agents are deliberating...</p>
+                  <p className="text-xs text-gray-500 mt-2">This may take 10-30 seconds</p>
+                </div>
+              ) : sessionState.debateLogs ? (
+                <DebatePanel debateLogs={sessionState.debateLogs} />
+              ) : (
+                <div className="text-center py-12">
+                  <p className="text-gray-500">No debate data yet</p>
+                  <p className="text-xs text-gray-600 mt-2">
+                    Select phrases and click Evaluate to start
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-gray-700 bg-gray-800 flex justify-end gap-3">
+              <button
+                onClick={clearSelection}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm"
+              >
+                Clear Selection
+              </button>
+              <button
+                onClick={() => setShowDebateModal(false)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
-
-      {/* Spacer for fixed bottom bar */}
-      <div className="h-24" />
+      )}
     </main>
   );
 }
