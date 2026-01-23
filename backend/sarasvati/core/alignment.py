@@ -60,6 +60,11 @@ class AlignmentEngine:
         self.use_real_embeddings = use_real_embeddings
         self._model = None
 
+        # PHASE 1 FIX: Production embedding validation
+        import os
+        environment = os.getenv("ENVIRONMENT", "development").lower()
+        is_production = environment in ["production", "prod", "staging"]
+
         # Thread-safe cache lock
         self._cache_lock = threading.Lock()
 
@@ -69,6 +74,20 @@ class AlignmentEngine:
             thread_name_prefix="sarasvati_align"
         )
 
+        # PHASE 1 FIX: Enforce real embeddings in production
+        if is_production and not SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise RuntimeError(
+                "PRODUCTION ERROR: sentence-transformers not installed. "
+                "Mock embeddings are not suitable for production. "
+                "Install with: pip install sentence-transformers"
+            )
+
+        if is_production and not use_real_embeddings:
+            raise RuntimeError(
+                "PRODUCTION ERROR: Mock embeddings requested in production environment. "
+                "Set use_real_embeddings=True or change ENVIRONMENT variable."
+            )
+
         # Load real embedding model if available and requested
         if use_real_embeddings and SENTENCE_TRANSFORMERS_AVAILABLE:
             print("🔄 Loading multilingual embedding model (paraphrase-multilingual-MiniLM-L12-v2)...")
@@ -77,23 +96,40 @@ class AlignmentEngine:
                 # Same speed as English-only model but works cross-lingually
                 self._model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
                 print("✅ Multilingual embedding model loaded successfully")
-                print("✅ ThreadPoolExecutor initialized (4 workers)")
+                print(f"✅ ThreadPoolExecutor initialized (4 workers) - Environment: {environment}")
             except Exception as e:
+                if is_production:
+                    raise RuntimeError(f"PRODUCTION ERROR: Failed to load embedding model: {e}")
                 print(f"⚠️  Failed to load embedding model: {e}")
                 print("   Falling back to mock embeddings")
                 self._model = None
         elif use_real_embeddings and not SENTENCE_TRANSFORMERS_AVAILABLE:
-            print("⚠️  sentence-transformers not installed")
-            print("   Install with: pip install sentence-transformers")
+            error_msg = "⚠️  sentence-transformers not installed. Install with: pip install sentence-transformers"
+            if is_production:
+                raise RuntimeError(f"PRODUCTION ERROR: {error_msg}")
+            print(error_msg)
             print("   Falling back to mock embeddings (NOT suitable for production)")
             self._model = None
         else:
+            if is_production:
+                raise RuntimeError("PRODUCTION ERROR: Mock embeddings not allowed in production")
             print("ℹ️  Using mock embeddings (for testing/development only)")
+
+    def shutdown(self) -> None:
+        """
+        Graceful shutdown of the alignment engine.
+        PHASE 1 FIX: Properly shutdown ThreadPoolExecutor to prevent resource leaks.
+        """
+        if hasattr(self, '_executor') and self._executor:
+            print("🔄 Shutting down alignment engine ThreadPoolExecutor...")
+            # Wait for running tasks and cancel pending futures
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            print("✅ Alignment engine shut down cleanly")
 
     def __del__(self):
         """Cleanup: Shutdown executor on deletion."""
-        if hasattr(self, '_executor'):
-            self._executor.shutdown(wait=False)
+        # PHASE 1 FIX: Call shutdown instead of direct executor shutdown
+        self.shutdown()
 
     async def align_segments(
         self,
@@ -186,10 +222,13 @@ class AlignmentEngine:
                 is_matched=False,
                 dtw_distance=float("inf"),
                 case_type=TribunalCaseType.OMISSION_INBOUND,  # Patient spoke, interpreter didn't relay
+                alternatives_considered=[],  # PHASE 3: No candidates at all
             )
 
         patient_embedding = self._get_embedding(patient_segment["text"])
 
+        # PHASE 3: Track ALL alternatives for transparency
+        all_matches: List[Tuple[TranscriptSegment, float, float, float, float]] = []
         best_match: Optional[Tuple[TranscriptSegment, float, float, float, float]] = None
         best_combined_score = -1.0
 
@@ -205,9 +244,46 @@ class AlignmentEngine:
 
             dtw_dist = abs(time_delta)  # Simplified DTW
 
+            match_tuple = (candidate, raw_similarity, time_delta, combined_score, dtw_dist)
+            all_matches.append(match_tuple)
+
             if combined_score > best_combined_score:
                 best_combined_score = combined_score
-                best_match = (candidate, raw_similarity, time_delta, combined_score, dtw_dist)
+                best_match = match_tuple
+
+        # PHASE 3: Build alternatives list helper
+        def build_alternatives_inbound(
+            all_matches: List[Tuple[TranscriptSegment, float, float, float, float]],
+            chosen_match: Optional[Tuple[TranscriptSegment, float, float, float, float]],
+        ) -> List[Any]:
+            """Build list of alternative inbound alignments."""
+            from sarasvati.core.state import AlignmentAlternative
+
+            sorted_matches = sorted(all_matches, key=lambda x: x[3], reverse=True)
+            alternatives = []
+
+            for match in sorted_matches[:5]:
+                interpreter_seg, raw_sim, time_d, combined, dtw = match
+
+                if chosen_match and interpreter_seg == chosen_match[0]:
+                    continue
+
+                if combined < MATCH_THRESHOLD:
+                    reason = f"Score {combined:.3f} below threshold {MATCH_THRESHOLD}"
+                elif chosen_match and combined < chosen_match[3]:
+                    reason = f"Lower score than best match ({combined:.3f} vs {chosen_match[3]:.3f})"
+                else:
+                    reason = "Other candidate selected"
+
+                alternatives.append(AlignmentAlternative(
+                    interpreter_segment=interpreter_seg,
+                    similarity_score=float(raw_sim),
+                    combined_score=float(combined),
+                    time_delta=float(time_d),
+                    rejection_reason=reason,
+                ))
+
+            return alternatives
 
         if best_match and best_combined_score >= MATCH_THRESHOLD:
             interpreter_seg, raw_similarity, time_delta, combined_score, dtw_dist = best_match
@@ -225,6 +301,7 @@ class AlignmentEngine:
                 is_matched=True,
                 dtw_distance=float(dtw_dist),
                 case_type=TribunalCaseType.ALIGNED_INBOUND,  # Patient → Interpreter matched
+                alternatives_considered=build_alternatives_inbound(all_matches, best_match),  # PHASE 3
             )
         elif best_match and best_combined_score >= FABRICATION_THRESHOLD:
             interpreter_seg, raw_similarity, time_delta, combined_score, dtw_dist = best_match
@@ -242,6 +319,7 @@ class AlignmentEngine:
                 is_matched=True,  # Flag for review
                 dtw_distance=float(dtw_dist),
                 case_type=TribunalCaseType.ALIGNED_INBOUND,  # Still inbound, just suspicious
+                alternatives_considered=build_alternatives_inbound(all_matches, best_match),  # PHASE 3
             )
         else:
             # No match in window → OMISSION_INBOUND
@@ -255,6 +333,7 @@ class AlignmentEngine:
                 is_matched=False,
                 dtw_distance=float("inf"),
                 case_type=TribunalCaseType.OMISSION_INBOUND,
+                alternatives_considered=build_alternatives_inbound(all_matches, None),  # PHASE 3
             )
 
     def _align_segments_sync(
@@ -301,6 +380,8 @@ class AlignmentEngine:
 
         # Step 4: Compute similarities for all candidates
         # Track: (candidate, raw_similarity, time_delta, combined_score, dtw_distance)
+        # PHASE 3: Track ALL alternatives for transparency
+        all_matches: List[Tuple[TranscriptSegment, float, float, float, float]] = []
         best_match: Optional[Tuple[TranscriptSegment, float, float, float, float]] = None
         best_combined_score = -1.0
 
@@ -323,10 +404,50 @@ class AlignmentEngine:
             # This is the TRUTH VECTOR per the architectural bible
             combined_score = (0.7 * similarity) + (0.3 * (1.0 - dtw_dist))
 
+            time_delta = candidate["timestamp"] - provider_segment["timestamp"]
+            match_tuple = (candidate, similarity, time_delta, combined_score, dtw_dist)
+            all_matches.append(match_tuple)
+
             if combined_score > best_combined_score:
                 best_combined_score = combined_score
-                time_delta = candidate["timestamp"] - provider_segment["timestamp"]
-                best_match = (candidate, similarity, time_delta, combined_score, dtw_dist)
+                best_match = match_tuple
+
+        # PHASE 3: Build alternatives list (top 5 rejected candidates)
+        def build_alternatives(
+            all_matches: List[Tuple[TranscriptSegment, float, float, float, float]],
+            chosen_match: Optional[Tuple[TranscriptSegment, float, float, float, float]],
+        ) -> List[Any]:
+            """Build list of alternative alignments that were considered but rejected."""
+            from sarasvati.core.state import AlignmentAlternative
+
+            # Sort by combined score descending
+            sorted_matches = sorted(all_matches, key=lambda x: x[3], reverse=True)
+
+            alternatives = []
+            for match in sorted_matches[:5]:  # Top 5
+                interpreter_seg, raw_sim, time_d, combined, dtw = match
+
+                # Skip the chosen match
+                if chosen_match and interpreter_seg == chosen_match[0]:
+                    continue
+
+                # Determine why rejected
+                if combined < self.config.min_similarity_threshold:
+                    reason = f"Score {combined:.3f} below threshold {self.config.min_similarity_threshold}"
+                elif chosen_match and combined < chosen_match[3]:
+                    reason = f"Lower score than best match ({combined:.3f} vs {chosen_match[3]:.3f})"
+                else:
+                    reason = "Other candidate selected"
+
+                alternatives.append(AlignmentAlternative(
+                    interpreter_segment=interpreter_seg,
+                    similarity_score=float(raw_sim),
+                    combined_score=float(combined),
+                    time_delta=float(time_d),
+                    rejection_reason=reason,
+                ))
+
+            return alternatives
 
         # Step 5: Validate match against threshold
         # CRITICAL FIX: Threshold on combined_score, not raw similarity
@@ -358,6 +479,7 @@ class AlignmentEngine:
                 is_matched=True,
                 dtw_distance=float(dtw_dist),
                 case_type=TribunalCaseType.ALIGNED_OUTBOUND,  # Provider → Interpreter match
+                alternatives_considered=build_alternatives(all_matches, best_match),  # PHASE 3
             )
 
         # No match found in window OR suspiciously low match (possible fabrication)
@@ -390,6 +512,7 @@ class AlignmentEngine:
                     is_matched=True,  # Mark as matched so tribunal sees it!
                     dtw_distance=float(dtw_dist),
                     case_type=TribunalCaseType.ALIGNED_OUTBOUND,  # Still outbound, just suspicious
+                    alternatives_considered=build_alternatives(all_matches, best_match),  # PHASE 3
                 )
             else:
                 # Very low score: probably unrelated, truly missed
@@ -410,6 +533,7 @@ class AlignmentEngine:
             is_matched=False,  # Will trigger omission review in tribunal
             dtw_distance=float("inf"),
             case_type=TribunalCaseType.OMISSION_OUTBOUND,  # Provider spoke, interpreter didn't
+            alternatives_considered=build_alternatives(all_matches, None),  # PHASE 3: Show what was considered
         )
 
     def _get_candidates_in_window(

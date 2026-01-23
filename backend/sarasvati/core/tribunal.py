@@ -124,21 +124,141 @@ class DebateLog:
             "duration_ms": (self.end_time - self.start_time).total_seconds() * 1000 if self.end_time else None,
         }
 
+    def to_frontend_format(
+        self,
+        challenges: Optional[List[Dict[str, Any]]] = None,
+        rebuttals: Optional[List[Dict[str, Any]]] = None,
+        convergence_type: Optional[str] = None,
+        dissenting_opinions: Optional[List[Dict[str, Any]]] = None,
+        consensus_confidence: float = 1.0,
+        flagged_for_human_review: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        PHASE 3: Export debate log in frontend-friendly format.
+
+        Includes all Phase 2 debate structures (challenges, rebuttals, convergence).
+        Returns UI-optimized structure for DebateConversation.tsx component.
+        """
+        # Organize turns by round for timeline visualization
+        rounds = {}
+        for turn in self.turns:
+            round_num = turn.round_num
+            if round_num not in rounds:
+                rounds[round_num] = {
+                    "round_number": round_num,
+                    "turns": [],
+                    "consensus_emerging": False,
+                    "position_changes": 0,
+                }
+            rounds[round_num]["turns"].append(turn.to_dict())
+            if turn.changed_mind:
+                rounds[round_num]["position_changes"] += 1
+
+        # Detect emerging consensus in each round
+        for round_num, round_data in rounds.items():
+            positions = [t["position"] for t in round_data["turns"]]
+            if len(positions) == 3 and len(set(positions)) == 1:
+                round_data["consensus_emerging"] = True
+
+        return {
+            "tribunal_type": self.tribunal_type,
+            "input_text": self.input_text,
+            "rounds": [rounds[r] for r in sorted(rounds.keys())],
+            "final_consensus": self.final_consensus,
+            "consensus_reached": self.consensus_reached,
+            "rounds_taken": self.rounds_taken,
+            "duration_ms": (self.end_time - self.start_time).total_seconds() * 1000 if self.end_time else None,
+            # PHASE 2: Challenge-response data
+            "challenges": challenges or [],
+            "rebuttals": rebuttals or [],
+            "convergence_type": convergence_type,
+            "dissenting_opinions": dissenting_opinions or [],
+            "consensus_confidence": consensus_confidence,
+            "flagged_for_human_review": flagged_for_human_review,
+            # UI-specific metadata
+            "agent_summary": self._build_agent_summary(),
+            "debate_flow": self._build_debate_flow(),
+        }
+
+    def _build_agent_summary(self) -> Dict[str, Any]:
+        """Build summary of agent behavior across debate."""
+        agent_stats = {}
+        for turn in self.turns:
+            agent_name = turn.agent_name
+            if agent_name not in agent_stats:
+                agent_stats[agent_name] = {
+                    "name": agent_name,
+                    "model": turn.agent_model,
+                    "provider": turn.agent_provider,
+                    "position_changes": 0,
+                    "final_position": turn.position,
+                    "rounds_participated": set(),
+                }
+            if turn.changed_mind:
+                agent_stats[agent_name]["position_changes"] += 1
+            agent_stats[agent_name]["final_position"] = turn.position
+            agent_stats[agent_name]["rounds_participated"].add(turn.round_num)
+
+        # Convert sets to counts
+        for agent in agent_stats.values():
+            agent["rounds_participated"] = len(agent["rounds_participated"])
+
+        return agent_stats
+
+    def _build_debate_flow(self) -> List[Dict[str, Any]]:
+        """Build chronological flow of debate for timeline visualization."""
+        flow = []
+        for turn in self.turns:
+            event = {
+                "type": "statement",
+                "round": turn.round_num,
+                "agent": turn.agent_name,
+                "content": turn.statement,
+                "position": turn.position,
+                "timestamp": turn.timestamp.isoformat(),
+            }
+            if turn.changed_mind:
+                event["type"] = "position_change"
+                event["highlight"] = True
+            flow.append(event)
+        return flow
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TRIBUNAL AGENT - Individual debater
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TribunalAgent:
-    """Single agent in a tribunal - can translate or evaluate errors."""
+    """
+    Single agent in a tribunal - can translate or evaluate errors.
+    PHASE 2: Enhanced with specialized roles for diversity.
+    """
 
-    def __init__(self, name: str, client: Any, model: str, provider: str):
+    def __init__(self, name: str, client: Any, model: str, provider: str, role: Optional[str] = None):
         self.name = name
         self.client = client
         self.model = model
         self.provider = provider
         self.current_position: Optional[str] = None
         self.position_history: List[str] = []
+        # PHASE 2: Specialized role for this agent
+        self.role = role or self._default_role_for_provider(provider)
+
+    def _default_role_for_provider(self, provider: str) -> str:
+        """
+        PHASE 2: Assign default specialized role based on provider.
+
+        - Groq/Llama: Evidence Scanner (fast pattern matching)
+        - OpenAI/GPT: Semantic Analyzer (deep context understanding)
+        - Anthropic/Claude: Safety Arbiter (conservative risk assessment)
+        """
+        roles = {
+            "groq": "Evidence Scanner - Fast pattern matching and surface-level analysis",
+            "openai": "Semantic Analyzer - Deep context understanding and nuanced interpretation",
+            "anthropic": "Safety Arbiter - Conservative risk assessment and clinical safety focus",
+            "deepseek": "Pattern Recognizer - Efficient detection of structural issues"
+        }
+        return roles.get(provider, "General Analyst")
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
         """Call the LLM with provider-specific API."""
@@ -358,6 +478,314 @@ Evaluate the interpreter's accuracy. Respond with JSON:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2: CONVERGENCE TRACKER - Detects when debate has reached conclusion
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ConvergenceTracker:
+    """
+    PHASE 2: Tracks debate convergence and detects when conclusion is reached.
+
+    Monitors:
+    - Full consensus (3/3 agents agree)
+    - Strong majority (2/3 agree, 1 weak dissent)
+    - Structured dissent (clear disagreement)
+    - Stuck debates (no progress)
+    """
+
+    def __init__(self):
+        self.position_history: List[Dict[str, str]] = []  # Track positions across rounds
+        self.stuck_rounds = 0
+
+    def check_convergence(
+        self,
+        current_positions: Dict[str, str],
+        round_num: int,
+        confidences: Optional[Dict[str, float]] = None
+    ) -> Dict[str, Any]:
+        """
+        Check if debate has converged.
+
+        Args:
+            current_positions: {agent_name: position}
+            round_num: Current round number
+            confidences: {agent_name: confidence} (optional)
+
+        Returns:
+            {
+                "converged": bool,
+                "convergence_type": ConvergenceType,
+                "final_position": str,
+                "confidence": float,
+                "dissenting_opinions": List[DissentingOpinion],
+                "flag_for_human": bool
+            }
+        """
+        from ..core.state import ConvergenceType, DissentingOpinion
+        from collections import Counter
+
+        positions = list(current_positions.values())
+        position_counts = Counter(positions)
+
+        # Check for full consensus (all 3 agree)
+        for position, count in position_counts.items():
+            if count == 3:
+                return {
+                    "converged": True,
+                    "convergence_type": ConvergenceType.FULL_CONSENSUS,
+                    "final_position": position,
+                    "confidence": 1.0,
+                    "dissenting_opinions": [],
+                    "flag_for_human": False
+                }
+
+        # Check for strong majority (2 agree, check if dissent is weak)
+        for position, count in position_counts.items():
+            if count == 2:
+                # Find dissenting agent
+                dissenting_agent = [name for name, pos in current_positions.items() if pos != position][0]
+                dissenting_confidence = confidences.get(dissenting_agent, 0.5) if confidences else 0.5
+
+                # Weak dissent if confidence < 0.6
+                if dissenting_confidence < 0.6:
+                    return {
+                        "converged": True,
+                        "convergence_type": ConvergenceType.STRONG_MAJORITY,
+                        "final_position": position,
+                        "confidence": 0.75,
+                        "dissenting_opinions": [],
+                        "flag_for_human": False
+                    }
+
+        # No convergence yet
+        return {
+            "converged": False,
+            "convergence_type": None,
+            "final_position": None,
+            "confidence": 0.0,
+            "dissenting_opinions": [],
+            "flag_for_human": False
+        }
+
+    def check_stuck(self, current_positions: Dict[str, str]) -> bool:
+        """
+        Check if debate is stuck (no position changes).
+
+        Returns:
+            True if stuck (no changes for 2 rounds)
+        """
+        if len(self.position_history) < 2:
+            self.position_history.append(current_positions.copy())
+            return False
+
+        # Compare to previous round
+        prev_positions = self.position_history[-1]
+        any_changed = any(
+            current_positions.get(agent) != prev_positions.get(agent)
+            for agent in current_positions
+        )
+
+        if not any_changed:
+            self.stuck_rounds += 1
+        else:
+            self.stuck_rounds = 0
+
+        self.position_history.append(current_positions.copy())
+
+        return self.stuck_rounds >= 2
+
+    def generate_structured_dissent(
+        self,
+        current_positions: Dict[str, str],
+        reasonings: Dict[str, str],
+        confidences: Dict[str, float]
+    ) -> Dict[str, Any]:
+        """
+        Generate structured dissent documentation.
+
+        Returns convergence result with dissenting opinions documented.
+        """
+        from ..core.state import ConvergenceType, DissentingOpinion
+        from collections import Counter
+
+        position_counts = Counter(current_positions.values())
+        majority_position = position_counts.most_common(1)[0][0]
+
+        dissenting_opinions = []
+        for agent_name, position in current_positions.items():
+            dissenting_opinions.append({
+                "agent_name": agent_name,
+                "position": position,
+                "reasoning": reasonings.get(agent_name, ""),
+                "evidence": [],  # Could be enhanced to track cited evidence
+                "confidence": confidences.get(agent_name, 0.5)
+            })
+
+        return {
+            "converged": True,  # Terminated, but with dissent
+            "convergence_type": ConvergenceType.STRUCTURED_DISSENT,
+            "final_position": majority_position,
+            "confidence": 0.5,
+            "dissenting_opinions": dissenting_opinions,
+            "flag_for_human": True
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2: ADAPTIVE ROUND MANAGER - Adjusts rounds based on case severity
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AdaptiveRoundManager:
+    """
+    PHASE 2: Manages debate rounds adaptively based on case severity.
+
+    Low severity (minor issues): 2-3 rounds max
+    Medium severity (significant errors): 4-5 rounds
+    High severity (critical errors): 6-8 rounds
+    """
+
+    def __init__(self, case_severity: str = "medium"):
+        self.case_severity = case_severity.lower()
+        self.max_rounds = self._calculate_max_rounds()
+
+    def _calculate_max_rounds(self) -> int:
+        """Calculate max rounds based on severity."""
+        if self.case_severity in ["low", "minor"]:
+            return 3
+        elif self.case_severity in ["medium", "moderate"]:
+            return 5
+        elif self.case_severity in ["high", "critical"]:
+            return 8
+        else:
+            return 5  # Default to medium
+
+    def should_continue(self, round_num: int, convergence_result: Dict[str, Any]) -> bool:
+        """
+        Decide if debate should continue.
+
+        Args:
+            round_num: Current round number
+            convergence_result: Result from ConvergenceTracker
+
+        Returns:
+            True if should continue debate
+        """
+        # Stop if converged
+        if convergence_result.get("converged"):
+            return False
+
+        # Stop if max rounds reached
+        if round_num >= self.max_rounds:
+            return False
+
+        return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2: CHALLENGE-RESPONSE PROTOCOL - Agent-to-agent challenges
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ChallengeResponseProtocol:
+    """
+    PHASE 2: Coordinates challenge-response cycles between agents.
+
+    Extracts challenges from agent statements, routes to target agents,
+    collects rebuttals.
+    """
+
+    def __init__(self):
+        self.challenges: List[Dict[str, Any]] = []
+        self.rebuttals: List[Dict[str, Any]] = []
+
+    def extract_challenges(
+        self,
+        round_results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract challenges from agent statements.
+
+        Looks for patterns like:
+        - "Agent X, you missed..."
+        - "I disagree with Agent Y because..."
+        - "Agent Z's interpretation is incorrect..."
+
+        Args:
+            round_results: List of agent results from current round
+
+        Returns:
+            List of Challenge dicts
+        """
+        from ..core.state import Challenge
+        import re
+
+        challenges = []
+        round_num = round_results[0].get("round_num", 1) if round_results else 1
+
+        for result in round_results:
+            statement = result.get("statement", "")
+            from_agent = result.get("agent_name", "")
+
+            # Simple pattern matching (could be enhanced with LLM extraction)
+            # Look for agent mentions
+            agent_mentions = re.findall(r'Agent[ -]([ABC])', statement, re.IGNORECASE)
+
+            for mentioned_agent in agent_mentions:
+                # Extract challenge text (context around mention)
+                challenge = {
+                    "from_agent": from_agent,
+                    "to_agent": f"Agent-{mentioned_agent.upper()}",
+                    "round_num": round_num,
+                    "challenge_text": statement[:200],  # First 200 chars as challenge
+                    "evidence_cited": []  # Could be enhanced to extract evidence
+                }
+                challenges.append(challenge)
+
+        self.challenges.extend(challenges)
+        return challenges
+
+    async def get_rebuttals(
+        self,
+        challenges: List[Dict[str, Any]],
+        agents: List[Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Get rebuttals from challenged agents.
+
+        Args:
+            challenges: List of challenges from previous round
+            agents: List of TribunalAgent instances
+
+        Returns:
+            List of Rebuttal dicts
+        """
+        from ..core.state import Rebuttal
+
+        rebuttals = []
+
+        for challenge in challenges:
+            # Find target agent
+            target_agent = next(
+                (a for a in agents if challenge["to_agent"] in a.name),
+                None
+            )
+
+            if target_agent:
+                # For now, just record the challenge was addressed
+                # In full implementation, could have agent generate specific rebuttal
+                rebuttal = {
+                    "from_agent": challenge["to_agent"],
+                    "to_agent": challenge["from_agent"],
+                    "round_num": challenge["round_num"] + 1,
+                    "rebuttal_text": f"Response to challenge from {challenge['from_agent']}",
+                    "position_changed": False,  # Would be determined in next round
+                    "new_position": None
+                }
+                rebuttals.append(rebuttal)
+
+        self.rebuttals.extend(rebuttals)
+        return rebuttals
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # TRANSLATION TRIBUNAL
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -368,12 +796,20 @@ class TranslationTribunal:
     Takes RAW text (Gujarati, Spanish, etc.) and produces consensus English translation.
     """
 
-    MAX_ROUNDS = 3  # Maximum 3 rounds of rebuttals, then force vote
+    # PHASE 2: Deprecated - max rounds now managed by AdaptiveRoundManager
+    MAX_ROUNDS = 3  # Legacy default
+    MAX_STUCK_ROUNDS = 2  # PHASE 1 FIX: Terminate if no position changes for 2 consecutive rounds
 
-    def __init__(self, agents: List[TribunalAgent]):
+    def __init__(self, agents: List[TribunalAgent], case_severity: str = "medium"):
         if len(agents) != 3:
             raise ValueError("TranslationTribunal requires exactly 3 agents")
         self.agents = agents
+        self._consecutive_stuck_rounds = 0  # PHASE 1 FIX: Track stuck rounds
+
+        # PHASE 2: Initialize debate infrastructure
+        self.convergence_tracker = ConvergenceTracker()
+        self.round_manager = AdaptiveRoundManager(case_severity=case_severity)
+        self.challenge_protocol = ChallengeResponseProtocol()
 
     async def debate(
         self,
@@ -381,31 +817,42 @@ class TranslationTribunal:
         detected_language: str,
     ) -> Dict[str, Any]:
         """
-        Run translation debate until consensus or max rounds.
+        PHASE 2: Enhanced multi-round debate with challenge-response protocol.
+
+        Run translation debate until consensus or max rounds (adaptive 3-8 rounds).
 
         Returns:
             {
                 "consensus_translation": str,
                 "consensus_reached": bool,
+                "convergence_type": ConvergenceType,
+                "confidence": float,
                 "debate_log": DebateLog,
                 "individual_translations": Dict[str, str],
+                "flagged_for_human_review": bool,
             }
         """
+        from ..core.state import ConvergenceType
+
         debate_log = DebateLog(
             tribunal_type="translation",
             input_text=raw_text,
         )
 
         print(f"\n{'='*70}")
-        print(f"🌐 TRANSLATION TRIBUNAL - Starting debate")
+        print(f"🌐 TRANSLATION TRIBUNAL - PHASE 2: Enhanced Multi-Round Debate")
         print(f"   Language: {detected_language}")
         print(f"   Text: {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}")
+        print(f"   Max rounds: {self.round_manager.max_rounds} (adaptive)")
         print(f"{'='*70}")
 
         translations: Dict[str, str] = {}
+        reasonings: Dict[str, str] = {}
+        confidences: Dict[str, float] = {}
         round_num = 0
 
-        while round_num < self.MAX_ROUNDS:
+        # PHASE 2: Main debate loop with challenge-response
+        while round_num < self.round_manager.max_rounds:
             round_num += 1
             print(f"\n📢 ROUND {round_num}")
 
@@ -429,96 +876,121 @@ class TranslationTribunal:
 
             results = await asyncio.gather(*tasks)
 
-            # Log each turn
+            # PHASE 2: Log each turn and track positions
             for agent, result in zip(self.agents, results):
                 translation = result.get("translation", "")
+                reasoning = result.get("reasoning", "")
+                confidence = result.get("confidence", 0.5)
+
                 translations[agent.name] = translation
+                reasonings[agent.name] = reasoning
+                confidences[agent.name] = confidence
 
                 turn = DebateTurn(
                     round_num=round_num,
                     agent_name=agent.name,
                     agent_model=agent.model,
                     agent_provider=agent.provider,
-                    statement=result.get("reasoning", ""),
+                    statement=reasoning,
                     position=translation,
-                    reasoning=result.get("reasoning", ""),
+                    reasoning=reasoning,
                     agrees_with=result.get("agrees_with", []),
                     disagrees_with=result.get("disagrees_with", []),
                     changed_mind=result.get("changed_mind", False),
                 )
                 debate_log.add_turn(turn)
 
-            # Check for FULL consensus (3/3 agreement) - only after round 2
-            # This ensures at least one round of actual debate happens
+            # PHASE 2: Extract challenges for next round (if in rounds 2+)
             if round_num >= 2:
-                translation_values = list(translations.values())
-                for trans in translation_values:
-                    count = sum(1 for t in translation_values if self._similar(t, trans))
-                    if count >= 3:  # FULL consensus - all 3 agents agree
-                        debate_log.consensus_reached = True
-                        debate_log.final_consensus = trans
-                        debate_log.rounds_taken = round_num
-                        debate_log.end_time = datetime.utcnow()
+                challenges = self.challenge_protocol.extract_challenges(
+                    [{"agent_name": agent.name, "statement": reasonings.get(agent.name, ""), "round_num": round_num}
+                     for agent in self.agents]
+                )
+                if challenges:
+                    print(f"   📢 Extracted {len(challenges)} challenges for next round")
 
-                        print(f"\n✅ FULL CONSENSUS REACHED in Round {round_num}!")
-                        print(f"   Translation: {trans[:100]}...")
+            # PHASE 2: Check convergence using ConvergenceTracker
+            if round_num >= 2:  # Only check after at least 2 rounds
+                convergence_result = self.convergence_tracker.check_convergence(
+                    current_positions=translations,
+                    round_num=round_num,
+                    confidences=confidences
+                )
 
-                        return {
-                            "consensus_translation": trans,
-                            "consensus_reached": True,
-                            "consensus_type": "full",  # All 3 agreed
-                            "confidence": 1.0,  # High confidence
-                            "debate_log": debate_log,
-                            "individual_translations": translations,
-                        }
+                # Check if debate has converged
+                if convergence_result["converged"]:
+                    debate_log.consensus_reached = True
+                    debate_log.final_consensus = convergence_result["final_position"]
+                    debate_log.rounds_taken = round_num
+                    debate_log.end_time = datetime.utcnow()
+                    debate_log.convergence_type = convergence_result["convergence_type"]
+                    debate_log.consensus_confidence = convergence_result["confidence"]
+                    debate_log.dissenting_opinions = convergence_result.get("dissenting_opinions", [])
+                    debate_log.flagged_for_human_review = convergence_result["flag_for_human"]
 
-            # No full consensus yet - continue debate if minds are changing
-            if round_num > 1:
-                any_changed = any(r.get("changed_mind", False) for r in results)
-                if not any_changed and round_num >= 3:
-                    print(f"\n⚠️ No minds changed after {round_num} rounds")
-                    # Don't break early - keep trying until MAX_ROUNDS
+                    conv_type = convergence_result["convergence_type"]
+                    if conv_type == ConvergenceType.FULL_CONSENSUS:
+                        print(f"\n✅ FULL CONSENSUS (3/3) in Round {round_num}!")
+                    elif conv_type == ConvergenceType.STRONG_MAJORITY:
+                        print(f"\n✅ STRONG MAJORITY (2/3) in Round {round_num}!")
+                    elif conv_type == ConvergenceType.STRUCTURED_DISSENT:
+                        print(f"\n⚠️  STRUCTURED DISSENT - Flagged for human review")
 
-        # No full consensus after max rounds - check for majority (2/3)
+                    print(f"   Translation: {convergence_result['final_position'][:100]}...")
+                    print(f"   Confidence: {convergence_result['confidence']:.2f}")
+
+                    return {
+                        "consensus_translation": convergence_result["final_position"],
+                        "consensus_reached": True,
+                        "convergence_type": conv_type.value,
+                        "confidence": convergence_result["confidence"],
+                        "debate_log": debate_log,
+                        "individual_translations": translations,
+                        "flagged_for_human_review": convergence_result["flag_for_human"],
+                        "dissenting_opinions": convergence_result.get("dissenting_opinions", []),
+                    }
+
+                # Check if round manager says to continue
+                if not self.round_manager.should_continue(round_num, convergence_result):
+                    break
+
+            # PHASE 2: Check if debate is stuck
+            if self.convergence_tracker.check_stuck(translations):
+                print(f"\n🛑 Debate stuck (no position changes for 2 rounds). Generating structured dissent.")
+                break
+
+        # PHASE 2: Max rounds reached or debate stuck - generate structured dissent
         debate_log.rounds_taken = round_num
         debate_log.end_time = datetime.utcnow()
 
-        from collections import Counter
-        translation_values = list(translations.values())
+        # Generate structured dissent documentation
+        structured_dissent = self.convergence_tracker.generate_structured_dissent(
+            current_positions=translations,
+            reasonings=reasonings,
+            confidences=confidences
+        )
 
-        # Check for majority (2/3)
-        for trans in translation_values:
-            count = sum(1 for t in translation_values if self._similar(t, trans))
-            if count >= 2:
-                debate_log.consensus_reached = True  # Partial consensus
-                debate_log.final_consensus = trans
+        debate_log.consensus_reached = True  # Terminated with dissent
+        debate_log.final_consensus = structured_dissent["final_position"]
+        debate_log.convergence_type = structured_dissent["convergence_type"]
+        debate_log.consensus_confidence = structured_dissent["confidence"]
+        debate_log.dissenting_opinions = structured_dissent["dissenting_opinions"]
+        debate_log.flagged_for_human_review = True
 
-                print(f"\n⚠️ MAJORITY CONSENSUS (2/3) after {round_num} rounds")
-                print(f"   Translation: {trans[:100]}...")
-
-                return {
-                    "consensus_translation": trans,
-                    "consensus_reached": True,
-                    "consensus_type": "majority",  # Only 2/3 agreed
-                    "confidence": 0.5,  # Lower confidence for majority-only
-                    "debate_log": debate_log,
-                    "individual_translations": translations,
-                }
-
-        # No majority - complete disagreement (rare)
-        debate_log.consensus_reached = False
-        final = Counter(translations.values()).most_common(1)[0][0]
-        debate_log.final_consensus = final
-
-        print(f"\n❌ NO CONSENSUS after {round_num} rounds. Using first: {final[:100]}...")
+        print(f"\n⚠️  STRUCTURED DISSENT after {round_num} rounds")
+        print(f"   All {len(structured_dissent['dissenting_opinions'])} agent positions documented")
+        print(f"   Flagged for human review: YES")
+        print(f"   Using majority position: {structured_dissent['final_position'][:100]}...")
 
         return {
-            "consensus_translation": final,
-            "consensus_reached": False,
-            "consensus_type": "none",  # No agreement
-            "confidence": 0.25,  # Very low confidence
+            "consensus_translation": structured_dissent["final_position"],
+            "consensus_reached": False,  # No genuine consensus
+            "convergence_type": ConvergenceType.STRUCTURED_DISSENT.value,
+            "confidence": structured_dissent["confidence"],
             "debate_log": debate_log,
             "individual_translations": translations,
+            "flagged_for_human_review": True,
+            "dissenting_opinions": structured_dissent["dissenting_opinions"],
         }
 
     def _similar(self, t1: str, t2: str, threshold: float = 0.85) -> bool:
@@ -533,17 +1005,26 @@ class TranslationTribunal:
 
 class ErrorTribunal:
     """
-    3-agent tribunal for error detection consensus.
+    PHASE 2: Enhanced 3-agent tribunal for error detection consensus.
 
     Takes consolidated translations and determines if interpreter made errors.
+    Uses adaptive rounds (3-8) based on case severity.
     """
 
-    MAX_ROUNDS = 3  # Maximum 3 rounds of rebuttals, then force vote
+    # PHASE 2: Deprecated - max rounds now managed by AdaptiveRoundManager
+    MAX_ROUNDS = 3  # Legacy default
+    MAX_STUCK_ROUNDS = 2  # PHASE 1 FIX: Terminate if no position changes for 2 consecutive rounds
 
-    def __init__(self, agents: List[TribunalAgent]):
+    def __init__(self, agents: List[TribunalAgent], case_severity: str = "medium"):
         if len(agents) != 3:
             raise ValueError("ErrorTribunal requires exactly 3 agents")
         self.agents = agents
+        self._consecutive_stuck_rounds = 0  # PHASE 1 FIX: Track stuck rounds
+
+        # PHASE 2: Initialize debate infrastructure (same as TranslationTribunal)
+        self.convergence_tracker = ConvergenceTracker()
+        self.round_manager = AdaptiveRoundManager(case_severity=case_severity)
+        self.challenge_protocol = ChallengeResponseProtocol()
 
     async def debate(
         self,
@@ -651,12 +1132,19 @@ class ErrorTribunal:
                             "individual_evaluations": evaluations,
                         }
 
-            # No full consensus yet - continue debate if minds are changing
+            # PHASE 1 FIX: Detect stuck debate (no position changes)
             if round_num > 1:
                 any_changed = any(r.get("changed_mind", False) for r in results)
-                if not any_changed and round_num >= 3:
-                    print(f"\n⚠️ No minds changed after {round_num} rounds")
-                    # Don't break early - keep trying until MAX_ROUNDS
+                if not any_changed:
+                    self._consecutive_stuck_rounds += 1
+                    print(f"\n⚠️ No minds changed in round {round_num} (stuck count: {self._consecutive_stuck_rounds})")
+
+                    # Break if stuck for MAX_STUCK_ROUNDS consecutive rounds
+                    if self._consecutive_stuck_rounds >= self.MAX_STUCK_ROUNDS:
+                        print(f"\n🛑 Debate stuck for {self._consecutive_stuck_rounds} rounds. Terminating early.")
+                        break
+                else:
+                    self._consecutive_stuck_rounds = 0  # Reset if any agent changed position
 
         # No full consensus after max rounds - check for majority (2/3)
         debate_log.rounds_taken = round_num
@@ -791,14 +1279,16 @@ class DualTribunalOrchestrator:
         self.error_tribunal = ErrorTribunal(self.error_agents)
 
         print(f"\n{'='*70}")
-        print(f"🏛️  DUAL TRIBUNAL SYSTEM INITIALIZED")
+        print(f"🏛️  DUAL TRIBUNAL SYSTEM INITIALIZED (PHASE 2)")
         print(f"{'='*70}")
-        print(f"Translation Tribunal:")
+        print(f"Translation Tribunal (with specialized roles):")
         for a in self.translation_agents:
             print(f"   • {a.name} via {a.provider}")
-        print(f"Error Tribunal:")
+            print(f"     Role: {a.role}")
+        print(f"Error Tribunal (with specialized roles):")
         for a in self.error_agents:
             print(f"   • {a.name} via {a.provider}")
+            print(f"     Role: {a.role}")
         print(f"{'='*70}\n")
 
     async def evaluate_interpretation(

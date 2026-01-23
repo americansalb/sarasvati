@@ -12,7 +12,7 @@ This is the heart of the system - a continuous processing loop that:
 4. Reports clinical errors in real-time
 """
 
-from typing import Literal, Optional, Dict, Any
+from typing import Literal, Optional, Dict, Any, List
 from datetime import datetime
 import asyncio
 import os
@@ -20,11 +20,20 @@ import os
 try:
     from langgraph.graph import StateGraph, END
     from langgraph.checkpoint.memory import MemorySaver
+    # PHASE 1 FIX: Import SqliteSaver for persistent checkpointing
+    try:
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        SQLITE_SAVER_AVAILABLE = True
+    except ImportError:
+        SqliteSaver = None
+        SQLITE_SAVER_AVAILABLE = False
 except ImportError:
     # Fallback for development without langgraph
     StateGraph = None
     END = None
     MemorySaver = None
+    SqliteSaver = None
+    SQLITE_SAVER_AVAILABLE = False
 
 from .state import (
     SarasvatiState,
@@ -33,6 +42,7 @@ from .state import (
     StreamRole,
     GraphConfig,
     create_initial_state,
+    AlignmentMatch,
 )
 from .alignment import AlignmentEngine, BatchAligner, create_alignment_engine
 from .agent import ClinicalDebateOrchestrator
@@ -161,12 +171,32 @@ class SarasvatiGraph:
         """
         Compile the graph for execution.
 
+        PHASE 1 FIX: Use SqliteSaver for persistent checkpointing (crash recovery).
+
         Returns:
             Compiled graph ready for invocation
         """
-        # Use memory saver for checkpointing
-        memory = MemorySaver()
+        # PHASE 1 FIX: Use SqliteSaver for persistent checkpointing if available
+        import os
+        if SQLITE_SAVER_AVAILABLE and SqliteSaver:
+            checkpoint_path = os.getenv(
+                "SARASVATI_CHECKPOINT_DB",
+                "/tmp/sarasvati_checkpoints.db"
+            )
+            try:
+                memory = SqliteSaver.from_conn_string(checkpoint_path)
+                print(f"✅ Using persistent checkpointing: {checkpoint_path}")
+            except Exception as e:
+                print(f"⚠️  Failed to initialize SqliteSaver: {e}")
+                print("   Falling back to in-memory checkpointing")
+                memory = MemorySaver()
+        else:
+            # Fallback to in-memory checkpointing
+            print("⚠️  SqliteSaver not available, using in-memory checkpointing (no crash recovery)")
+            memory = MemorySaver()
+
         self.compiled_graph = self.graph.compile(checkpointer=memory)
+        self.checkpointer = memory  # Store reference for crash recovery
         return self.compiled_graph
 
     # ===== Graph Node Implementations =====
@@ -364,7 +394,57 @@ class SarasvatiGraph:
         # Update stats
         state["processing_stats"]["errors_detected"] = len(state["detected_errors"])
 
+        # PHASE 3: Update session analytics
+        self._update_analytics(state, new_cases)
+
         return state
+
+    def _update_analytics(self, state: SarasvatiState, processed_cases: List[AlignmentMatch]) -> None:
+        """
+        PHASE 3: Update session analytics with latest debate results.
+
+        Args:
+            state: Current state with session_analytics
+            processed_cases: Cases just processed in this cycle
+        """
+        if not state.get("session_analytics"):
+            return
+
+        analytics = state["session_analytics"]
+        debate_result = state.get("last_debate_result")
+
+        if not debate_result:
+            return
+
+        # Update consensus metrics from debate logs
+        debate_logs = debate_result.get("debate_logs", {})
+        if debate_logs:
+            for log_key, log in debate_logs.items():
+                if log and isinstance(log, dict):
+                    analytics["consensus_metrics"]["total_debates"] += 1
+
+                    # Track convergence type
+                    convergence_type = log.get("convergence_type")
+                    if convergence_type == "full_consensus":
+                        analytics["consensus_metrics"]["full_consensus_count"] += 1
+                    elif convergence_type == "strong_majority":
+                        analytics["consensus_metrics"]["strong_majority_count"] += 1
+                    elif convergence_type == "structured_dissent":
+                        analytics["consensus_metrics"]["structured_dissent_count"] += 1
+
+                    # Track rounds to consensus
+                    rounds = log.get("rounds_taken", 0)
+                    if rounds > 0:
+                        current_avg = analytics["consensus_metrics"]["avg_rounds_to_consensus"]
+                        total = analytics["consensus_metrics"]["total_debates"]
+                        new_avg = (current_avg * (total - 1) + rounds) / total if total > 0 else rounds
+                        analytics["consensus_metrics"]["avg_rounds_to_consensus"] = new_avg
+
+        # Update error concentration (time buckets)
+        if state["detected_errors"]:
+            session_duration = (datetime.utcnow() - state["session_start"]).total_seconds()
+            time_bucket = f"{int(session_duration // 30) * 30}s"  # 30-second buckets
+            analytics["error_concentration"][time_bucket] = analytics["error_concentration"].get(time_bucket, 0) + len(processed_cases)
 
     async def report_node(self, state: SarasvatiState) -> SarasvatiState:
         """
@@ -492,6 +572,17 @@ class SarasvatiEngine:
         # Single-flight guard
         self._processing_task: Optional[asyncio.Task] = None
 
+        # PHASE 1 FIX: Add locks for thread-safe state management
+        self._state_lock = asyncio.Lock()  # Protects self.state updates
+        self._cycle_lock = asyncio.Lock()  # Single-flight guarantee for processing cycles
+
+        # PHASE 1 FIX: Circuit breaker for failure resilience
+        self._failure_count = 0
+        self._circuit_open = False
+        self._circuit_open_time: Optional[datetime] = None
+        self._circuit_threshold = 3  # Open circuit after 3 consecutive failures
+        self._circuit_reset_seconds = 60  # Reset circuit after 60 seconds
+
     async def start_session(self, session_id: str) -> None:
         """
         Start a new monitoring session.
@@ -555,28 +646,70 @@ class SarasvatiEngine:
         Run one processing cycle through the graph.
 
         This executes: ingest -> align -> verify -> report
+
+        PHASE 1 FIX: Includes circuit breaker to prevent cascading failures.
         """
         if not self.state:
             return
 
-        try:
-            print(f"🔄 Processing cycle started. Buffers: P={len(self.state['provider_buffer'])}, I={len(self.state['interpreter_buffer'])}, Pt={len(self.state['patient_buffer'])}")
+        # PHASE 1 FIX: Check circuit breaker
+        if self._circuit_open:
+            # Check if enough time has passed to reset circuit
+            if self._circuit_open_time:
+                elapsed = (datetime.utcnow() - self._circuit_open_time).total_seconds()
+                if elapsed >= self._circuit_reset_seconds:
+                    print(f"🔄 Circuit breaker reset after {elapsed:.1f}s")
+                    self._circuit_open = False
+                    self._circuit_open_time = None
+                    self._failure_count = 0
+                else:
+                    print(f"⚠️  Circuit breaker OPEN - skipping cycle ({elapsed:.1f}s/{self._circuit_reset_seconds}s)")
+                    return
 
-            # Run graph with current state
-            result = await self.compiled.ainvoke(
-                self.state,
-                config={"configurable": {"thread_id": self.session_id}},
-            )
+        # PHASE 1 FIX: Single-flight guarantee - only one cycle at a time
+        async with self._cycle_lock:
+            try:
+                print(f"🔄 Processing cycle started. Buffers: P={len(self.state['provider_buffer'])}, I={len(self.state['interpreter_buffer'])}, Pt={len(self.state['patient_buffer'])}")
 
-            # Update state with result
-            if result:
-                self.state = result
-                print(f"✅ Cycle done. Matched: {len(self.state['matched_pairs'])}, Errors: {len(self.state['detected_errors'])}")
+                # PHASE 1 FIX: Add 30-second timeout to prevent hanging
+                result = await asyncio.wait_for(
+                    self.compiled.ainvoke(
+                        self.state,
+                        config={"configurable": {"thread_id": self.session_id}},
+                    ),
+                    timeout=30.0
+                )
 
-        except Exception as e:
-            print(f"⚠️  Processing error: {e}")
-            import traceback
-            traceback.print_exc()
+                # PHASE 1 FIX: Atomic state update with lock
+                if result:
+                    async with self._state_lock:
+                        self.state = result
+                    print(f"✅ Cycle done. Matched: {len(self.state['matched_pairs'])}, Errors: {len(self.state['detected_errors'])}")
+
+                # PHASE 1 FIX: Reset failure count on success
+                self._failure_count = 0
+
+            except asyncio.TimeoutError:
+                print(f"⚠️  Processing cycle timed out after 30 seconds")
+                self._handle_cycle_failure()
+            except Exception as e:
+                print(f"⚠️  Processing error: {e}")
+                import traceback
+                traceback.print_exc()
+                self._handle_cycle_failure()
+
+    def _handle_cycle_failure(self) -> None:
+        """
+        PHASE 1 FIX: Handle processing cycle failure with circuit breaker.
+        """
+        self._failure_count += 1
+        print(f"⚠️  Failure count: {self._failure_count}/{self._circuit_threshold}")
+
+        if self._failure_count >= self._circuit_threshold:
+            self._circuit_open = True
+            self._circuit_open_time = datetime.utcnow()
+            print(f"🚨 Circuit breaker OPENED after {self._failure_count} consecutive failures")
+            print(f"   Circuit will reset after {self._circuit_reset_seconds} seconds")
 
     async def stop_session(self) -> Dict[str, Any]:
         """
@@ -610,7 +743,7 @@ class SarasvatiEngine:
         print(f"   Errors detected: {stats['errors_detected']}")
         print(f"   Critical errors: {stats['critical_errors']}")
 
-        # CRITICAL FIX: Clear ALL buffers and state to prevent session leaks
+        # PHASE 1 FIX: Comprehensive cleanup to prevent resource leaks
         # Old segments must not appear in next session
         print(f"   🧹 Clearing buffers: P={len(self.state['provider_buffer'])}, I={len(self.state['interpreter_buffer'])}, Pt={len(self.state['patient_buffer'])}")
         self.state["provider_buffer"].clear()
@@ -621,9 +754,52 @@ class SarasvatiEngine:
         self.state["error_flags"].clear()
         self.state["last_verified_count"] = 0
         self.state["last_debate_result"] = None
-        print(f"   ✅ All buffers cleared, ready for fresh session")
+
+        # PHASE 1 FIX: Shutdown alignment engine ThreadPoolExecutor
+        if hasattr(self.graph, 'alignment_engine') and self.graph.alignment_engine:
+            self.graph.alignment_engine.shutdown()
+
+        # PHASE 1 FIX: Force garbage collection to reclaim memory
+        import gc
+        gc.collect()
+        print(f"   ✅ All buffers cleared, alignment engine shut down, memory reclaimed")
 
         return stats
+
+    async def recover_from_crash(self, session_id: str) -> bool:
+        """
+        PHASE 1 FIX: Recover from a crash using persistent checkpoints.
+
+        Args:
+            session_id: Session identifier to recover
+
+        Returns:
+            True if recovery successful, False otherwise
+        """
+        if not hasattr(self.graph, 'checkpointer') or not self.graph.checkpointer:
+            print("⚠️  No checkpointer available for crash recovery")
+            return False
+
+        try:
+            # Attempt to load the last checkpoint for this session
+            config = {"configurable": {"thread_id": session_id}}
+            snapshot = self.compiled.get_state(config)
+
+            if snapshot and snapshot.values:
+                self.state = snapshot.values
+                self.session_id = session_id
+                print(f"✅ Recovered session {session_id} from checkpoint")
+                print(f"   Buffers: P={len(self.state['provider_buffer'])}, I={len(self.state['interpreter_buffer'])}")
+                return True
+            else:
+                print(f"⚠️  No checkpoint found for session {session_id}")
+                return False
+
+        except Exception as e:
+            print(f"❌ Failed to recover session {session_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def get_state(self) -> Optional[SarasvatiState]:
         """Get current state (for debugging/monitoring)."""

@@ -70,12 +70,23 @@ class TranscriptSegment(TypedDict):
     detected_language: Optional[str]  # Language detected by Whisper (for debugging)
 
 
+class AlignmentAlternative(TypedDict):
+    """PHASE 3: Alternative alignment considered but rejected."""
+    interpreter_segment: TranscriptSegment
+    similarity_score: float
+    combined_score: float
+    time_delta: float
+    rejection_reason: str  # Why this wasn't chosen
+
+
 class AlignmentMatch(TypedDict):
     """
     Result of DTW/semantic alignment.
 
     Represents a tribunal case - either aligned, omission, or fabrication.
     Every provider/patient segment and every interpreter segment creates a case.
+
+    PHASE 3: Extended with alternatives_considered for transparency.
     """
     provider_segment: Optional[TranscriptSegment]     # None for FABRICATION cases
     interpreter_segment: Optional[TranscriptSegment]  # None for OMISSION cases
@@ -86,10 +97,15 @@ class AlignmentMatch(TypedDict):
     is_matched: bool           # Whether alignment threshold was met
     dtw_distance: float        # DTW distance metric
     case_type: TribunalCaseType  # Type of tribunal review needed
+    # PHASE 3: Transparency - show alternative alignments considered
+    alternatives_considered: Optional[List[AlignmentAlternative]]
 
 
 class ClinicalError(TypedDict):
-    """Detected error in interpretation OR system error."""
+    """
+    Detected error in interpretation OR system error.
+    PHASE 3: Extended with triggering_entities for transparency.
+    """
     error_id: str              # Unique identifier
     severity: ErrorSeverity
     error_type: str            # "omission", "negation_mismatch", "dosage_error", "fabrication_medical", etc.
@@ -106,6 +122,8 @@ class ClinicalError(TypedDict):
     interpreter_quote: Optional[str]   # Exact text interpreter said
     source_quote: Optional[str]        # Exact text from source (provider/patient)
     ideal_interpretation: Optional[str]  # What interpreter should have said
+    # PHASE 3: Transparency - which entities triggered this error
+    triggering_entities: Optional[List[MedicalEntity]]
 
 
 class BufferEntry(TypedDict):
@@ -115,6 +133,46 @@ class BufferEntry(TypedDict):
     buffered_at: datetime
     is_processed: bool
     alignment_attempts: int    # How many times we've tried to align this
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2: ENHANCED DEBATE DATA STRUCTURES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Challenge(TypedDict):
+    """A challenge from one agent to another in multi-round debate."""
+    from_agent: str
+    to_agent: str
+    round_num: int
+    challenge_text: str
+    evidence_cited: List[str]
+
+
+class Rebuttal(TypedDict):
+    """A response to a challenge."""
+    from_agent: str
+    to_agent: str
+    round_num: int
+    rebuttal_text: str
+    position_changed: bool
+    new_position: Optional[str]
+
+
+class DissentingOpinion(TypedDict):
+    """Documented dissent when consensus cannot be reached."""
+    agent_name: str
+    position: str
+    reasoning: str
+    evidence: List[str]
+    confidence: float
+
+
+class ConvergenceType(str, Enum):
+    """How debate reached conclusion."""
+    FULL_CONSENSUS = "full_consensus"          # All 3 agree
+    STRONG_MAJORITY = "strong_majority"        # 2 agree, 1 weak dissent
+    STRUCTURED_DISSENT = "structured_dissent"  # Clear disagreement, flag for human
+    EARLY_CONSENSUS = "early_consensus"        # Agreed in <3 rounds
 
 
 class DebateTurnRecord(TypedDict):
@@ -133,7 +191,10 @@ class DebateTurnRecord(TypedDict):
 
 
 class DebateLogRecord(TypedDict):
-    """Complete debate log for a tribunal."""
+    """
+    Complete debate log for a tribunal.
+    PHASE 2: Enhanced with challenge-response and convergence tracking.
+    """
     tribunal_type: str      # "translation" or "error"
     input_text: str
     turns: List[DebateTurnRecord]
@@ -141,6 +202,13 @@ class DebateLogRecord(TypedDict):
     consensus_reached: bool
     rounds_taken: int
     duration_ms: Optional[float]
+    # PHASE 2: New fields for challenge-response debate
+    challenges: Optional[List[Challenge]]
+    rebuttals: Optional[List[Rebuttal]]
+    convergence_type: Optional[ConvergenceType]
+    dissenting_opinions: Optional[List[DissentingOpinion]]
+    consensus_confidence: Optional[float]  # 0.0-1.0
+    flagged_for_human_review: Optional[bool]
 
 
 class AgentDebateResult(TypedDict):
@@ -203,6 +271,42 @@ class SarasvatiState(TypedDict):
     # ===== Redis Keys =====
     redis_buffer_key: str                      # Key for Redis FIFO buffer
     redis_session_key: str                     # Key for session metadata
+
+    # ===== PHASE 3: Session Analytics =====
+    session_analytics: Optional[Dict[str, Any]]  # Real-time analytics tracking
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 3: SESSION ANALYTICS STRUCTURES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ConsensusMetrics(TypedDict):
+    """PHASE 3: Tracks consensus patterns across session."""
+    full_consensus_count: int       # 3/3 agreements
+    strong_majority_count: int      # 2/3 agreements
+    structured_dissent_count: int   # Flagged for human review
+    total_debates: int
+    avg_rounds_to_consensus: float
+
+
+class ProviderPerformance(TypedDict):
+    """PHASE 3: Tracks individual provider performance."""
+    provider_name: str
+    total_positions: int
+    times_in_majority: int
+    times_in_minority: int
+    avg_confidence: float
+    error_detection_rate: float  # % of errors this provider detected
+
+
+class SessionAnalytics(TypedDict):
+    """PHASE 3: Complete session analytics for transparency dashboard."""
+    consensus_metrics: ConsensusMetrics
+    provider_performance: Dict[str, ProviderPerformance]  # {provider_name: performance}
+    error_concentration: Dict[str, int]  # {time_bucket: error_count}
+    debate_duration_avg_ms: float
+    total_api_calls: int
+    estimated_cost_usd: float
 
 
 class GraphConfig(TypedDict):
@@ -277,4 +381,20 @@ def create_initial_state(session_id: str, config: GraphConfig) -> SarasvatiState
         # Redis keys
         redis_buffer_key=f"sarasvati:session:{session_id}:buffer",
         redis_session_key=f"sarasvati:session:{session_id}:meta",
+
+        # PHASE 3: Session analytics
+        session_analytics={
+            "consensus_metrics": {
+                "full_consensus_count": 0,
+                "strong_majority_count": 0,
+                "structured_dissent_count": 0,
+                "total_debates": 0,
+                "avg_rounds_to_consensus": 0.0,
+            },
+            "provider_performance": {},
+            "error_concentration": {},
+            "debate_duration_avg_ms": 0.0,
+            "total_api_calls": 0,
+            "estimated_cost_usd": 0.0,
+        },
     )

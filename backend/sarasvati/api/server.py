@@ -418,7 +418,7 @@ async def emit_error_loop() -> None:
     """
     Background loop that monitors for new verdicts and errors and broadcasts them.
 
-    Runs every 100ms to check for new tribunal verdicts.
+    PHASE 1 FIX: Maintains precise 100ms intervals with clock drift compensation.
     Emits tribunal_verdict for EVERY assessment (with confidence score).
     """
     global engine, session_active
@@ -426,7 +426,15 @@ async def emit_error_loop() -> None:
     last_error_count = 0
     last_verdict_count = 0
 
+    # PHASE 1 FIX: Track timing for precise intervals
+    import time
+    target_interval = 0.1  # 100ms
+    last_loop_time = time.time()
+
     while session_active and engine:
+        # PHASE 1 FIX: Track loop start time for precision
+        loop_start = time.time()
+
         try:
             state = engine.get_state()
             if state:
@@ -507,13 +515,24 @@ async def emit_error_loop() -> None:
 
                     last_error_count = new_error_count
 
-            await asyncio.sleep(0.1)  # 100ms polling
+            # PHASE 1 FIX: Calculate elapsed time and adjust sleep for precise timing
+            elapsed = time.time() - loop_start
+            sleep_time = max(0, target_interval - elapsed)
+
+            # Log warning if loop is taking too long
+            if elapsed > target_interval:
+                print(f"⚠️  Polling loop overran target interval: {elapsed*1000:.1f}ms > {target_interval*1000:.0f}ms")
+
+            await asyncio.sleep(sleep_time)
 
         except asyncio.CancelledError:
             break
         except Exception as e:
             print(f"Error in emit loop: {e}")
-            await asyncio.sleep(0.5)
+            # PHASE 1 FIX: On error, still try to maintain timing
+            elapsed = time.time() - loop_start
+            sleep_time = max(0.1, 0.5 - elapsed)  # Default to 0.5s on error, adjusted for processing time
+            await asyncio.sleep(sleep_time)
 
 
 def compute_confidence(severity: str, num_issues: int) -> float:
@@ -624,6 +643,84 @@ async def health_check() -> HealthResponse:
     )
 
 
+@app.get("/api/analytics")
+async def get_analytics() -> Dict[str, Any]:
+    """
+    PHASE 3: Get real-time session analytics for transparency dashboard.
+
+    Returns:
+        {
+            "consensus_metrics": {...},
+            "provider_performance": {...},
+            "error_concentration": {...},
+            "debate_duration_avg_ms": float,
+            "total_api_calls": int,
+            "estimated_cost_usd": float
+        }
+    """
+    if not engine or not session_active:
+        return {
+            "error": "No active session",
+            "consensus_metrics": None,
+            "provider_performance": None,
+            "error_concentration": None,
+        }
+
+    state = engine.get_state()
+    if not state or not state.get("session_analytics"):
+        return {
+            "error": "No analytics available",
+            "consensus_metrics": None,
+            "provider_performance": None,
+            "error_concentration": None,
+        }
+
+    analytics = state["session_analytics"]
+
+    # Add provider diversity analysis
+    provider_stats = _analyze_provider_diversity(state)
+
+    return {
+        "consensus_metrics": analytics.get("consensus_metrics", {}),
+        "provider_performance": analytics.get("provider_performance", {}),
+        "error_concentration": analytics.get("error_concentration", {}),
+        "debate_duration_avg_ms": analytics.get("debate_duration_avg_ms", 0.0),
+        "total_api_calls": analytics.get("total_api_calls", 0),
+        "estimated_cost_usd": analytics.get("estimated_cost_usd", 0.0),
+        "provider_diversity": provider_stats,
+        "session_duration_seconds": (datetime.utcnow() - state["session_start"]).total_seconds(),
+        "total_cases": len(state.get("matched_pairs", [])),
+        "total_errors": len(state.get("detected_errors", [])),
+    }
+
+
+def _analyze_provider_diversity(state: SarasvatiState) -> Dict[str, Any]:
+    """
+    PHASE 3: Analyze provider diversity and bias detection.
+
+    Returns:
+        {
+            "dominant_provider": str,
+            "dominance_percentage": float,
+            "bias_detected": bool,
+            "provider_agreement_matrix": Dict
+        }
+    """
+    # Placeholder for provider diversity analysis
+    # In full implementation, would analyze debate logs to track:
+    # - Which provider's position won most often
+    # - Agreement/disagreement patterns between providers
+    # - Statistical bias detection
+
+    return {
+        "dominant_provider": None,
+        "dominance_percentage": 0.0,
+        "bias_detected": False,
+        "provider_agreement_matrix": {},
+        "note": "Provider diversity analysis requires debate log history"
+    }
+
+
 @app.post("/session/start", response_model=SessionStartResponse)
 async def start_session(request: SessionStartRequest) -> SessionStartResponse:
     """
@@ -639,51 +736,53 @@ async def start_session(request: SessionStartRequest) -> SessionStartResponse:
     """
     global session_active, session_id, session_start_time, _processing_task, engine, current_scenario
 
-    if session_active:
-        raise HTTPException(status_code=409, detail="Session already active")
+    # PHASE 1 FIX: Wrap ALL global state mutations in lock to prevent race conditions
+    async with _session_lock:
+        if session_active:
+            raise HTTPException(status_code=409, detail="Session already active")
 
-    # Generate session ID if not provided
-    session_id = request.session_id or f"session_{uuid.uuid4().hex[:8]}"
-    session_start_time = datetime.utcnow()
-    session_active = True
+        # Generate session ID if not provided
+        session_id = request.session_id or f"session_{uuid.uuid4().hex[:8]}"
+        session_start_time = datetime.utcnow()
+        session_active = True
 
-    # Store scenario metadata
-    current_scenario = request.scenario
-    if current_scenario:
-        print(f"\n📋 SCENARIO CONFIGURATION:")
-        print(f"   ID: {current_scenario.scenario_id or 'N/A'}")
-        print(f"   Name: {current_scenario.scenario_name or 'N/A'}")
-        print(f"   Provider language: {current_scenario.provider_language}")
-        print(f"   Patient language: {current_scenario.patient_language}")
-        if current_scenario.interpreter_modes:
-            print(f"   Interpreter modes:")
-            for mode in current_scenario.interpreter_modes:
-                print(f"      {mode.direction} → {mode.language}")
-    else:
-        print(f"⚠️ No scenario metadata provided - using defaults")
+        # Store scenario metadata
+        current_scenario = request.scenario
+        if current_scenario:
+            print(f"\n📋 SCENARIO CONFIGURATION:")
+            print(f"   ID: {current_scenario.scenario_id or 'N/A'}")
+            print(f"   Name: {current_scenario.scenario_name or 'N/A'}")
+            print(f"   Provider language: {current_scenario.provider_language}")
+            print(f"   Patient language: {current_scenario.patient_language}")
+            if current_scenario.interpreter_modes:
+                print(f"   Interpreter modes:")
+                for mode in current_scenario.interpreter_modes:
+                    print(f"      {mode.direction} → {mode.language}")
+        else:
+            print(f"⚠️ No scenario metadata provided - using defaults")
 
-    # CRITICAL FIX: Create a fresh engine for each session to prevent state leakage
-    # The old engine's buffers/state would carry over otherwise
-    print(f"🔄 Creating fresh engine for session {session_id}")
-    engine = create_engine(DEFAULT_CONFIG)
-    await engine.start_session(session_id)
-    print(f"✅ Fresh engine initialized for session {session_id}")
+        # CRITICAL FIX: Create a fresh engine for each session to prevent state leakage
+        # The old engine's buffers/state would carry over otherwise
+        print(f"🔄 Creating fresh engine for session {session_id}")
+        engine = create_engine(DEFAULT_CONFIG)
+        await engine.start_session(session_id)
+        print(f"✅ Fresh engine initialized for session {session_id}")
 
-    # Start background error emission loop
-    _processing_task = asyncio.create_task(emit_error_loop())
+        # Start background error emission loop
+        _processing_task = asyncio.create_task(emit_error_loop())
 
-    # Broadcast session start
-    message = build_ws_message("session_start", {
-        "session_id": session_id,
-        "scenario": current_scenario.dict() if current_scenario else None,
-    })
-    await manager.broadcast(message)
+        # Broadcast session start
+        message = build_ws_message("session_start", {
+            "session_id": session_id,
+            "scenario": current_scenario.dict() if current_scenario else None,
+        })
+        await manager.broadcast(message)
 
-    return SessionStartResponse(
-        session_id=session_id,
-        status="started",
-        message=f"Session {session_id} started successfully",
-    )
+        return SessionStartResponse(
+            session_id=session_id,
+            status="started",
+            message=f"Session {session_id} started successfully",
+        )
 
 
 @app.post("/session/stop", response_model=SessionStopResponse)
@@ -696,55 +795,60 @@ async def stop_session() -> SessionStopResponse:
     global session_active, session_id, session_start_time, _processing_task, engine, current_scenario
     global _turn_history, _last_turn_role, _last_turn_time
 
-    if not session_active:
-        raise HTTPException(status_code=409, detail="No active session")
+    # PHASE 1 FIX: Wrap ALL global state mutations in lock to prevent race conditions
+    async with _session_lock:
+        if not session_active:
+            raise HTTPException(status_code=409, detail="No active session")
 
-    # Stop background task
-    if _processing_task and not _processing_task.done():
-        _processing_task.cancel()
-        try:
-            await _processing_task
-        except asyncio.CancelledError:
-            pass
+        # Stop background task with proper timeout
+        if _processing_task and not _processing_task.done():
+            _processing_task.cancel()
+            try:
+                # PHASE 1 FIX: Add timeout to prevent hanging on cancellation
+                await asyncio.wait_for(_processing_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            finally:
+                _processing_task = None
 
-    # Calculate duration
-    duration = 0.0
-    if session_start_time:
-        duration = (datetime.utcnow() - session_start_time).total_seconds()
+        # Calculate duration
+        duration = 0.0
+        if session_start_time:
+            duration = (datetime.utcnow() - session_start_time).total_seconds()
 
-    # Get stats from engine
-    errors_detected = 0
-    critical_errors = 0
-    if engine:
-        stats = await engine.stop_session()
-        errors_detected = stats.get("errors_detected", 0)
-        critical_errors = stats.get("critical_errors", 0)
+        # Get stats from engine
+        errors_detected = 0
+        critical_errors = 0
+        if engine:
+            stats = await engine.stop_session()
+            errors_detected = stats.get("errors_detected", 0)
+            critical_errors = stats.get("critical_errors", 0)
 
-    # Broadcast session end
-    message = build_ws_message("session_end", {})
-    await manager.broadcast(message)
+        # Broadcast session end
+        message = build_ws_message("session_end", {})
+        await manager.broadcast(message)
 
-    # Store session_id before resetting
-    current_session_id = session_id
+        # Store session_id before resetting
+        current_session_id = session_id
 
-    # Reset state
-    session_active = False
-    session_id = None
-    session_start_time = None
-    current_scenario = None  # Clear scenario metadata
+        # Reset state
+        session_active = False
+        session_id = None
+        session_start_time = None
+        current_scenario = None  # Clear scenario metadata
 
-    # Reset turn tracking
-    _turn_history.clear()
-    _last_turn_role = None
-    _last_turn_time = 0.0
+        # Reset turn tracking
+        _turn_history.clear()
+        _last_turn_role = None
+        _last_turn_time = 0.0
 
-    return SessionStopResponse(
-        session_id=current_session_id or "unknown",
-        status="stopped",
-        duration_seconds=duration,
-        errors_detected=errors_detected,
-        critical_errors=critical_errors,
-    )
+        return SessionStopResponse(
+            session_id=current_session_id or "unknown",
+            status="stopped",
+            duration_seconds=duration,
+            errors_detected=errors_detected,
+            critical_errors=critical_errors,
+        )
 
 
 # ===== Transcription Endpoint (Groq Whisper) =====

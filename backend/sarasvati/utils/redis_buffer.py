@@ -69,28 +69,64 @@ class RedisBuffer:
         self._is_connected = False
 
     async def connect(self) -> None:
-        """Establish connection to Redis."""
-        self.client = redis.Redis(
+        """
+        Establish connection to Redis.
+        PHASE 1 FIX: Added connection pooling for better resource management.
+        """
+        # PHASE 1 FIX: Use connection pool instead of direct connection
+        pool = redis.ConnectionPool(
             host=self.config.host,
             port=self.config.port,
             db=self.config.db,
             password=self.config.password,
-            decode_responses=False,  # We'll handle encoding
+            max_connections=10,  # Connection pool size
+            decode_responses=False,
         )
 
-        # Test connection
+        self.client = redis.Redis(connection_pool=pool)
+
+        # Test connection with retry
         try:
-            await self.client.ping()
+            await self._retry_operation(self.client.ping)
             self._is_connected = True
-            print(f"✅ Connected to Redis at {self.config.host}:{self.config.port}")
+            print(f"✅ Connected to Redis at {self.config.host}:{self.config.port} (pool size: 10)")
 
             # Initialize search index if vector search enabled
             if self.config.enable_vector_search:
                 await self._create_search_index()
 
         except Exception as e:
-            print(f"❌ Redis connection failed: {e}")
+            print(f"❌ Redis connection failed after retries: {e}")
             raise
+
+    async def _retry_operation(self, operation, max_retries: int = 3, backoff_seconds: float = 1.0):
+        """
+        PHASE 1 FIX: Retry Redis operations with exponential backoff.
+
+        Args:
+            operation: Async callable to retry
+            max_retries: Maximum retry attempts
+            backoff_seconds: Initial backoff time (doubles each retry)
+
+        Returns:
+            Result of the operation
+        """
+        import asyncio
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                return await operation()
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = backoff_seconds * (2 ** attempt)
+                    print(f"⚠️  Redis operation failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"❌ Redis operation failed after {max_retries} attempts: {e}")
+
+        raise last_error
 
     async def disconnect(self) -> None:
         """Close Redis connection."""
@@ -142,6 +178,8 @@ class RedisBuffer:
         """
         Get all entries from buffer.
 
+        PHASE 1 FIX: Extends TTL on read to prevent expiration during processing.
+
         Args:
             session_id: Session identifier
             role: Stream role
@@ -153,6 +191,10 @@ class RedisBuffer:
             raise RuntimeError("Not connected to Redis")
 
         key = self._get_buffer_key(session_id, role)
+
+        # PHASE 1 FIX: Extend TTL before reading to prevent race condition
+        # If buffer expires between read and processing, data is lost
+        await self.client.expire(key, self.config.ttl_seconds)
 
         # Get all entries (newest first)
         entries_json = await self.client.lrange(key, 0, -1)
@@ -324,7 +366,10 @@ class RedisBuffer:
         return BufferEntry(**entry_dict)
 
     async def _create_search_index(self) -> None:
-        """Create RediSearch index for vector similarity search."""
+        """
+        Create RediSearch index for vector similarity search.
+        PHASE 1 FIX: Added validation and fallback detection.
+        """
         # Note: In production, create one index per session+role
         # For MVP, we'll create a generic index structure
 
@@ -363,8 +408,33 @@ class RedisBuffer:
                 ),
             )
             print(f"✅ Created search index '{index_name}'")
+
+            # PHASE 1 FIX: Validate index creation succeeded
+            try:
+                index_info = await self.client.ft(index_name).info()
+                print(f"✅ Index validation passed - {index_info.get('num_docs', 0)} docs indexed")
+            except Exception as validation_error:
+                print(f"⚠️  WARNING: Index created but validation failed: {validation_error}")
+                print(f"   Vector search will fall back to O(n) linear scan")
+                # PHASE 1 FIX: Emit metric for monitoring
+                self._emit_metric("redis.index_validation_failed", 1)
+
         except Exception as e:
             print(f"⚠️  Index creation failed (may already exist): {e}")
+            print(f"   Vector search will fall back to O(n) linear scan")
+            # PHASE 1 FIX: Emit metric for monitoring
+            self._emit_metric("redis.index_creation_failed", 1)
+
+    def _emit_metric(self, metric_name: str, value: float) -> None:
+        """
+        PHASE 1 FIX: Emit metrics for monitoring (stub for now, integrate with your metrics system).
+
+        Args:
+            metric_name: Metric name (e.g., "redis.vector_search_failure")
+            value: Metric value
+        """
+        # TODO: Integrate with Prometheus/StatsD/CloudWatch
+        print(f"📊 METRIC: {metric_name} = {value}")
 
     async def _index_entry(
         self,

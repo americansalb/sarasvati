@@ -32,6 +32,15 @@ export interface MedicalEntity {
   context: string;
 }
 
+// PHASE 3: Alignment alternative for transparency
+export interface AlignmentAlternative {
+  interpreter_segment: TranscriptSegment;
+  similarity_score: number;
+  combined_score: number;
+  time_delta: number;
+  rejection_reason: string;
+}
+
 export interface AlignmentMatch {
   provider_segment: TranscriptSegment;
   interpreter_segment: TranscriptSegment | null;
@@ -39,6 +48,8 @@ export interface AlignmentMatch {
   time_delta: number;
   is_matched: boolean;
   dtw_distance: number;
+  // PHASE 3: Transparency - show alternatives that were considered
+  alternatives_considered?: AlignmentAlternative[];
 }
 
 export interface ClinicalError {
@@ -59,6 +70,8 @@ export interface ClinicalError {
   interpreter_quote?: string; // Exact text interpreter said
   source_quote?: string; // Exact text from source (provider/patient)
   ideal_interpretation?: string; // What interpreter should have said
+  // PHASE 3: Transparency - which entities triggered this error
+  triggering_entities?: MedicalEntity[];
 }
 
 export interface AgentDebateResult {
@@ -134,6 +147,38 @@ export interface TribunalVerdict {
   has_debate_logs?: boolean;
 }
 
+// PHASE 2: Challenge-response debate structures
+export interface Challenge {
+  from_agent: string;
+  to_agent: string;
+  round_num: number;
+  challenge_text: string;
+  evidence_cited: string[];
+}
+
+export interface Rebuttal {
+  from_agent: string;
+  to_agent: string;
+  round_num: number;
+  rebuttal_text: string;
+  position_changed: boolean;
+  new_position: string | null;
+}
+
+export interface DissentingOpinion {
+  agent_name: string;
+  position: string;
+  reasoning: string;
+  evidence: string[];
+  confidence: number;
+}
+
+export type ConvergenceType =
+  | "full_consensus"      // All 3 agree
+  | "strong_majority"     // 2 agree, 1 weak dissent
+  | "structured_dissent"  // Clear disagreement, flag for human
+  | "early_consensus";    // Agreed in <3 rounds
+
 // Visible debate log types - shows the actual back-and-forth tribunal debate
 export interface DebateTurn {
   round: number;
@@ -157,6 +202,58 @@ export interface DebateLogEntry {
   consensus_reached: boolean;
   rounds_taken: number;
   duration_ms: number | null;
+  // PHASE 2: Challenge-response and convergence tracking
+  challenges?: Challenge[];
+  rebuttals?: Rebuttal[];
+  convergence_type?: ConvergenceType;
+  dissenting_opinions?: DissentingOpinion[];
+  consensus_confidence?: number;  // 0.0-1.0
+  flagged_for_human_review?: boolean;
+}
+
+// PHASE 3: Frontend-optimized debate format
+export interface DebateRound {
+  round_number: number;
+  turns: DebateTurn[];
+  consensus_emerging: boolean;
+  position_changes: number;
+}
+
+export interface AgentSummary {
+  name: string;
+  model: string;
+  provider: string;
+  position_changes: number;
+  final_position: string;
+  rounds_participated: number;
+}
+
+export interface DebateFlowEvent {
+  type: "statement" | "position_change";
+  round: number;
+  agent: string;
+  content: string;
+  position: string;
+  timestamp: string;
+  highlight?: boolean;
+}
+
+export interface FrontendDebateLog {
+  tribunal_type: string;
+  input_text: string;
+  rounds: DebateRound[];
+  final_consensus: string | null;
+  consensus_reached: boolean;
+  rounds_taken: number;
+  duration_ms: number | null;
+  challenges: Challenge[];
+  rebuttals: Rebuttal[];
+  convergence_type?: ConvergenceType;
+  dissenting_opinions: DissentingOpinion[];
+  consensus_confidence: number;
+  flagged_for_human_review: boolean;
+  agent_summary: Record<string, AgentSummary>;
+  debate_flow: DebateFlowEvent[];
 }
 
 export interface DebateLogs {
@@ -191,4 +288,34 @@ export interface SimulationConfig {
   interpreterAudioUrl: string;
   patientAudioUrl: string;
   autoPlay: boolean;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PHASE 3: SESSION ANALYTICS & TRANSPARENCY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface ConsensusMetrics {
+  full_consensus_count: number;       // 3/3 agreements
+  strong_majority_count: number;      // 2/3 agreements
+  structured_dissent_count: number;   // Flagged for human review
+  total_debates: number;
+  avg_rounds_to_consensus: number;
+}
+
+export interface ProviderPerformance {
+  provider_name: string;
+  total_positions: number;
+  times_in_majority: number;
+  times_in_minority: number;
+  avg_confidence: number;
+  error_detection_rate: number;  // % of errors this provider detected
+}
+
+export interface SessionAnalytics {
+  consensus_metrics: ConsensusMetrics;
+  provider_performance: Record<string, ProviderPerformance>;  // {provider_name: performance}
+  error_concentration: Record<string, number>;  // {time_bucket: error_count}
+  debate_duration_avg_ms: number;
+  total_api_calls: number;
+  estimated_cost_usd: number;
 }
